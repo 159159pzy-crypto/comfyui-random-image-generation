@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+
+# Runtime state and generated images
+data/
+output/
+*.log
+
+# Browser test artifacts
+.playwright-cli/
+playwright-report/
+test-results/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

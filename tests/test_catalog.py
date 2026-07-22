@@ -1,0 +1,135 @@
+import json
+import random
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+APP_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(APP_DIR))
+
+from anima_webui.catalog import CatalogError, PromptCatalog, compose_people_tags  # noqa: E402
+from anima_webui.custom_prompts import CustomPromptStore  # noqa: E402
+from anima_webui.workflow import DEFAULT_SETTINGS, validate_settings  # noqa: E402
+
+
+class CatalogTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        tools = root / "tools"
+        js = tools / "js"
+        js.mkdir(parents=True)
+        datasets = {
+            "character_data.js": [
+                {"name": "alpha", "copyright": "series", "gender": "1girl", "hair": "blue", "eye": "red", "post_count": 20},
+                {"name": "beta", "copyright": "series", "gender": "1boy", "hair": "black", "eye": "blue", "post_count": 10},
+                {"name": "mystery", "copyright": "other", "post_count": 1},
+            ],
+            "clothing_data.js": [
+                {"id": "coat", "name": "Coat", "name_zh": "外套", "tags": "red coat, long sleeves", "categories": ["日常/休闲 (Casual & Daily)"], "traits": ["red", "long sleeves"]},
+                {"id": "dress", "name": "Dress", "name_zh": "礼服", "tags": "blue dress", "categories": ["礼服/裙装 (Dress & Gown)"], "traits": ["blue"]},
+            ],
+            "pose_data.js": [
+                {"id": "stand", "name": "Standing", "name_zh": "站立", "tags": "standing", "categories": ["站立与动态 (Standing & Dynamic)"], "traits": ["standing"]},
+                {"id": "sit", "name": "Sitting", "name_zh": "坐姿", "tags": "sitting", "categories": ["坐姿 (Sitting Poses)"], "traits": ["sitting"]},
+                {"id": "point", "name": "Pointing", "name_zh": "指向", "tags": "pointing", "categories": ["手势与手臂 (Gestures & Arms)"], "traits": ["hand", "pointing"]},
+                {"id": "fist", "name": "Fist", "name_zh": "握拳", "tags": "fist", "categories": ["手势与手臂 (Gestures & Arms)"], "traits": ["hand", "fist"]},
+            ],
+            "background_data.js": [
+                {"id": "room", "name": "Room", "name_zh": "房间", "tags": "indoors", "categories": ["都市与日常 (Urban & Daily)"], "traits": ["indoor", "home"]},
+                {"id": "forest", "name": "Forest", "name_zh": "森林", "tags": "forest", "categories": ["Nature & Outdoors"], "traits": ["outdoor", "greenery"]},
+            ],
+        }
+        for filename, values in datasets.items():
+            (js / filename).write_text(f"const data = {json.dumps(values)};\n", encoding="utf-8")
+        official = {
+            "alpha||series": {"trigger": "alpha, series", "tags": ["1girl", "blue eyes"]},
+            "beta||series": {"trigger": "beta, series", "tags": ["1boy", "black hair"]},
+        }
+        (js / "character_official_data.json").write_text(json.dumps(official), encoding="utf-8")
+        self.root = root
+        self.catalog = PromptCatalog(root, tools)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_search_and_stable_ids(self):
+        result = self.catalog.search("clothing", "外套")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["id"], "clothing:coat")
+        self.assertEqual(self.catalog.count("character"), 3)
+
+    def test_anima_character_facets_and_combined_filters(self):
+        result = self.catalog.search("character", gender="1girl", hair="blue", eye="red", series="series")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["favorite_key"], "alpha")
+        self.assertEqual(result["items"][0]["post_count"], 20)
+        self.assertEqual(self.catalog.search("character", gender="1girl")["total"], 1)
+        genders = {item["value"]: item["count"] for item in result["facets"]["gender"]}
+        self.assertEqual(genders, {"1boy": 1, "1girl": 1})
+
+    def test_anima_pose_facets_traits_and_conflicts(self):
+        filtered = self.catalog.search("pose", categories=["手势与手臂 (Gestures & Arms)"], traits=["hand", "pointing"])
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["items"][0]["conflict_slots"], ["hand_action"])
+        same_slot = {"mode": "include", "ids": ["pose:point", "pose:fist"], "excluded_ids": []}
+        with self.assertRaisesRegex(CatalogError, "手部动作"):
+            self.catalog.resolve_selection("pose", same_slot, 2, random.Random(4))
+        compatible = {"mode": "include", "ids": ["pose:point", "pose:stand"], "excluded_ids": []}
+        first = self.catalog.resolve_selection("pose", compatible, 2, random.Random(9))
+        second = self.catalog.resolve_selection("pose", compatible, 2, random.Random(9))
+        self.assertEqual([item["id"] for item in first], [item["id"] for item in second])
+
+    def test_anima_clothing_and_background_native_categories(self):
+        clothing = self.catalog.search("clothing", categories=["Casual & Daily"], traits=["red", "long sleeves"])
+        self.assertEqual([item["id"] for item in clothing["items"]], ["clothing:coat"])
+        self.assertEqual(
+            [item["value"] for item in clothing["facets"]["categories"]],
+            ["Dress & Gown", "Casual & Daily"],
+        )
+        background = self.catalog.search("background", categories=["都市与日常 (Urban & Daily)"], traits=["indoor", "home"])
+        self.assertEqual([item["id"] for item in background["items"]], ["background:room"])
+        self.assertEqual(
+            [item["value"] for item in background["facets"]["categories"]],
+            ["Nature & Outdoors", "Urban & Daily"],
+        )
+
+    def test_custom_prompt_crud_updates_catalog(self):
+        store = CustomPromptStore(self.root / "custom.json", self.catalog)
+        item = store.create({"section": "pose", "title": "挥手", "prompt": "waving hand", "categories": ["Gestures & Arms"], "traits": ["hand"]})
+        self.assertTrue(item["id"].startswith("custom:"))
+        self.assertEqual(self.catalog.search("pose", "挥手")["total"], 1)
+        updated = store.update(item["id"], {"title": "招手"})
+        self.assertEqual(updated["prompt"], "waving hand")
+        self.assertTrue(store.delete(item["id"]))
+        self.assertEqual(self.catalog.search("pose", "招手")["total"], 0)
+
+    def test_resolution_is_deterministic_and_strips_person_count_tags(self):
+        settings = validate_settings({**DEFAULT_SETTINGS, "random_character": True, "random_character_count": 1, "pools": {**DEFAULT_SETTINGS["pools"], "character": {"mode": "all", "ids": [], "excluded_ids": []}}})
+        self.catalog.validate_settings(settings)
+        first = self.catalog.resolve_prompt(settings, 22)
+        second = self.catalog.resolve_prompt(settings, 22)
+        self.assertEqual(first, second)
+        self.assertIn("1girl", first["composer_prompt"])
+        self.assertNotIn("1boy", first["composer_prompt"])
+        self.assertEqual(len(first["selected"]["character"]), 1)
+
+    def test_empty_pool_and_excess_count_are_rejected(self):
+        settings = validate_settings({**DEFAULT_SETTINGS, "random_pose": True})
+        with self.assertRaises(CatalogError):
+            self.catalog.validate_settings(settings)
+        settings["pools"]["pose"] = {"mode": "all", "ids": [], "excluded_ids": []}
+        settings["random_pose_count"] = 5
+        with self.assertRaises(CatalogError):
+            self.catalog.validate_settings(settings)
+
+    def test_people_tags_and_people_validation(self):
+        self.assertEqual(compose_people_tags(2, 1), ["2girls", "1boy"])
+        with self.assertRaisesRegex(ValueError, "总人数"):
+            validate_settings({**DEFAULT_SETTINGS, "female_count": 4, "male_count": 2})
+
+
+if __name__ == "__main__":
+    unittest.main()

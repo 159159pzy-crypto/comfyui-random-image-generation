@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111615">
+  <title>Anima Random Studio</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260722-7">
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"></div>
+
+  <header class="topbar glass">
+    <a class="brand" href="#" aria-label="Anima Random Studio 首页">
+      <span class="brand-mark">A</span>
+      <span class="brand-copy"><strong>Anima</strong><small>Random Studio</small></span>
+    </a>
+    <div class="batch-summary" aria-live="polite">
+      <div class="batch-summary-copy"><span id="batchState">等待任务</span><strong id="progressCount">0 / 0</strong></div>
+      <div class="progress-track"><div id="progressFill"></div></div>
+      <p id="batchError" hidden></p>
+    </div>
+    <div class="top-actions">
+      <span id="connection" class="status-badge offline"><i></i><span>正在连接</span></span>
+      <button id="stopButton" class="button ghost" type="button" disabled>停止</button>
+      <button id="startButton" class="button primary" type="submit" form="settingsForm">开始生成</button>
+    </div>
+  </header>
+
+  <nav class="mobile-tabs glass" aria-label="移动端视图">
+    <button class="active" type="button" data-mobile-view="settings">生成设置</button>
+    <button type="button" data-mobile-view="gallery">作品库</button>
+  </nav>
+
+  <main class="workspace" data-mobile-view="settings">
+    <aside class="control-panel glass">
+      <form id="settingsForm">
+        <div class="panel-title">
+          <div><span class="kicker">COMPOSITION</span><h1>生成设置</h1><small id="draftStatus" class="draft-status">本地草稿待保存</small></div>
+          <div class="draft-actions"><button id="resetSettings" class="icon-button dark" type="button" title="恢复默认设置" aria-label="恢复默认设置">↺</button><button id="clearDraft" class="icon-button dark" type="button" title="清除本地草稿" aria-label="清除本地草稿">⌫</button></div>
+          <label class="quantity-field"><span>批次数量</span><input id="count" type="number" min="1" max="1000" step="1" required></label>
+        </div>
+
+        <section class="control-section people-section">
+          <div class="section-heading"><h2>人物构成</h2><output id="peopleTotal">共 1 人</output></div>
+          <div class="stepper-grid">
+            <label class="stepper"><span>女性</span><input id="female_count" type="number" min="0" max="5" step="1"></label>
+            <label class="stepper"><span>男性</span><input id="male_count" type="number" min="0" max="5" step="1"></label>
+          </div>
+        </section>
+
+        <section class="control-section">
+          <div class="section-heading"><h2>提示词池</h2><span id="poolOverview">0 项已选</span></div>
+          <div id="dimensionList" class="dimension-list"></div>
+          <label class="field"><span>角色标签</span><select id="character_detail"><option value="trigger_tags">触发词 + 特征</option><option value="trigger">仅触发词</option></select></label>
+          <label class="field"><span>固定画师</span><input id="manual_artist" type="text" placeholder="例如 anmi, @rella"></label>
+        </section>
+
+        <details class="control-section advanced-section">
+          <summary><span>高级提示词</span><i>+</i></summary>
+          <div class="details-content">
+            <label class="field"><span>质量词</span><textarea id="quality_prompt" rows="3"></textarea></label>
+            <label class="field"><span>额外提示词</span><textarea id="extra_prompt" rows="4"></textarea></label>
+            <label class="field"><span>负面词</span><textarea id="negative_prompt" rows="4"></textarea></label>
+          </div>
+        </details>
+
+        <details class="control-section advanced-section lora-section">
+          <summary><span>LoRA</span><span id="loraSummary" class="summary-value">0 启用 / 0 配置</span><i>+</i></summary>
+          <div class="details-content">
+            <div class="lora-toolbar">
+              <button id="addLora" class="button primary compact" type="button">+ 添加 LoRA</button>
+              <button id="resetLoras" class="button ghost compact" type="button">恢复模板默认</button>
+            </div>
+            <div id="loraList" class="lora-list"></div>
+            <div id="loraEmpty" class="inline-empty">未配置 LoRA，模型和 CLIP 将直接透传。</div>
+          </div>
+        </details>
+
+        <details class="control-section advanced-section">
+          <summary><span>采样参数</span><i>+</i></summary>
+          <div class="details-content parameter-grid">
+            <label class="field"><span>宽度</span><input id="width" type="number" min="64" max="4096" step="8"></label>
+            <label class="field"><span>高度</span><input id="height" type="number" min="64" max="4096" step="8"></label>
+            <label class="field"><span>步数</span><input id="steps" type="number" min="1" max="150" step="1"></label>
+            <label class="field"><span>CFG</span><input id="cfg" type="number" min="0.1" max="30" step="0.1"></label>
+          </div>
+        </details>
+      </form>
+    </aside>
+
+    <section class="history-panel">
+      <div class="history-header">
+        <div><span class="kicker">GENERATED ARCHIVE</span><h1>作品库</h1><p id="historyCount">0 张图片</p></div>
+        <div class="pager"><button id="prevPage" class="icon-button" type="button" title="上一页" aria-label="上一页">‹</button><span id="pageLabel">1 / 1</span><button id="nextPage" class="icon-button" type="button" title="下一页" aria-label="下一页">›</button></div>
+      </div>
+      <div id="gallery" class="gallery" aria-live="polite"></div>
+      <div id="emptyState" class="empty-state"><span class="empty-mark">A</span><strong>等待第一张作品</strong><small>完成生成后会出现在这里</small></div>
+    </section>
+  </main>
+
+  <aside id="poolDrawer" class="pool-drawer glass" aria-hidden="true" aria-labelledby="poolTitle">
+    <header class="drawer-header">
+      <div><span id="poolKicker" class="kicker">PROMPT POOL</span><h2 id="poolTitle">角色池</h2><p id="poolMeta">0 项可用 · 0 项已选</p></div>
+      <button id="closePool" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button>
+    </header>
+    <div class="pool-toolbar">
+      <label class="search-field"><span aria-hidden="true">⌕</span><input id="poolSearch" type="search" placeholder="搜索名称、系列或提示词"></label>
+      <select id="poolSort" title="排序方式" aria-label="排序方式"><option value="">默认排序</option><option value="favorite-first">收藏优先 ★</option></select>
+      <select id="poolLanguage" title="显示语言" aria-label="显示语言"><option value="zh">中文优先</option><option value="en">仅英文</option><option value="bilingual">中英双语</option></select>
+      <button id="togglePoolSidebar" class="button ghost compact pool-sidebar-toggle" type="button" title="打开分类导航" aria-label="打开分类导航" aria-controls="poolSidebar" aria-expanded="false">分类导航</button>
+      <label class="compact-check"><input id="selectedOnly" type="checkbox"><span>仅看已选</span></label>
+      <button id="clearFilters" class="button ghost compact" type="button">清除筛选</button>
+    </div>
+    <div class="pool-actions">
+      <button id="selectPage" class="button ghost" type="button">选中本页</button>
+      <button id="selectAllPool" class="button ghost" type="button">全选词库</button>
+      <button id="clearPool" class="button ghost" type="button">清空</button>
+      <button id="addCustom" class="button primary compact" type="button"><span aria-hidden="true">+</span> 自定义</button>
+    </div>
+    <div class="pool-browser">
+      <nav id="poolSidebar" class="pool-sidebar" aria-label="池分类"></nav>
+      <section class="pool-results">
+        <div id="poseConflict" class="conflict-banner" role="alert" hidden></div>
+        <div id="poolGrid" class="pool-grid"></div>
+        <div id="poolEmpty" class="pool-empty" hidden>没有匹配的提示词</div>
+      </section>
+    </div>
+    <footer class="drawer-footer">
+      <span id="poolSelectionLabel">已选择 0 项</span>
+      <div class="pager"><button id="poolPrev" class="icon-button dark" type="button" title="上一页" aria-label="上一页">‹</button><span id="poolPageLabel">1 / 1</span><button id="poolNext" class="icon-button dark" type="button" title="下一页" aria-label="下一页">›</button></div>
+      <button id="confirmPool" class="button primary" type="button">完成</button>
+    </footer>
+  </aside>
+  <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+
+  <dialog id="customDialog" class="compact-dialog">
+    <form id="customForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">CUSTOM ENTRY</span><h2 id="customDialogTitle">新增自定义项</h2></div><button id="closeCustom" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <input id="customId" type="hidden">
+      <label class="field"><span>名称</span><input id="customTitle" type="text" maxlength="200" required></label>
+      <label class="field"><span>副标题</span><input id="customSubtitle" type="text" maxlength="300"></label>
+      <label id="customGenderField" class="field"><span>角色性别</span><select id="customGender"><option value="unknown">未指定</option><option value="female">女性</option><option value="male">男性</option></select></label>
+      <div id="customCharacterMeta" hidden>
+        <label class="field"><span>发色</span><input id="customHair" type="text" maxlength="80" placeholder="例如 blue"></label>
+        <label class="field"><span>瞳色</span><input id="customEye" type="text" maxlength="80" placeholder="例如 blue"></label>
+        <label class="field"><span>作品系列</span><input id="customSeries" type="text" maxlength="200"></label>
+      </div>
+      <div id="customPoseMeta" hidden>
+        <label class="field"><span>Anima 大品类</span><select id="customCategory"><option value="">未分类</option><option>Gestures &amp; Arms</option><option>Standing &amp; Dynamic</option><option>Sitting Poses</option><option>Lying &amp; Prone</option><option>Adjusting &amp; Dressing</option><option>Props &amp; Holding</option><option>Duo &amp; Interaction</option><option>Daily &amp; Miscellaneous</option></select></label>
+        <label class="field"><span>细分 traits</span><input id="customTraits" type="text" maxlength="1000" placeholder="hand, pointing"></label>
+      </div>
+      <label class="field"><span>提示词</span><textarea id="customPrompt" rows="6" maxlength="20000" required></textarea></label>
+      <div class="dialog-actions"><button id="deleteCustom" class="button danger" type="button" hidden>删除</button><span></span><button id="cancelCustom" class="button ghost" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="favoriteDialog" class="compact-dialog">
+    <form id="favoriteForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">ANIMA FAVORITES</span><h2 id="favoriteTitle">收藏设置</h2></div><button id="closeFavorite" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div id="favoriteGroups" class="favorite-groups"></div>
+      <label class="field"><span>备注 / 昵称</span><input id="favoriteNickname" type="text" maxlength="300"></label>
+      <div class="dialog-actions"><button id="removeFavorite" class="button danger" type="button">取消收藏</button><span></span><button id="cancelFavorite" class="button ghost" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="groupDialog" class="compact-dialog">
+    <form id="groupForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">COLLECTION</span><h2 id="groupDialogTitle">新建收藏分组</h2></div><button id="closeGroup" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <input id="groupId" type="hidden">
+      <label class="field"><span>分组名称</span><input id="groupName" type="text" maxlength="100" required></label>
+      <div class="dialog-actions"><button id="deleteGroup" class="button danger" type="button" hidden>删除分组</button><span></span><button id="cancelGroup" class="button ghost" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="loraDialog" class="compact-dialog lora-dialog">
+    <form method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">LOCAL LORA</span><h2>添加本地 LoRA</h2></div><button id="closeLora" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <label class="search-field lora-search"><span aria-hidden="true">⌕</span><input id="loraSearch" type="search" placeholder="搜索本地 LoRA 文件"></label>
+      <div id="loraCatalog" class="lora-catalog"></div>
+      <div id="loraCatalogEmpty" class="inline-empty" hidden>没有匹配的本地 LoRA。</div>
+      <div class="dialog-actions"><span id="loraCatalogMeta">正在读取本地列表</span><span></span><button id="cancelLora" class="button ghost" type="button">完成</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="detailDialog" class="detail-dialog">
+    <button id="closeDialog" class="dialog-close" type="button" title="关闭" aria-label="关闭">×</button>
+    <div class="detail-layout">
+      <figure><img id="detailImage" alt="生成结果"></figure>
+      <div class="detail-copy">
+        <span id="detailMeta" class="kicker"></span>
+        <h2>生成详情</h2>
+        <dl id="detailStats"></dl>
+        <section id="detailSelection" class="selection-summary"></section>
+        <label>完整提示词<textarea id="detailPositive" rows="8" readonly></textarea></label>
+        <label>负面提示词<textarea id="detailNegative" rows="5" readonly></textarea></label>
+        <div class="dialog-actions"><button id="restoreSettings" class="button primary" type="button">载入设置</button><span></span><button id="deleteRecord" class="button danger" type="button">删除记录</button></div>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js?v=20260722-7" defer></script>
+</body>
+</html>

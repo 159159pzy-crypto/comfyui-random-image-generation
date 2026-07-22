@@ -1,0 +1,502 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "miaomiaoHarem_anima14.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "2": {
+    "inputs": {
+      "PowerLoraLoaderHeaderWidget": {
+        "type": "PowerLoraLoaderHeaderWidget"
+      },
+      "lora_1": {
+        "on": false,
+        "lora": "Niji_oil_painting_anima_epoch05.safetensors",
+        "strength": 0.8
+      },
+      "lora_2": {
+        "on": false,
+        "lora": "p1ct01_v1_epoch20.safetensors",
+        "strength": 0.95
+      },
+      "lora_3": {
+        "on": false,
+        "lora": "RealSkin SliderV2.safetensors",
+        "strength": -4.163336342344337e-17
+      },
+      "lora_4": {
+        "on": false,
+        "lora": "atomsphere_style_v1.2_miaomiaoherum13-e05.safetensors",
+        "strength": 0.6499999999999997
+      },
+      "lora_5": {
+        "on": false,
+        "lora": "Niji_oil_painting_anima_epoch05.safetensors",
+        "strength": 0.65
+      },
+      "lora_6": {
+        "on": false,
+        "lora": "reina1_v1_epoch16.safetensors",
+        "strength": 0.7999999999999998
+      },
+      "lora_7": {
+        "on": true,
+        "lora": "anima-highres-aesthetic-boost.safetensors",
+        "strength": 0.75
+      },
+      "lora_8": {
+        "on": true,
+        "lora": "BlueArchiveStyleB1.safetensors",
+        "strength": 0.95
+      },
+      "lora_9": {
+        "on": false,
+        "lora": "xipaearly2026_AnimaP_v03.safetensors",
+        "strength": 0.7499999999999998
+      },
+      "lora_10": {
+        "on": true,
+        "lora": "Cunnyfunkyv3.safetensors",
+        "strength": 0.75
+      },
+      "lora_11": {
+        "on": false,
+        "lora": "anima-base-1-light-concepts-v31.safetensors",
+        "strength": 0.6
+      },
+      "lora_12": {
+        "on": false,
+        "lora": "dksnpromax_v1_epoch50.safetensors",
+        "strength": 0.7999999999999998
+      },
+      "lora_13": {
+        "on": false,
+        "lora": "reina1_v1_epoch16.safetensors",
+        "strength": 0.9
+      },
+      "lora_14": {
+        "on": false,
+        "lora": "shaobayan1_v1_epoch27.safetensors",
+        "strength": 0.85
+      },
+      "lora_15": {
+        "on": false,
+        "lora": "rucarachiv4-6.safetensors",
+        "strength": 0.8999999999999999
+      },
+      "lora_16": {
+        "on": false,
+        "lora": "shaobayan1_v1_epoch27.safetensors",
+        "strength": 0.8999999999999999
+      },
+      "lora_17": {
+        "on": false,
+        "lora": "xipaearly2026_AnimaP_v03.safetensors",
+        "strength": 1
+      },
+      "lora_18": {
+        "on": false,
+        "lora": "xipaearly2026_AnimaB_v01-1.safetensors",
+        "strength": 1
+      },
+      "lora_19": {
+        "on": false,
+        "lora": "anima-base-1-photo-background-v4.safetensors",
+        "strength": 1
+      },
+      "➕ Add Lora": "",
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "17",
+        0
+      ]
+    },
+    "class_type": "Power Lora Loader (rgthree)",
+    "_meta": {
+      "title": "Power Lora Loader (rgthree)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "wildcard_text": "masterpiece, best quality, score_9, score_8, highres, 2025, newest, safe, @anmi, @rella. A refreshing erotic Blue Archive style illustration of tiny Kazusa. Delicate petite girl with purple hair and glasses. She is in a casual cover-up. Tiny Kazusa lies on her stomach by the pool, short legs spread and tiny ass raised high, looking back with shy lewd inviting smile. Bright sunny lighting, blue archive style, niji_oil_eop, aesthetic boost, summery petite erotic contrast.@cunnyfunky，kazusa (blue archive), blue archive, 1girl, cat ears, extra ears, red eyes, pink eyes, black hair, pink hair, short hair, colored inner hair, two-tone hair, hairclip, black jacket, pleated skirt, white skirt, halo, pink halo, black choker, long sleeves, ",
+      "populated_text": "masterpiece, best quality, score_9, score_8, highres, 2025, newest, safe, @anmi, @rella. A refreshing erotic Blue Archive style illustration of tiny Kazusa. Delicate petite girl with purple hair and glasses. She is in a casual cover-up. Tiny Kazusa lies on her stomach by the pool, short legs spread and tiny ass raised high, looking back with shy lewd inviting smile. Bright sunny lighting, blue archive style, niji_oil_eop, aesthetic boost, summery petite erotic contrast.@cunnyfunky，kazusa (blue archive), blue archive, 1girl, cat ears, extra ears, red eyes, pink eyes, black hair, pink hair, short hair, colored inner hair, two-tone hair, hairclip, black jacket, pleated skirt, white skirt, halo, pink halo, black choker, long sleeves, ",
+      "mode": "populate",
+      "seed": [
+        "37",
+        0
+      ],
+      "Select to add Wildcard": "Select the Wildcard to add to the text"
+    },
+    "class_type": "ImpactWildcardProcessor",
+    "_meta": {
+      "title": "POSITIVE"
+    }
+  },
+  "4": {
+    "inputs": {
+      "wildcard_text": "worst quality, low quality, lowres, score_1, score_2, score_3, blurry, jpeg artifacts, bad anatomy, watermark, artist name,",
+      "populated_text": "worst quality, low quality, lowres, score_1, score_2, score_3, blurry, jpeg artifacts, bad anatomy, watermark, artist name,",
+      "mode": "populate",
+      "seed": [
+        "37",
+        0
+      ],
+      "Select to add Wildcard": "Select the Wildcard to add to the text"
+    },
+    "class_type": "ImpactWildcardProcessor",
+    "_meta": {
+      "title": "NEGATIVE"
+    }
+  },
+  "5": {
+    "inputs": {
+      "seed": [
+        "37",
+        0
+      ],
+      "steps": [
+        "39",
+        0
+      ],
+      "cfg": [
+        "41",
+        0
+      ],
+      "sampler_name": "er_sde",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "2",
+        0
+      ],
+      "positive": [
+        "42",
+        0
+      ],
+      "negative": [
+        "45",
+        0
+      ],
+      "latent_image": [
+        "47",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "6": {
+    "inputs": {
+      "model_name": "bbox/face_yolov9c.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Default DetectorProvider"
+    }
+  },
+  "7": {
+    "inputs": {
+      "model_name": "sam_vit_b_01ec64.pth",
+      "device_mode": "AUTO"
+    },
+    "class_type": "SAMLoader",
+    "_meta": {
+      "title": "SAMLoader (Impact)"
+    }
+  },
+  "12": {
+    "inputs": {
+      "filename_prefix": "Anima",
+      "images": [
+        "51",
+        1
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "17": {
+    "inputs": {
+      "clip_name": "qwen_3_06b_base.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "18": {
+    "inputs": {
+      "wildcard": "",
+      "Select to add LoRA": "Select the LoRA to add to the text",
+      "Select to add Wildcard": "Select the Wildcard to add to the text",
+      "model": [
+        "26",
+        0
+      ],
+      "clip": [
+        "2",
+        1
+      ],
+      "vae": [
+        "22",
+        0
+      ],
+      "positive": [
+        "42",
+        0
+      ],
+      "negative": [
+        "45",
+        0
+      ],
+      "bbox_detector": [
+        "6",
+        0
+      ],
+      "sam_model_opt": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "ToDetailerPipe",
+    "_meta": {
+      "title": "ToDetailerPipe"
+    }
+  },
+  "22": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "23": {
+    "inputs": {
+      "value": 832
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Width"
+    }
+  },
+  "26": {
+    "inputs": {
+      "strength": 1,
+      "model": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "DifferentialDiffusion",
+    "_meta": {
+      "title": "差异扩散DifferentialDiffusion"
+    }
+  },
+  "31": {
+    "inputs": {
+      "value": 1216
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Height"
+    }
+  },
+  "35": {
+    "inputs": {
+      "value": 1
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Batch Size"
+    }
+  },
+  "36": {
+    "inputs": {
+      "value": 1536
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Max Size"
+    }
+  },
+  "37": {
+    "inputs": {
+      "seed": -1
+    },
+    "class_type": "Seed (rgthree)",
+    "_meta": {
+      "title": "Seed (rgthree)"
+    }
+  },
+  "39": {
+    "inputs": {
+      "value": 30
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Steps"
+    }
+  },
+  "40": {
+    "inputs": {
+      "value": 512
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Guide Size"
+    }
+  },
+  "41": {
+    "inputs": {
+      "value": 4
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "CFG"
+    }
+  },
+  "42": {
+    "inputs": {
+      "text": [
+        "3",
+        0
+      ],
+      "clip": [
+        "2",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "44": {
+    "inputs": {
+      "value": 2.5
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "BBOX Crop Factor"
+    }
+  },
+  "45": {
+    "inputs": {
+      "text": [
+        "4",
+        0
+      ],
+      "clip": [
+        "2",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "46": {
+    "inputs": {
+      "width": [
+        "23",
+        0
+      ],
+      "height": [
+        "31",
+        0
+      ],
+      "batch_size": [
+        "35",
+        0
+      ]
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "47": {
+    "inputs": {
+      "select": 1,
+      "sel_mode": false,
+      "input1": [
+        "46",
+        0
+      ]
+    },
+    "class_type": "ImpactSwitch",
+    "_meta": {
+      "title": "Switch (Any)"
+    }
+  },
+  "48": {
+    "inputs": {
+      "samples": [
+        "5",
+        0
+      ],
+      "vae": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "50": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Tiled Detailer"
+    }
+  },
+  "51": {
+    "inputs": {
+      "model_name": "4x_foolhardy_Remacri.pth",
+      "rescale_after_model": true,
+      "rescale_method": "lanczos",
+      "rescale": "by percentage",
+      "percent": 45,
+      "width": 1024,
+      "height": 1024,
+      "longer_side": 1024,
+      "crop": "disabled",
+      "image_output": "Hide",
+      "link_id": 0,
+      "save_prefix": "ComfyUI",
+      "image": [
+        "48",
+        0
+      ],
+      "vae": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "easy hiresFix",
+    "_meta": {
+      "title": "高清修复"
+    }
+  }
+}
