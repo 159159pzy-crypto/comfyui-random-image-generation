@@ -146,39 +146,97 @@ class CatalogTests(unittest.TestCase):
             "items": [{"id": "custom:legacy", "section": "pose", "title": "Wave", "prompt": "waving"}],
         }), encoding="utf-8")
         store = CustomPromptStore(path, self.catalog)
-        group = store.create_group("pose", {"name": "Hands"})["group"]
-        store.update("custom:legacy", {"groupIds": [group["id"]]})
-        self.assertEqual(store.list_groups("pose")["groups"][0]["count"], 1)
+        legacy_group = store.create_group("pose", {"name": "Legacy"})["group"]
+        target_group = store.create_group("pose", {"name": "Batch"})["group"]
+        store.update("custom:legacy", {"groupIds": [legacy_group["id"]]})
+        self.assertEqual(
+            {value["name"]: value["count"] for value in store.list_groups("pose")["groups"]},
+            {"Legacy": 1, "Batch": 0},
+        )
         preview = store.preview_import("json", json.dumps({"items": [
             {"section": "pose", "title": "Wave", "prompt": "waving hand", "groups": ["Hands", "Daily"]},
-        ]}))
+        ]}), "pose")
         self.assertEqual(preview["summary"], {"new": 0, "conflict": 1, "error": 0})
         preview["rows"][0]["action"] = "overwrite"
-        result = store.commit_import(preview["rows"])
+        result = store.commit_import(preview["rows"], "pose", [target_group["id"]])
         self.assertEqual(result["updated"], 1)
         self.assertEqual(store.list("pose")[0]["id"], "custom:legacy")
         self.assertEqual(store.list("pose")[0]["prompt"], "waving hand")
-        self.assertEqual({value["name"] for value in store.list_groups("pose")["groups"]}, {"Hands", "Daily"})
+        groups = store.list_groups("pose")["groups"]
+        self.assertEqual({value["name"] for value in groups}, {"Legacy", "Hands", "Batch", "Daily"})
+        group_names = {value["id"]: value["name"] for value in groups}
+        self.assertEqual({group_names[value] for value in store.list("pose")[0]["groupIds"]}, {"Hands", "Batch", "Daily"})
+        self.assertEqual(next(value for value in groups if value["name"] == "Legacy")["count"], 0)
+
+    def test_templates_are_specific_to_each_section_and_format(self):
+        store = CustomPromptStore(self.root / "custom.json", self.catalog)
+        expected_titles = {
+            "character": "示例角色",
+            "clothing": "休闲连帽衫",
+            "pose": "站立挥手",
+            "background": "樱花街道",
+            "expression": "期待",
+        }
+        for section, title in expected_titles.items():
+            with self.subTest(section=section, format="json"):
+                filename, content_type, body = store.template(section, "json")
+                item = json.loads(body)["items"][0]
+                self.assertEqual(filename, f"custom-prompts-{section}-template.json")
+                self.assertEqual(content_type, "application/json")
+                self.assertEqual(item["section"], section)
+                self.assertEqual(item["title"], title)
+            with self.subTest(section=section, format="csv"):
+                filename, content_type, body = store.template(section, "csv")
+                text = body.decode("utf-8-sig")
+                self.assertEqual(filename, f"custom-prompts-{section}-template.csv")
+                self.assertEqual(content_type, "text/csv")
+                self.assertIn(f"{section},{title},", text)
 
     def test_import_rejects_duplicate_rows_and_tampered_builtin_overwrite(self):
         store = CustomPromptStore(self.root / "custom.json", self.catalog)
         preview = store.preview_import("json", json.dumps({"items": [
             {"section": "expression", "title": "My Mood", "prompt": "soft smile"},
             {"section": "expression", "title": "My Mood", "prompt": "angry face"},
-        ]}))
+        ]}), "expression")
         self.assertEqual(preview["summary"], {"new": 1, "conflict": 0, "error": 1})
         self.assertIn("重名", preview["rows"][1]["error"])
+
+        cross_section = store.preview_import("json", json.dumps({"items": [
+            {"section": "background", "title": "Wrong Pool", "prompt": "street"},
+        ]}), "expression")
+        self.assertEqual(cross_section["summary"], {"new": 0, "conflict": 0, "error": 1})
+        self.assertIn("当前池", cross_section["rows"][0]["error"])
+
+        with self.assertRaisesRegex(CatalogError, "不存在的分组"):
+            store.commit_import([{
+                "action": "create",
+                "item": {"section": "expression", "title": "New Mood", "prompt": "soft face"},
+            }], "expression", ["custom_group_missing"])
+        self.assertEqual(store.list("expression"), [])
+
+        pose_group = store.create_group("pose", {"name": "Pose Only"})["group"]
+        with self.assertRaisesRegex(CatalogError, "不存在的分组"):
+            store.commit_import([{
+                "action": "create",
+                "item": {"section": "expression", "title": "Cross Group", "prompt": "soft face"},
+            }], "expression", [pose_group["id"]])
+        with self.assertRaisesRegex(CatalogError, "当前池"):
+            store.commit_import([{
+                "action": "create",
+                "item": {"section": "pose", "title": "Tampered", "prompt": "waving"},
+            }], "expression")
+        self.assertEqual(store.list("expression"), [])
 
         with self.assertRaisesRegex(CatalogError, "内置条目不可覆盖"):
             store.commit_import([{
                 "action": "create",
                 "item": {"section": "expression", "title": "温柔微笑", "prompt": "tampered"},
-            }])
+            }], "expression")
         with self.assertRaisesRegex(CatalogError, "没有可覆盖"):
             store.commit_import([{
                 "action": "overwrite",
                 "item": {"section": "expression", "title": "Missing", "prompt": "missing"},
-            }])
+            }], "expression")
 
     def test_empty_pool_and_excess_count_are_rejected(self):
         settings = validate_settings({**DEFAULT_SETTINGS, "random_pose": True})

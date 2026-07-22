@@ -169,12 +169,13 @@
 
   <dialog id="importDialog" class="import-dialog">
     <form method="dialog">
-      <div class="dialog-heading"><div><span class="kicker">BATCH IMPORT</span><h2>批量导入自定义项</h2></div><button id="closeImport" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><div><span class="kicker">BATCH IMPORT</span><h2 id="importDialogTitle">批量导入自定义项</h2></div><button id="closeImport" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
       <div class="import-tools">
         <label class="button primary compact file-button" for="importFile">选择 JSON / CSV</label><input id="importFile" class="file-input" type="file" accept=".json,.csv,application/json,text/csv">
-        <a class="button ghost compact" href="/api/custom-prompts/templates/json" download>JSON 模板</a>
-        <a class="button ghost compact" href="/api/custom-prompts/templates/csv" download>CSV 模板</a>
+        <a id="importJsonTemplate" class="button ghost compact" href="/api/custom-prompts/templates/character/json" download>角色 JSON 模板</a>
+        <a id="importCsvTemplate" class="button ghost compact" href="/api/custom-prompts/templates/character/csv" download>角色 CSV 模板</a>
       </div>
+      <fieldset class="import-group-fieldset"><legend>加入已有分组（可多选）</legend><div id="importTargetGroups" class="import-target-groups"></div></fieldset>
       <p id="importHint" class="import-hint">选择文件后会先校验，不会立即写入。</p>
       <div id="importSummary" class="import-summary" hidden></div>
       <div id="importRows" class="import-rows"></div>

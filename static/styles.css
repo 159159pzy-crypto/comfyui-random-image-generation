@@ -230,6 +230,12 @@ dialog::backdrop { background: rgba(3,5,4,.75); backdrop-filter: blur(5px); }
 .import-dialog form, .artist-dialog form { padding: 24px; }
 .import-tools { display: flex; flex-wrap: wrap; gap: 8px; }
 .import-tools a { text-decoration: none; }
+.import-group-fieldset { margin: 14px 0 0; padding: 0; border: 0; }
+.import-group-fieldset legend { margin-bottom: 7px; padding: 0; color: var(--muted); font-size: 10px; }
+.import-target-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; max-height: 126px; overflow: auto; }
+.import-target-groups .favorite-group-check { min-width: 0; }
+.import-target-groups .favorite-group-check span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-target-groups .favorite-group-check small { margin-left: auto; color: var(--muted); white-space: nowrap; }
 .file-button { cursor: pointer; }
 .file-input { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .import-hint { margin: 11px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
@@ -310,6 +316,10 @@ dialog::backdrop { background: rgba(3,5,4,.75); backdrop-filter: blur(5px); }
   .pool-sidebar.mobile-open { transform: translateX(0); }
   .facet-section button { padding-inline: 6px; font-size: 9px; }
   .pool-grid { grid-template-columns: 1fr; padding-inline: 9px; }
+  .import-dialog form { padding: 18px 16px; }
+  .import-tools > * { flex: 1 1 calc(50% - 4px); justify-content: center; }
+  .import-tools .file-button { flex-basis: 100%; }
+  .import-target-groups { grid-template-columns: 1fr; max-height: 112px; }
   .import-row { grid-template-columns: 36px 62px minmax(0, 1fr) 92px; }
   .import-row small { display: none; }
   .pool-item { height: 94px; }
