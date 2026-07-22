@@ -228,7 +228,9 @@ def create_app(
         )
 
     async def custom_template(request: web.Request) -> web.Response:
-        filename, content_type, body = custom_prompts.template(request.match_info["format"])
+        filename, content_type, body = custom_prompts.template(
+            request.match_info["section"], request.match_info["format"]
+        )
         return web.Response(
             body=body,
             content_type=content_type,
@@ -238,12 +240,22 @@ def create_app(
     async def preview_custom_import(request: web.Request) -> web.Response:
         body = await _json_body(request)
         return web.json_response(
-            custom_prompts.preview_import(str(body.get("format") or ""), str(body.get("content") or ""))
+            custom_prompts.preview_import(
+                str(body.get("format") or ""),
+                str(body.get("content") or ""),
+                str(body.get("section") or ""),
+            )
         )
 
     async def commit_custom_import(request: web.Request) -> web.Response:
         body = await _json_body(request)
-        return web.json_response(custom_prompts.commit_import(body.get("rows")))
+        return web.json_response(
+            custom_prompts.commit_import(
+                body.get("rows"),
+                str(body.get("section") or ""),
+                body.get("targetGroupIds"),
+            )
+        )
 
     async def status(_: web.Request) -> web.Response:
         try:
@@ -315,7 +327,7 @@ def create_app(
     app.router.add_post("/api/custom-prompts", create_custom_prompt)
     app.router.add_put("/api/custom-prompts/{item_id}", update_custom_prompt)
     app.router.add_delete("/api/custom-prompts/{item_id}", delete_custom_prompt)
-    app.router.add_get("/api/custom-prompts/templates/{format}", custom_template)
+    app.router.add_get("/api/custom-prompts/templates/{section}/{format}", custom_template)
     app.router.add_post("/api/custom-prompts/import/preview", preview_custom_import)
     app.router.add_post("/api/custom-prompts/import", commit_custom_import)
     app.router.add_get("/api/custom-groups/{section}", list_custom_groups)

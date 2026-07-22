@@ -30,8 +30,8 @@ const ui = Object.fromEntries([
   "draftStatus", "resetSettings", "clearDraft", "favoriteDialog", "favoriteForm", "favoriteTitle", "favoriteGroups",
   "favoriteNickname", "removeFavorite", "closeFavorite", "cancelFavorite", "groupDialog", "groupForm", "groupDialogTitle",
   "groupId", "groupName", "deleteGroup", "closeGroup", "cancelGroup", "customGroupDialog", "customGroupForm", "customGroupDialogTitle",
-  "customGroupId", "customGroupName", "deleteCustomGroup", "closeCustomGroup", "cancelCustomGroup", "importDialog", "importFile",
-  "closeImport", "cancelImport", "importHint", "importSummary", "importRows", "commitImport", "artistDialog", "closeArtists",
+  "customGroupId", "customGroupName", "deleteCustomGroup", "closeCustomGroup", "cancelCustomGroup", "importDialog", "importDialogTitle", "importFile",
+  "importJsonTemplate", "importCsvTemplate", "importTargetGroups", "closeImport", "cancelImport", "importHint", "importSummary", "importRows", "commitImport", "artistDialog", "closeArtists",
   "cancelArtists", "saveCurrentArtists", "artistFavoriteList"
 ].map(id => [id, document.getElementById(id)]));
 
@@ -342,10 +342,91 @@ function openCustomGroupDialog(group = null) { ui.customGroupId.value = group?.i
 async function saveCustomGroup(event) { event.preventDefault(); const id = ui.customGroupId.value; try { const payload = await request(id ? `/api/custom-groups/${activeSection}/${encodeURIComponent(id)}` : `/api/custom-groups/${activeSection}`, { method: id ? "PUT" : "POST", body: JSON.stringify({ name: ui.customGroupName.value }) }); customGroups = payload.groups || []; ui.customGroupDialog.close(); renderPoolSidebar(); toast(id ? "自定义分组已更新" : "自定义分组已创建"); } catch (error) { toast(error.message); } }
 async function removeCustomGroup() { const id = ui.customGroupId.value; if (!id || !confirm("删除这个自定义分组？条目不会被删除。")) return; try { const payload = await request(`/api/custom-groups/${activeSection}/${encodeURIComponent(id)}`, { method: "DELETE" }); customGroups = payload.groups || []; if (currentView().filters.customGroup === id) currentView().filters.customGroup = ""; ui.customGroupDialog.close(); await loadPool(); toast("自定义分组已删除"); } catch (error) { toast(error.message); } }
 
-function openImportDialog() { importPreview = null; ui.importFile.value = ""; ui.importHint.textContent = "选择文件后会先校验，不会立即写入。"; ui.importSummary.hidden = true; ui.importRows.replaceChildren(); ui.commitImport.disabled = true; ui.importDialog.showModal(); }
-async function previewImportFile() { const file = ui.importFile.files?.[0]; if (!file) return; const format = file.name.toLowerCase().endsWith(".csv") ? "csv" : file.name.toLowerCase().endsWith(".json") ? "json" : ""; if (!format) { toast("只支持 JSON 或 CSV 文件"); return; } ui.importHint.textContent = `正在校验 ${file.name}`; try { importPreview = await request("/api/custom-prompts/import/preview", { method: "POST", body: JSON.stringify({ format, content: await file.text() }) }); renderImportPreview(file.name); } catch (error) { importPreview = null; ui.commitImport.disabled = true; ui.importHint.textContent = error.message; toast(error.message); } }
-function renderImportPreview(filename) { const summary = importPreview.summary || {}; ui.importHint.textContent = `${filename} · 已完成校验`; ui.importSummary.hidden = false; ui.importSummary.innerHTML = `<span>新增 ${summary.new || 0}</span><span>冲突 ${summary.conflict || 0}</span><span>错误 ${summary.error || 0}</span>`; const labels = { new: "新增", conflict: "冲突", error: "错误" }; ui.importRows.replaceChildren(...importPreview.rows.map((row, index) => { const element = document.createElement("div"); element.className = "import-row"; element.dataset.status = row.status; const title = row.item?.title || "无法读取"; const section = SECTION_META[row.item?.section]?.label || row.item?.section || "-"; element.innerHTML = `<span>#${row.row}</span><span class="import-status">${labels[row.status]}</span><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><small title="${escapeHtml(row.error || (row.groups || []).join("、"))}">${escapeHtml(row.error || (row.groups || []).join("、") || section)}</small><select aria-label="导入操作" ${row.status === "error" ? "disabled" : ""}>${row.status === "new" ? '<option value="create">导入</option><option value="skip">跳过</option>' : row.status === "conflict" ? '<option value="skip">跳过</option><option value="overwrite">覆盖</option>' : '<option value="skip">跳过</option>'}</select>`; const select = element.querySelector("select"); select.value = row.action; select.addEventListener("change", () => importPreview.rows[index].action = select.value); return element; })); ui.commitImport.disabled = !importPreview.rows.some(row => row.status !== "error"); }
-async function commitCustomImport() { if (!importPreview) return; ui.commitImport.disabled = true; try { const result = await request("/api/custom-prompts/import", { method: "POST", body: JSON.stringify({ rows: importPreview.rows }) }); ui.importDialog.close(); await loadCustomGroups(); await loadPool(); renderDimensions(); toast(`导入完成：新增 ${result.imported}，更新 ${result.updated}，跳过 ${result.skipped}`); } catch (error) { ui.commitImport.disabled = false; toast(error.message); } }
+function selectedImportGroupIds() { return [...ui.importTargetGroups.querySelectorAll("input:checked")].map(input => input.value); }
+function selectedImportGroupNames() { const selected = new Set(selectedImportGroupIds()); return customGroups.filter(group => selected.has(group.id)).map(group => group.name); }
+function mergedImportGroupNames(row) { const values = [...(row.groups || []), ...selectedImportGroupNames()]; const seen = new Set(); return values.filter(value => { const key = String(value).trim().toLowerCase(); if (!key || seen.has(key)) return false; seen.add(key); return true; }); }
+function renderImportTargetGroups() {
+  if (!customGroups.length) {
+    ui.importTargetGroups.innerHTML = '<div class="inline-empty">当前池暂无自定义分组，请先在池侧栏新建。</div>';
+    return;
+  }
+  ui.importTargetGroups.replaceChildren(...customGroups.map(group => {
+    const label = document.createElement("label");
+    label.className = "favorite-group-check";
+    label.innerHTML = `<input type="checkbox" value="${escapeHtml(group.id)}"><span>${escapeHtml(group.name)}</span><small>${group.count || 0} 项</small>`;
+    label.querySelector("input").addEventListener("change", () => { if (importPreview) renderImportPreview(); });
+    return label;
+  }));
+}
+function openImportDialog() {
+  importPreview = null;
+  const label = SECTION_META[activeSection].label;
+  ui.importDialogTitle.textContent = `${label}池批量导入`;
+  ui.importJsonTemplate.href = `/api/custom-prompts/templates/${activeSection}/json`;
+  ui.importJsonTemplate.textContent = `${label} JSON 模板`;
+  ui.importCsvTemplate.href = `/api/custom-prompts/templates/${activeSection}/csv`;
+  ui.importCsvTemplate.textContent = `${label} CSV 模板`;
+  ui.importFile.value = "";
+  ui.importHint.textContent = `仅导入${label}池条目；选择文件后会先校验，不会立即写入。`;
+  ui.importSummary.hidden = true;
+  ui.importRows.replaceChildren();
+  ui.commitImport.disabled = true;
+  renderImportTargetGroups();
+  ui.importDialog.showModal();
+}
+async function previewImportFile() {
+  const file = ui.importFile.files?.[0];
+  if (!file) return;
+  const format = file.name.toLowerCase().endsWith(".csv") ? "csv" : file.name.toLowerCase().endsWith(".json") ? "json" : "";
+  if (!format) { toast("只支持 JSON 或 CSV 文件"); return; }
+  ui.importHint.textContent = `正在校验 ${file.name}`;
+  try {
+    importPreview = await request("/api/custom-prompts/import/preview", { method: "POST", body: JSON.stringify({ format, content: await file.text(), section: activeSection }) });
+    importPreview.filename = file.name;
+    renderImportPreview();
+  } catch (error) {
+    importPreview = null;
+    ui.commitImport.disabled = true;
+    ui.importHint.textContent = error.message;
+    toast(error.message);
+  }
+}
+function renderImportPreview() {
+  const summary = importPreview.summary || {};
+  ui.importHint.textContent = `${importPreview.filename} · 已完成校验`;
+  ui.importSummary.hidden = false;
+  ui.importSummary.innerHTML = `<span>新增 ${summary.new || 0}</span><span>冲突 ${summary.conflict || 0}</span><span>错误 ${summary.error || 0}</span>`;
+  const labels = { new: "新增", conflict: "冲突", error: "错误" };
+  ui.importRows.replaceChildren(...importPreview.rows.map((row, index) => {
+    const element = document.createElement("div");
+    element.className = "import-row";
+    element.dataset.status = row.status;
+    const title = row.item?.title || "无法读取";
+    const groupNames = mergedImportGroupNames(row);
+    const detail = row.error || (row.action === "skip" ? "不导入" : groupNames.join("、") || "未指定分组");
+    element.innerHTML = `<span>#${row.row}</span><span class="import-status">${labels[row.status]}</span><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small><select aria-label="导入操作" ${row.status === "error" ? "disabled" : ""}>${row.status === "new" ? '<option value="create">导入</option><option value="skip">跳过</option>' : row.status === "conflict" ? '<option value="skip">跳过</option><option value="overwrite">覆盖</option>' : '<option value="skip">跳过</option>'}</select>`;
+    const select = element.querySelector("select");
+    select.value = row.action;
+    select.addEventListener("change", () => { importPreview.rows[index].action = select.value; renderImportPreview(); });
+    return element;
+  }));
+  ui.commitImport.disabled = !importPreview.rows.some(row => row.status !== "error" && row.action !== "skip");
+}
+async function commitCustomImport() {
+  if (!importPreview) return;
+  ui.commitImport.disabled = true;
+  try {
+    const result = await request("/api/custom-prompts/import", { method: "POST", body: JSON.stringify({ rows: importPreview.rows, section: activeSection, targetGroupIds: selectedImportGroupIds() }) });
+    ui.importDialog.close();
+    await loadCustomGroups();
+    await loadPool();
+    renderDimensions();
+    toast(`导入完成：新增 ${result.imported}，更新 ${result.updated}，跳过 ${result.skipped}`);
+  } catch (error) {
+    ui.commitImport.disabled = false;
+    toast(error.message);
+  }
+}
 
 function artistName(value) { let name = String(value || "").trim(); if (name.startsWith("@")) name = name.slice(1).trim(); else if (name.toLowerCase().startsWith("by ")) name = name.slice(3).trim(); return name; }
 function artistTokens() { return ui.manual_artist.value.split(",").map(artistName).filter(Boolean); }

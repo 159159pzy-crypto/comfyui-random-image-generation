@@ -1,4 +1,5 @@
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -134,23 +135,60 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.server.app["comfy"].favorites_data["pose"]["items"], [])
 
     async def test_custom_group_templates_and_import_flow(self):
-        template = await self.client.get("/api/custom-prompts/templates/csv")
-        self.assertEqual(template.status, 200)
-        self.assertIn("section,title,prompt", (await template.text()).lstrip("\ufeff"))
+        expected_titles = {
+            "character": "示例角色",
+            "clothing": "休闲连帽衫",
+            "pose": "站立挥手",
+            "background": "樱花街道",
+            "expression": "期待",
+        }
+        for section, title in expected_titles.items():
+            template = await self.client.get(f"/api/custom-prompts/templates/{section}/json")
+            self.assertEqual(template.status, 200)
+            self.assertIn(f"custom-prompts-{section}-template.json", template.headers["Content-Disposition"])
+            item = json.loads(await template.text())["items"][0]
+            self.assertEqual(item["section"], section)
+            self.assertEqual(item["title"], title)
+        csv_template = await self.client.get("/api/custom-prompts/templates/pose/csv")
+        self.assertEqual(csv_template.status, 200)
+        self.assertIn("section,title,prompt", (await csv_template.text()).lstrip("\ufeff"))
+
         group_response = await self.client.post("/api/custom-groups/expression", json={"name": "Mood"})
         self.assertEqual(group_response.status, 201)
+        target_group_response = await self.client.post("/api/custom-groups/expression", json={"name": "Imported"})
+        self.assertEqual(target_group_response.status, 201)
+        target_group_id = (await target_group_response.json())["group"]["id"]
         preview_response = await self.client.post(
             "/api/custom-prompts/import/preview",
-            json={"format": "json", "content": '{"items":[{"section":"expression","title":"Calm","prompt":"calm face","groups":["Mood"]}]}'},
+            json={"format": "json", "section": "expression", "content": '{"items":[{"section":"expression","title":"Calm","prompt":"calm face","groups":["Mood"]}]}'},
         )
         self.assertEqual(preview_response.status, 200)
         preview = await preview_response.json()
         self.assertEqual(preview["summary"]["new"], 1)
-        committed = await self.client.post("/api/custom-prompts/import", json={"rows": preview["rows"]})
+        committed = await self.client.post("/api/custom-prompts/import", json={
+            "rows": preview["rows"], "section": "expression", "targetGroupIds": [target_group_id],
+        })
         self.assertEqual(committed.status, 200)
         self.assertEqual((await committed.json())["imported"], 1)
         pool = await (await self.client.get("/api/pools/expression?q=Calm")).json()
         self.assertEqual(pool["items"][0]["title"], "Calm")
+        group_counts = {item["name"]: item["count"] for item in (await (await self.client.get("/api/custom-groups/expression")).json())["groups"]}
+        self.assertEqual(group_counts, {"Mood": 1, "Imported": 1})
+
+        mixed_preview = await self.client.post(
+            "/api/custom-prompts/import/preview",
+            json={"format": "json", "section": "expression", "content": '{"items":[{"section":"pose","title":"Wave","prompt":"waving"}]}'},
+        )
+        self.assertEqual(mixed_preview.status, 200)
+        self.assertEqual((await mixed_preview.json())["summary"]["error"], 1)
+
+        invalid_target = await self.client.post("/api/custom-prompts/import", json={
+            "rows": [{"action": "create", "item": {"section": "expression", "title": "Unsafe", "prompt": "unsafe"}}],
+            "section": "expression", "targetGroupIds": ["custom_group_missing"],
+        })
+        self.assertEqual(invalid_target.status, 400)
+        unsafe_pool = await (await self.client.get("/api/pools/expression?q=Unsafe")).json()
+        self.assertEqual(unsafe_pool["total"], 0)
 
     async def test_missing_lora_returns_clear_error(self):
         settings = {

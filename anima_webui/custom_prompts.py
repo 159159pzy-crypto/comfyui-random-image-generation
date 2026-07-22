@@ -19,6 +19,38 @@ IMPORT_FIELDS = (
     "section", "title", "prompt", "subtitle", "gender", "hair", "eye",
     "copyright", "groups", "categories", "traits",
 )
+TEMPLATE_EXAMPLES = {
+    "character": {
+        "title": "示例角色", "prompt": "1girl, silver hair, blue eyes, looking at viewer",
+        "subtitle": "角色模板示例", "gender": "female", "hair": "silver",
+        "eye": "blue", "copyright": "原创角色", "groups": ["常用角色"],
+        "categories": ["女性角色"], "traits": ["looking at viewer"],
+    },
+    "clothing": {
+        "title": "休闲连帽衫", "prompt": "oversized hoodie, pleated skirt, casual outfit",
+        "subtitle": "服装模板示例", "gender": "unknown", "hair": "", "eye": "",
+        "copyright": "", "groups": ["日常服装"], "categories": ["casual"],
+        "traits": ["hoodie", "pleated skirt"],
+    },
+    "pose": {
+        "title": "站立挥手", "prompt": "standing, waving, one hand raised",
+        "subtitle": "姿势模板示例", "gender": "unknown", "hair": "", "eye": "",
+        "copyright": "", "groups": ["常用姿势"], "categories": ["Standing & Dynamic"],
+        "traits": ["waving", "hand raised"],
+    },
+    "background": {
+        "title": "樱花街道", "prompt": "cherry blossom street, spring daylight, soft bokeh",
+        "subtitle": "背景模板示例", "gender": "unknown", "hair": "", "eye": "",
+        "copyright": "", "groups": ["户外背景"], "categories": ["outdoor"],
+        "traits": ["cherry blossoms", "street"],
+    },
+    "expression": {
+        "title": "期待", "prompt": "expectant, sparkling eyes",
+        "subtitle": "表情模板示例", "gender": "unknown", "hair": "", "eye": "",
+        "copyright": "", "groups": ["常用表情"], "categories": ["愉悦"],
+        "traits": ["sparkling eyes"],
+    },
+}
 
 
 class CustomPromptStore:
@@ -129,24 +161,28 @@ class CustomPromptStore:
         self.catalog.set_custom_items(self.items)
         return self.list_groups(section)
 
-    def template(self, file_format: str) -> tuple[str, str, bytes]:
-        example = {
-            "section": "expression", "title": "期待", "prompt": "expectant, sparkling eyes",
-            "subtitle": "示例条目", "gender": "unknown", "hair": "", "eye": "",
-            "copyright": "", "groups": ["常用表情"], "categories": ["愉悦"], "traits": ["sparkling eyes"],
-        }
+    def template(self, section: str, file_format: str) -> tuple[str, str, bytes]:
+        self._check_section(section)
+        example = {"section": section, **copy.deepcopy(TEMPLATE_EXAMPLES[section])}
+        filename = f"custom-prompts-{section}-template"
         if file_format == "json":
             body = json.dumps({"version": 1, "items": [example]}, ensure_ascii=False, indent=2) + "\n"
-            return "custom-prompts-template.json", "application/json", body.encode("utf-8")
+            return f"{filename}.json", "application/json", body.encode("utf-8")
         if file_format == "csv":
             buffer = io.StringIO(newline="")
             writer = csv.DictWriter(buffer, fieldnames=IMPORT_FIELDS)
             writer.writeheader()
-            writer.writerow({**example, "groups": "常用表情", "categories": "愉悦", "traits": "sparkling eyes"})
-            return "custom-prompts-template.csv", "text/csv", ("\ufeff" + buffer.getvalue()).encode("utf-8")
+            writer.writerow({
+                **example,
+                "groups": "|".join(example["groups"]),
+                "categories": "|".join(example["categories"]),
+                "traits": "|".join(example["traits"]),
+            })
+            return f"{filename}.csv", "text/csv", ("\ufeff" + buffer.getvalue()).encode("utf-8")
         raise CatalogError("导入模板只支持 json 或 csv")
 
-    def preview_import(self, file_format: str, content: str) -> dict[str, Any]:
+    def preview_import(self, file_format: str, content: str, section: str) -> dict[str, Any]:
+        self._check_section(section)
         raw_items = self._parse_import(file_format, content)
         if len(raw_items) > MAX_IMPORT_ROWS:
             raise CatalogError(f"单次最多导入 {MAX_IMPORT_ROWS} 项")
@@ -161,6 +197,8 @@ class CustomPromptStore:
         for row_number, raw in enumerate(raw_items, 2 if file_format == "csv" else 1):
             try:
                 prepared, group_names = self._prepare_import_item(raw)
+                if prepared["section"] != section:
+                    raise CatalogError("导入文件包含其他随机池条目，只能导入当前池")
                 key = (prepared["section"], normalize_text(prepared["title"]))
                 if key in builtin_names:
                     raise CatalogError("名称与内置条目冲突，内置条目不可覆盖")
@@ -184,9 +222,16 @@ class CustomPromptStore:
             "newGroups": {section: sorted(values) for section, values in pending_names.items() if values},
         }
 
-    def commit_import(self, rows: Any) -> dict[str, Any]:
+    def commit_import(self, rows: Any, section: str, target_group_ids: Any = None) -> dict[str, Any]:
+        self._check_section(section)
         if not isinstance(rows, list) or len(rows) > MAX_IMPORT_ROWS:
             raise CatalogError("导入确认数据无效")
+        if target_group_ids is None:
+            target_group_ids = []
+        if not isinstance(target_group_ids, list) or any(not isinstance(value, str) for value in target_group_ids):
+            raise CatalogError("目标分组必须是数组")
+        target_group_ids = list(dict.fromkeys(value.strip() for value in target_group_ids if value.strip()))
+        self._validate_group_ids(section, target_group_ids)
         next_items = copy.deepcopy(self.items)
         next_groups = copy.deepcopy(self.groups)
         imported = updated = skipped = 0
@@ -204,10 +249,11 @@ class CustomPromptStore:
             if action not in {"create", "overwrite"}:
                 raise CatalogError("导入操作无效")
             prepared, embedded_group_names = self._prepare_import_item(raw_row.get("item") or {})
+            if prepared["section"] != section:
+                raise CatalogError("导入文件包含其他随机池条目，只能导入当前池")
             group_names = self._list_value(raw_row.get("groups")) or embedded_group_names
             group_names = [self._group_name(value) for value in group_names]
-            section = prepared["section"]
-            group_ids: list[str] = []
+            group_ids: list[str] = list(target_group_ids)
             for name in group_names:
                 group = next((item for item in next_groups[section] if normalize_text(item["name"]) == normalize_text(name)), None)
                 if group is None:
@@ -215,7 +261,8 @@ class CustomPromptStore:
                         raise CatalogError(f"{section} 自定义分组数量已达到上限")
                     group = {"id": f"custom_group_{uuid.uuid4().hex[:12]}", "name": name}
                     next_groups[section].append(group)
-                group_ids.append(group["id"])
+                if group["id"] not in group_ids:
+                    group_ids.append(group["id"])
             key = (section, normalize_text(prepared["title"]))
             if key in builtin_names:
                 raise CatalogError("名称与内置条目冲突，内置条目不可覆盖")
