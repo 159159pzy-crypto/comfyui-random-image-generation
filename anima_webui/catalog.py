@@ -8,13 +8,31 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SECTIONS = ("character", "clothing", "pose", "background")
+SECTIONS = ("character", "clothing", "pose", "background", "expression")
 DATA_FILES = {
     "character": "character_data.js",
     "clothing": "clothing_data.js",
     "pose": "pose_data.js",
     "background": "background_data.js",
 }
+EXPRESSION_DATA = [
+    {"id": "gentle-smile", "name": "Gentle Smile", "name_zh": "温柔微笑", "tags": "gentle smile, relaxed expression", "categories": ["愉悦"], "traits": ["smile", "relaxed"]},
+    {"id": "bright-smile", "name": "Bright Smile", "name_zh": "灿烂笑容", "tags": "bright smile, open mouth, happy", "categories": ["愉悦"], "traits": ["smile", "happy"]},
+    {"id": "laughing", "name": "Laughing", "name_zh": "开心大笑", "tags": "laughing, closed eyes, open mouth", "categories": ["愉悦"], "traits": ["laughing", "closed eyes"]},
+    {"id": "shy", "name": "Shy", "name_zh": "害羞", "tags": "shy, blush, looking away", "categories": ["羞涩"], "traits": ["blush", "looking away"]},
+    {"id": "embarrassed", "name": "Embarrassed", "name_zh": "窘迫", "tags": "embarrassed, deep blush, nervous smile", "categories": ["羞涩"], "traits": ["blush", "nervous"]},
+    {"id": "sad", "name": "Sad", "name_zh": "悲伤", "tags": "sad, downcast eyes, frown", "categories": ["悲伤"], "traits": ["frown", "downcast eyes"]},
+    {"id": "crying", "name": "Crying", "name_zh": "哭泣", "tags": "crying, tears, trembling lips", "categories": ["悲伤"], "traits": ["tears", "crying"]},
+    {"id": "angry", "name": "Angry", "name_zh": "生气", "tags": "angry, furrowed brow, glaring", "categories": ["愤怒"], "traits": ["glaring", "furrowed brow"]},
+    {"id": "annoyed", "name": "Annoyed", "name_zh": "不耐烦", "tags": "annoyed, half-closed eyes, pout", "categories": ["愤怒"], "traits": ["pout", "half-closed eyes"]},
+    {"id": "surprised", "name": "Surprised", "name_zh": "惊讶", "tags": "surprised, wide eyes, open mouth", "categories": ["惊讶"], "traits": ["wide eyes", "open mouth"]},
+    {"id": "shocked", "name": "Shocked", "name_zh": "震惊", "tags": "shocked, pupils dilated, aghast", "categories": ["惊讶"], "traits": ["wide eyes", "aghast"]},
+    {"id": "nervous", "name": "Nervous", "name_zh": "紧张", "tags": "nervous, sweatdrop, uneasy smile", "categories": ["紧张"], "traits": ["sweatdrop", "uneasy"]},
+    {"id": "determined", "name": "Determined", "name_zh": "坚定", "tags": "determined expression, focused eyes", "categories": ["坚定"], "traits": ["focused", "serious"]},
+    {"id": "smug", "name": "Smug", "name_zh": "得意", "tags": "smug, smirk, half-closed eyes", "categories": ["个性"], "traits": ["smirk", "half-closed eyes"]},
+    {"id": "playful", "name": "Playful", "name_zh": "俏皮", "tags": "playful expression, wink, tongue out", "categories": ["个性"], "traits": ["wink", "tongue out"]},
+    {"id": "neutral", "name": "Neutral", "name_zh": "平静", "tags": "neutral expression, relaxed face", "categories": ["平静"], "traits": ["neutral", "relaxed"]},
+]
 PERSON_TAGS = {
     "1girl", "2girls", "3girls", "4girls", "5girls", "multiple girls",
     "1boy", "2boys", "3boys", "4boys", "5boys", "multiple boys",
@@ -53,6 +71,7 @@ ANIMA_CATEGORY_ORDER = {
     "background": [
         "Nature & Outdoors", "Urban & Daily", "Fantasy & Sci-Fi", "Minimalist & Abstract",
     ],
+    "expression": ["愉悦", "羞涩", "悲伤", "愤怒", "惊讶", "紧张", "坚定", "个性", "平静"],
 }
 
 
@@ -168,7 +187,10 @@ class PromptCatalog:
         self._items = {section: [] for section in SECTIONS}
         self._by_id = {}
         self._official = {}
+        self._items["expression"] = [self._to_entry("expression", item) for item in EXPRESSION_DATA]
+        self._items["expression"] = [item for item in self._items["expression"] if item]
         if not self.tools_dir:
+            self._by_id.update({item["id"]: item for item in self._items["expression"]})
             return
         js_dir = self.tools_dir / "js"
         official_path = js_dir / "character_official_data.json"
@@ -278,6 +300,7 @@ class PromptCatalog:
             "preview": str(item.get("preview") or ""),
             "source": "自定义",
             "builtin": False,
+            "group_ids": list(item.get("groupIds") or []),
         }
         if section == "pose":
             entry["conflict_slots"] = pose_conflict_slots(entry)
@@ -304,6 +327,7 @@ class PromptCatalog:
         hair: str = "",
         eye: str = "",
         series: str = "",
+        custom_group: str = "",
         favorite_keys: set[str] | None = None,
         favorites_only: bool = False,
         sort: str = "",
@@ -315,6 +339,8 @@ class PromptCatalog:
         category_values = list(categories or ([] if not category else ([category] if isinstance(category, str) else category)))
         trait_values = [normalize_text(value) for value in (traits or []) if normalize_text(value)]
         entries = self._items[section]
+        if custom_group:
+            entries = [item for item in entries if not item.get("builtin") and custom_group in (item.get("group_ids") or [])]
         query_text = normalize_text(query)
         if query_text:
             entries = [item for item in entries if query_text in normalize_text(" ".join([
@@ -449,6 +475,12 @@ class PromptCatalog:
         strip_people = bool(composer_parts)
         for section in SECTIONS:
             if not settings.get(f"random_{section}"):
+                if section == "expression":
+                    for part in split_prompt(settings.get("fixed_expression")):
+                        key = normalize_text(part)
+                        if key and key not in seen:
+                            seen.add(key)
+                            composer_parts.append(part)
                 continue
             entries = self.resolve_selection(
                 section,
@@ -506,6 +538,7 @@ class PromptCatalog:
             "id", "raw_id", "favorite_key", "section", "title", "subtitle", "prompt", "gender",
             "hair", "eye", "copyright", "post_count", "preview", "categories", "traits",
             "conflict_slots", "source", "builtin",
+            "group_ids",
         )
         result = {key: item.get(key) for key in keys}
         result["tags"] = item.get("tags") or []

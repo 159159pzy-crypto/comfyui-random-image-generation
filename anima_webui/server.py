@@ -121,6 +121,7 @@ def create_app(
             hair=request.query.get("hair", ""),
             eye=request.query.get("eye", ""),
             series=request.query.get("series", ""),
+            custom_group=request.query.get("custom_group", ""),
             favorite_keys=keys,
             favorites_only=bool(collection),
             sort=sort,
@@ -149,6 +150,7 @@ def create_app(
             hair=str(body.get("hair") or ""),
             eye=str(body.get("eye") or ""),
             series=str(body.get("series") or ""),
+            custom_group=str(body.get("custom_group") or ""),
             favorite_keys=keys,
             favorites_only=bool(collection),
             sort=sort,
@@ -203,6 +205,45 @@ def create_app(
         if not custom_prompts.delete(request.match_info["item_id"]):
             raise KeyError(request.match_info["item_id"])
         return web.json_response({"deleted": True})
+
+    async def list_custom_groups(request: web.Request) -> web.Response:
+        return web.json_response(custom_prompts.list_groups(request.match_info["section"]))
+
+    async def create_custom_group(request: web.Request) -> web.Response:
+        return web.json_response(
+            custom_prompts.create_group(request.match_info["section"], await _json_body(request)),
+            status=201,
+        )
+
+    async def update_custom_group(request: web.Request) -> web.Response:
+        return web.json_response(
+            custom_prompts.update_group(
+                request.match_info["section"], request.match_info["group_id"], await _json_body(request)
+            )
+        )
+
+    async def delete_custom_group(request: web.Request) -> web.Response:
+        return web.json_response(
+            custom_prompts.delete_group(request.match_info["section"], request.match_info["group_id"])
+        )
+
+    async def custom_template(request: web.Request) -> web.Response:
+        filename, content_type, body = custom_prompts.template(request.match_info["format"])
+        return web.Response(
+            body=body,
+            content_type=content_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    async def preview_custom_import(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        return web.json_response(
+            custom_prompts.preview_import(str(body.get("format") or ""), str(body.get("content") or ""))
+        )
+
+    async def commit_custom_import(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        return web.json_response(custom_prompts.commit_import(body.get("rows")))
 
     async def status(_: web.Request) -> web.Response:
         try:
@@ -274,6 +315,13 @@ def create_app(
     app.router.add_post("/api/custom-prompts", create_custom_prompt)
     app.router.add_put("/api/custom-prompts/{item_id}", update_custom_prompt)
     app.router.add_delete("/api/custom-prompts/{item_id}", delete_custom_prompt)
+    app.router.add_get("/api/custom-prompts/templates/{format}", custom_template)
+    app.router.add_post("/api/custom-prompts/import/preview", preview_custom_import)
+    app.router.add_post("/api/custom-prompts/import", commit_custom_import)
+    app.router.add_get("/api/custom-groups/{section}", list_custom_groups)
+    app.router.add_post("/api/custom-groups/{section}", create_custom_group)
+    app.router.add_put("/api/custom-groups/{section}/{group_id}", update_custom_group)
+    app.router.add_delete("/api/custom-groups/{section}/{group_id}", delete_custom_group)
     app.router.add_post("/api/batches", start_batch)
     app.router.add_get("/api/batches/current", current_batch)
     app.router.add_post("/api/batches/{batch_id}/stop", stop_batch)

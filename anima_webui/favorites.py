@@ -4,15 +4,16 @@ import copy
 import uuid
 from typing import Any
 
-from .catalog import SECTIONS, CatalogError, PromptCatalog
+from .catalog import SECTIONS, CatalogError, PromptCatalog, normalize_text
 
 
 MAX_GROUPS = 128
 MAX_ITEMS = 50000
+FAVORITE_SECTIONS = (*SECTIONS, "artist")
 
 
 def _section(value: str) -> str:
-    if value not in SECTIONS:
+    if value not in FAVORITE_SECTIONS:
         raise CatalogError(f"不支持的收藏分类: {value}")
     return value
 
@@ -39,7 +40,7 @@ def normalize_section(value: Any) -> dict[str, list[dict[str, Any]]]:
 
 
 def favorite_key(section: str, item: dict[str, Any]) -> str:
-    if section == "character":
+    if section in {"character", "artist"}:
         return str(item.get("name") or item.get("id") or "")
     return str(item.get("id") or item.get("name") or "")
 
@@ -62,6 +63,8 @@ class FavoritesService:
 
     async def update_item(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
         section = _section(section)
+        if section == "artist":
+            return await self._update_artist(payload)
         item_id = str(payload.get("id") or "").strip()
         catalog_item = self.catalog.get(item_id)
         if catalog_item is None or catalog_item.get("section") != section:
@@ -156,11 +159,58 @@ class FavoritesService:
         saved["customContent"] = str(item.get("prompt") or "")
         await self.comfy.save_favorites({section: current})
 
+    async def _update_artist(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_name = str(payload.get("name") or "").strip()
+        name = self._artist_name(raw_name)
+        data = await self.comfy.favorites()
+        current = normalize_section(data.get("artist"))
+        position = next(
+            (index for index, item in enumerate(current["items"]) if normalize_text(self._artist_name(item.get("name"))) == normalize_text(name)),
+            None,
+        )
+        enabled = payload.get("favorite", True)
+        if not isinstance(enabled, bool):
+            raise CatalogError("favorite 必须是布尔值")
+        valid_group_ids = {group["id"] for group in current["groups"]}
+        groups = payload.get("groupIds")
+        if groups is None:
+            groups = ["default"] if enabled else []
+        if not isinstance(groups, list):
+            raise CatalogError("groupIds 必须是数组")
+        groups = list(dict.fromkeys(str(value) for value in groups if str(value) in valid_group_ids))
+        if enabled and not groups:
+            groups = ["default"]
+        if not enabled:
+            if position is not None:
+                current["items"].pop(position)
+        else:
+            nickname = str(payload.get("nickname") or "").strip()[:300]
+            saved = {"name": name, "nickname": nickname, "groupIds": groups, "isCustom": False}
+            if position is None:
+                current["items"].append(saved)
+            else:
+                if "nickname" not in payload:
+                    saved["nickname"] = str(current["items"][position].get("nickname") or "")
+                current["items"][position] = saved
+        await self.comfy.save_favorites({"artist": current})
+        return await self.get("artist")
+
     @staticmethod
     def _group_name(payload: dict[str, Any]) -> str:
         name = str(payload.get("name") or "").strip()
         if not name or len(name) > 100:
             raise CatalogError("收藏分组名称需要 1-100 个字符")
+        return name
+
+    @staticmethod
+    def _artist_name(value: Any) -> str:
+        name = str(value or "").strip()
+        if name.startswith("@"):
+            name = name[1:].strip()
+        elif name.lower().startswith("by "):
+            name = name[3:].strip()
+        if not name or len(name) > 200 or "," in name:
+            raise CatalogError("画师名称需要 1-200 个字符且不能包含逗号")
         return name
 
     @staticmethod

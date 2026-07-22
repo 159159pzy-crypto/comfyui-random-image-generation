@@ -3,11 +3,13 @@ const SECTION_META = {
   clothing: { label: "服装", kicker: "CLOTHING", singular: "服装" },
   pose: { label: "姿势", kicker: "POSE", singular: "姿势" },
   background: { label: "背景", kicker: "BACKGROUND", singular: "背景" },
+  expression: { label: "表情", kicker: "EXPRESSION", singular: "表情" },
 };
 const NATIVE_FACET_LABELS = {
   clothing: { categories: "服装分类", traits: "服装特征" },
   pose: { categories: "姿势分类", traits: "姿势特征" },
   background: { categories: "场景分类", traits: "场景特征" },
+  expression: { categories: "表情分类", traits: "表情特征" },
 };
 const SECTIONS = Object.keys(SECTION_META);
 const DRAFT_KEY = "anima-random-studio:draft:v1";
@@ -15,19 +17,22 @@ const VIEW_KEY = "anima-random-studio:pool-view:v1";
 const ui = Object.fromEntries([
   "connection", "startButton", "stopButton", "batchState", "progressCount", "progressFill", "batchError",
   "settingsForm", "count", "female_count", "male_count", "peopleTotal", "dimensionList", "poolOverview",
-  "character_detail", "manual_artist", "quality_prompt", "extra_prompt", "negative_prompt", "width", "height",
+  "character_detail", "manual_artist", "manageArtists", "artistFavorites", "quality_prompt", "extra_prompt", "negative_prompt", "width", "height",
   "steps", "cfg", "gallery", "emptyState", "historyCount", "prevPage", "nextPage", "pageLabel", "detailDialog",
   "closeDialog", "detailImage", "detailMeta", "detailStats", "detailSelection", "detailPositive", "detailNegative",
   "restoreSettings", "deleteRecord", "toast", "poolDrawer", "drawerBackdrop", "closePool", "poolTitle", "poolKicker", "poolMeta",
-  "poolSearch", "poolSort", "poolLanguage", "togglePoolSidebar", "selectedOnly", "clearFilters", "selectPage", "selectAllPool", "clearPool", "addCustom",
+  "poolSearch", "poolSort", "poolLanguage", "togglePoolSidebar", "selectedOnly", "clearFilters", "selectPage", "selectAllPool", "clearPool", "addCustom", "importCustom",
   "poolSidebar", "poolGrid", "poolEmpty", "poseConflict", "poolSelectionLabel", "poolPrev", "poolNext", "poolPageLabel", "confirmPool",
   "customDialog", "customForm", "closeCustom", "cancelCustom", "customDialogTitle", "customId", "customTitle", "customSubtitle",
   "customGenderField", "customGender", "customCharacterMeta", "customHair", "customEye", "customSeries", "customPoseMeta",
-  "customCategory", "customTraits", "customPrompt", "deleteCustom", "loraSummary", "loraList", "loraEmpty", "addLora", "resetLoras",
+  "customCategory", "customTraits", "customPrompt", "customGroupChecks", "deleteCustom", "loraSummary", "loraList", "loraEmpty", "addLora", "resetLoras",
   "loraDialog", "closeLora", "cancelLora", "loraSearch", "loraCatalog", "loraCatalogEmpty", "loraCatalogMeta",
   "draftStatus", "resetSettings", "clearDraft", "favoriteDialog", "favoriteForm", "favoriteTitle", "favoriteGroups",
   "favoriteNickname", "removeFavorite", "closeFavorite", "cancelFavorite", "groupDialog", "groupForm", "groupDialogTitle",
-  "groupId", "groupName", "deleteGroup", "closeGroup", "cancelGroup"
+  "groupId", "groupName", "deleteGroup", "closeGroup", "cancelGroup", "customGroupDialog", "customGroupForm", "customGroupDialogTitle",
+  "customGroupId", "customGroupName", "deleteCustomGroup", "closeCustomGroup", "cancelCustomGroup", "importDialog", "importFile",
+  "closeImport", "cancelImport", "importHint", "importSummary", "importRows", "commitImport", "artistDialog", "closeArtists",
+  "cancelArtists", "saveCurrentArtists", "artistFavoriteList"
 ].map(id => [id, document.getElementById(id)]));
 
 let defaults = null;
@@ -54,10 +59,13 @@ let loraInventoryLoaded = false;
 let loraInventoryError = "";
 let favoritesData = { groups: [], items: [], favorite_keys: [] };
 let favoritesAvailable = false;
+let customGroups = [];
+let artistFavoritesData = { groups: [], items: [] };
+let importPreview = null;
 const poseItemCache = new Map();
 
 function defaultView() {
-  return { query: "", sort: "", language: "zh", selectedOnly: false, scrollTop: 0, filters: { gender: "", hair: "", eye: "", series: "", categories: [], traits: [], collection: "" } };
+  return { query: "", sort: "", language: "zh", selectedOnly: false, scrollTop: 0, filters: { gender: "", hair: "", eye: "", series: "", categories: [], traits: [], collection: "", customGroup: "" } };
 }
 let poolViews = Object.fromEntries(SECTIONS.map(section => [section, defaultView()]));
 
@@ -177,7 +185,7 @@ function renderDimensions() {
     const article = document.createElement("article"); article.className = `dimension-row mode-${mode}`; article.dataset.section = section;
     article.innerHTML = `<div class="dimension-heading"><div><span class="dimension-icon">${meta.label.slice(0, 1)}</span><strong>${meta.label}</strong><small>${selected} 项已选</small></div><button class="manage-pool" type="button" data-manage="${section}">管理池 <span aria-hidden="true">→</span></button></div>
       <div class="dimension-mode" role="group" aria-label="${meta.label}模式"><button type="button" data-mode="off" class="${mode === "off" ? "active" : ""}">关闭</button><button type="button" data-mode="pool" class="${mode === "pool" ? "active" : ""}">随机池</button><button type="button" data-mode="fixed" class="${mode === "fixed" ? "active" : ""}">固定</button></div>
-      <div class="dimension-body"><label class="draw-count"><span>抽取数量</span><input type="number" min="1" max="5" step="1" value="${count}" data-count="${section}" ${mode !== "pool" ? "disabled" : ""}></label><span class="mode-note">${mode === "pool" ? `${selected} 项候选` : mode === "fixed" ? "使用固定提示词" : "不加入提示词"}</span></div>
+      <div class="dimension-body"><label class="draw-count"><span>抽取数量</span><input type="number" min="1" max="${section === "expression" ? 1 : 5}" step="1" value="${section === "expression" ? 1 : count}" data-count="${section}" ${mode !== "pool" || section === "expression" ? "disabled" : ""}></label><span class="mode-note">${mode === "pool" ? `${selected} 项候选` : mode === "fixed" ? "使用固定提示词" : "不加入提示词"}</span></div>
       <label class="field dimension-fixed"><span>固定提示词</span><input type="text" value="${escapeHtml(draft.fixed[section] || "")}" data-fixed="${section}" placeholder="留空则不加入" ${mode !== "fixed" ? "disabled" : ""}></label>`;
     article.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => { draft.modes[section] = button.dataset.mode; renderDimensions(); schedulePersist(); }));
     article.querySelector("[data-count]").addEventListener("input", event => { draft.counts[section] = Math.max(1, Math.min(5, Number(event.target.value || 1))); schedulePersist(); updatePoseConflict(); });
@@ -225,24 +233,25 @@ function favoriteMap() { const map = new Map(); for (const item of favoritesData
 function isFavorite(item) { return Boolean(favoriteMap().get(favoriteKey(item))?.groupIds?.length); }
 
 async function loadFavorites(section = activeSection) { try { favoritesData = await request(`/api/favorites/${section}`); favoritesAvailable = true; } catch (error) { favoritesData = { groups: [], items: [], favorite_keys: [] }; favoritesAvailable = false; if (currentView().filters.collection) currentView().filters.collection = ""; if (currentView().sort === "favorite-first") currentView().sort = ""; toast(`收藏不可用：${error.message}`); } }
+async function loadCustomGroups(section = activeSection) { try { customGroups = (await request(`/api/custom-groups/${section}`)).groups || []; } catch (error) { customGroups = []; toast(`自定义分组不可用：${error.message}`); } }
 
 async function openPool(section) {
   activeSection = section; poolPage = 1; const view = currentView();
   ui.poolDrawer.classList.add("open"); ui.poolDrawer.setAttribute("aria-hidden", "false"); ui.drawerBackdrop.hidden = false;
   ui.poolTitle.textContent = `${SECTION_META[section].label}池`; ui.poolKicker.textContent = SECTION_META[section].kicker;
   ui.poolSearch.value = view.query; ui.poolSort.value = view.sort; ui.poolLanguage.value = view.language; ui.selectedOnly.checked = view.selectedOnly;
-  await loadFavorites(section); await loadPool(); schedulePersist();
+  await Promise.all([loadFavorites(section), loadCustomGroups(section)]); await loadPool(); schedulePersist();
 }
 function closePool() { currentView().scrollTop = ui.poolGrid.scrollTop; setPoolSidebarOpen(false); ui.poolDrawer.classList.remove("open"); ui.poolDrawer.setAttribute("aria-hidden", "true"); ui.drawerBackdrop.hidden = true; schedulePersist(); }
 function setPoolSidebarOpen(open) { ui.poolSidebar.classList.toggle("mobile-open", open); ui.togglePoolSidebar.setAttribute("aria-expanded", String(open)); ui.togglePoolSidebar.title = open ? "关闭分类导航" : "打开分类导航"; ui.togglePoolSidebar.setAttribute("aria-label", ui.togglePoolSidebar.title); }
 
-function poolQueryBody() { const view = currentView(); return { page: poolPage, limit: 48, q: view.query, sort: view.sort, collection: view.filters.collection, categories: view.filters.categories, traits: view.filters.traits, gender: view.filters.gender, hair: view.filters.hair, eye: view.filters.eye, series: view.filters.series }; }
+function poolQueryBody() { const view = currentView(); return { page: poolPage, limit: 48, q: view.query, sort: view.sort, collection: view.filters.collection, custom_group: view.filters.customGroup, categories: view.filters.categories, traits: view.filters.traits, gender: view.filters.gender, hair: view.filters.hair, eye: view.filters.eye, series: view.filters.series }; }
 async function loadPool() {
   const requestId = ++poolRequest; const view = currentView();
   try {
     const query = poolQueryBody(); let data;
     if (view.selectedOnly) data = await request(`/api/pools/${activeSection}/query`, { method: "POST", body: JSON.stringify({ ...query, selection: draft.pools[activeSection] }) });
-    else { const params = new URLSearchParams({ page: query.page, limit: query.limit, q: query.q, sort: query.sort, collection: query.collection, gender: query.gender, hair: query.hair, eye: query.eye, series: query.series }); query.categories.forEach(value => params.append("category", value)); query.traits.forEach(value => params.append("trait", value)); data = await request(`/api/pools/${activeSection}?${params}`); }
+    else { const params = new URLSearchParams({ page: query.page, limit: query.limit, q: query.q, sort: query.sort, collection: query.collection, custom_group: query.custom_group, gender: query.gender, hair: query.hair, eye: query.eye, series: query.series }); query.categories.forEach(value => params.append("category", value)); query.traits.forEach(value => params.append("trait", value)); data = await request(`/api/pools/${activeSection}?${params}`); }
     if (requestId !== poolRequest) return;
     poolItems = data.items || []; poolFacets = data.facets || {}; poolPages = data.pages; poolPage = data.page;
     if (activeSection === "pose") poolItems.forEach(item => poseItemCache.set(item.id, item));
@@ -269,6 +278,13 @@ function renderPoolSidebar() {
   const allButton = document.createElement("button"); allButton.type = "button"; allButton.className = view.filters.collection ? "" : "active"; allButton.innerHTML = `<span>全部${SECTION_META[activeSection].label}</span><small>${config.catalog?.counts?.[activeSection] || ""}</small>`; allButton.addEventListener("click", () => { view.filters.collection = ""; poolPage = 1; loadPool(); schedulePersist(); }); collectionBody.append(allButton);
   for (const group of favoritesData.groups || []) { const count = (favoritesData.items || []).filter(item => item.groupIds?.includes(group.id)).length; const row = document.createElement("div"); row.className = "collection-row"; const button = document.createElement("button"); button.type = "button"; button.className = view.filters.collection === group.id ? "active" : ""; button.innerHTML = `<span>${group.id === "default" ? "我的收藏" : escapeHtml(group.name)}</span><small>${count}</small>`; button.addEventListener("click", () => { view.filters.collection = group.id; poolPage = 1; loadPool(); schedulePersist(); }); row.append(button); if (!group.isSystem) { const edit = document.createElement("button"); edit.type = "button"; edit.className = "collection-edit"; edit.title = "编辑分组"; edit.setAttribute("aria-label", `编辑分组 ${group.name}`); edit.textContent = "···"; edit.addEventListener("click", () => openGroupDialog(group)); row.append(edit); } collectionBody.append(row); }
   nav.append(collections);
+  const customSection = document.createElement("section"); customSection.className = "facet-section custom-group-section";
+  customSection.innerHTML = `<div class="facet-heading"><h3>自定义分组</h3><button type="button" title="新建自定义分组" aria-label="新建自定义分组">+</button></div><div></div>`;
+  customSection.querySelector(".facet-heading button").addEventListener("click", () => openCustomGroupDialog());
+  const customBody = customSection.lastElementChild;
+  const unfiltered = document.createElement("button"); unfiltered.type = "button"; unfiltered.className = view.filters.customGroup ? "" : "active"; unfiltered.innerHTML = `<span>不限分组</span><small></small>`; unfiltered.addEventListener("click", () => { view.filters.customGroup = ""; poolPage = 1; loadPool(); schedulePersist(); }); customBody.append(unfiltered);
+  for (const group of customGroups) { const row = document.createElement("div"); row.className = "collection-row"; const button = document.createElement("button"); button.type = "button"; button.className = view.filters.customGroup === group.id ? "active" : ""; button.innerHTML = `<span>${escapeHtml(group.name)}</span><small>${group.count}</small>`; button.addEventListener("click", () => { view.filters.customGroup = group.id; poolPage = 1; loadPool(); schedulePersist(); }); const edit = document.createElement("button"); edit.type = "button"; edit.className = "collection-edit"; edit.title = "编辑自定义分组"; edit.setAttribute("aria-label", `编辑自定义分组 ${group.name}`); edit.textContent = "···"; edit.addEventListener("click", () => openCustomGroupDialog(group)); row.append(button, edit); customBody.append(row); }
+  nav.append(customSection);
   if (activeSection === "character") {
     nav.append(sidebarSection("角色性别", poolFacets.gender, "gender", view.filters.gender));
     nav.append(sidebarSection("角色发色", poolFacets.hair, "hair", view.filters.hair));
@@ -318,9 +334,27 @@ async function deleteFavoriteGroup() { const id = ui.groupId.value; if (!id || !
 
 function selectCurrentPage(checked) { for (const item of poolItems) { const selection = draft.pools[activeSection]; if (selection.mode === "all") selection.excluded_ids = checked ? selection.excluded_ids.filter(value => value !== item.id) : [...new Set([...selection.excluded_ids, item.id])]; else if (checked) selection.ids = [...new Set([...selection.ids, item.id])]; else selection.ids = selection.ids.filter(value => value !== item.id); } renderPoolItems(); renderDimensions(); updatePoolOverview(); updatePoseConflict(); schedulePersist(); }
 
-function openCustom(item = null) { editingCustom = item; ui.customDialogTitle.textContent = item ? "编辑自定义项" : "新增自定义项"; ui.customId.value = item?.id || ""; ui.customTitle.value = item?.title || ""; ui.customSubtitle.value = item?.subtitle || ""; ui.customGender.value = item?.gender === "1girl" ? "female" : item?.gender === "1boy" ? "male" : "unknown"; ui.customHair.value = item?.hair || ""; ui.customEye.value = item?.eye || ""; ui.customSeries.value = item?.copyright || ""; ui.customCategory.value = item?.categories?.[0] || ""; ui.customTraits.value = (item?.traits || []).join(", "); ui.customPrompt.value = item?.prompt || ""; ui.customGenderField.hidden = activeSection !== "character"; ui.customCharacterMeta.hidden = activeSection !== "character"; ui.customPoseMeta.hidden = activeSection !== "pose"; ui.deleteCustom.hidden = !item; ui.customDialog.showModal(); }
-async function saveCustom(event) { event.preventDefault(); const payload = { section: activeSection, title: ui.customTitle.value, subtitle: ui.customSubtitle.value, prompt: ui.customPrompt.value, gender: ui.customGender.value, hair: ui.customHair.value, eye: ui.customEye.value, copyright: ui.customSeries.value, categories: ui.customCategory.value ? [ui.customCategory.value] : [], traits: ui.customTraits.value.split(",").map(value => value.trim()).filter(Boolean) }; try { const item = editingCustom ? await request(`/api/custom-prompts/${editingCustom.id}`, { method: "PUT", body: JSON.stringify(payload) }) : await request("/api/custom-prompts", { method: "POST", body: JSON.stringify(payload) }); if (!selectionHas(activeSection, item.id)) toggleSelection(activeSection, item.id, true); ui.customDialog.close(); await loadPool(); toast(editingCustom ? "自定义项已更新" : "自定义项已加入随机池"); } catch (error) { toast(error.message); } }
+function openCustom(item = null) { editingCustom = item; ui.customDialogTitle.textContent = item ? "编辑自定义项" : "新增自定义项"; ui.customId.value = item?.id || ""; ui.customTitle.value = item?.title || ""; ui.customSubtitle.value = item?.subtitle || ""; ui.customGender.value = item?.gender === "1girl" ? "female" : item?.gender === "1boy" ? "male" : "unknown"; ui.customHair.value = item?.hair || ""; ui.customEye.value = item?.eye || ""; ui.customSeries.value = item?.copyright || ""; ui.customCategory.value = item?.categories?.[0] || ""; ui.customTraits.value = (item?.traits || []).join(", "); ui.customPrompt.value = item?.prompt || ""; ui.customGenderField.hidden = activeSection !== "character"; ui.customCharacterMeta.hidden = activeSection !== "character"; ui.customPoseMeta.hidden = activeSection !== "pose"; const selectedGroups = new Set(item?.group_ids || item?.groupIds || []); ui.customGroupChecks.replaceChildren(...customGroups.map(group => { const label = document.createElement("label"); label.className = "favorite-group-check"; label.innerHTML = `<input type="checkbox" value="${escapeHtml(group.id)}" ${selectedGroups.has(group.id) ? "checked" : ""}><span>${escapeHtml(group.name)}</span>`; return label; })); if (!customGroups.length) ui.customGroupChecks.innerHTML = `<div class="inline-empty">尚未创建自定义分组，可在随机池侧栏新建。</div>`; ui.deleteCustom.hidden = !item; ui.customDialog.showModal(); }
+async function saveCustom(event) { event.preventDefault(); const payload = { section: activeSection, title: ui.customTitle.value, subtitle: ui.customSubtitle.value, prompt: ui.customPrompt.value, gender: ui.customGender.value, hair: ui.customHair.value, eye: ui.customEye.value, copyright: ui.customSeries.value, categories: ui.customCategory.value ? [ui.customCategory.value] : [], traits: ui.customTraits.value.split(",").map(value => value.trim()).filter(Boolean), groupIds: [...ui.customGroupChecks.querySelectorAll("input:checked")].map(input => input.value) }; try { const item = editingCustom ? await request(`/api/custom-prompts/${editingCustom.id}`, { method: "PUT", body: JSON.stringify(payload) }) : await request("/api/custom-prompts", { method: "POST", body: JSON.stringify(payload) }); if (!selectionHas(activeSection, item.id)) toggleSelection(activeSection, item.id, true); ui.customDialog.close(); await loadCustomGroups(); await loadPool(); toast(editingCustom ? "自定义项已更新" : "自定义项已加入随机池"); } catch (error) { toast(error.message); } }
 async function deleteCustomItem() { if (!editingCustom || !confirm("删除这个自定义项？")) return; try { await request(`/api/custom-prompts/${editingCustom.id}`, { method: "DELETE" }); const selection = draft.pools[activeSection]; selection.ids = selection.ids.filter(id => id !== editingCustom.id); selection.excluded_ids = selection.excluded_ids.filter(id => id !== editingCustom.id); ui.customDialog.close(); await loadPool(); renderDimensions(); updatePoolOverview(); schedulePersist(); toast("自定义项已删除"); } catch (error) { toast(error.message); } }
+
+function openCustomGroupDialog(group = null) { ui.customGroupId.value = group?.id || ""; ui.customGroupName.value = group?.name || ""; ui.customGroupDialogTitle.textContent = group ? "编辑自定义分组" : "新建自定义分组"; ui.deleteCustomGroup.hidden = !group; ui.customGroupDialog.showModal(); }
+async function saveCustomGroup(event) { event.preventDefault(); const id = ui.customGroupId.value; try { const payload = await request(id ? `/api/custom-groups/${activeSection}/${encodeURIComponent(id)}` : `/api/custom-groups/${activeSection}`, { method: id ? "PUT" : "POST", body: JSON.stringify({ name: ui.customGroupName.value }) }); customGroups = payload.groups || []; ui.customGroupDialog.close(); renderPoolSidebar(); toast(id ? "自定义分组已更新" : "自定义分组已创建"); } catch (error) { toast(error.message); } }
+async function removeCustomGroup() { const id = ui.customGroupId.value; if (!id || !confirm("删除这个自定义分组？条目不会被删除。")) return; try { const payload = await request(`/api/custom-groups/${activeSection}/${encodeURIComponent(id)}`, { method: "DELETE" }); customGroups = payload.groups || []; if (currentView().filters.customGroup === id) currentView().filters.customGroup = ""; ui.customGroupDialog.close(); await loadPool(); toast("自定义分组已删除"); } catch (error) { toast(error.message); } }
+
+function openImportDialog() { importPreview = null; ui.importFile.value = ""; ui.importHint.textContent = "选择文件后会先校验，不会立即写入。"; ui.importSummary.hidden = true; ui.importRows.replaceChildren(); ui.commitImport.disabled = true; ui.importDialog.showModal(); }
+async function previewImportFile() { const file = ui.importFile.files?.[0]; if (!file) return; const format = file.name.toLowerCase().endsWith(".csv") ? "csv" : file.name.toLowerCase().endsWith(".json") ? "json" : ""; if (!format) { toast("只支持 JSON 或 CSV 文件"); return; } ui.importHint.textContent = `正在校验 ${file.name}`; try { importPreview = await request("/api/custom-prompts/import/preview", { method: "POST", body: JSON.stringify({ format, content: await file.text() }) }); renderImportPreview(file.name); } catch (error) { importPreview = null; ui.commitImport.disabled = true; ui.importHint.textContent = error.message; toast(error.message); } }
+function renderImportPreview(filename) { const summary = importPreview.summary || {}; ui.importHint.textContent = `${filename} · 已完成校验`; ui.importSummary.hidden = false; ui.importSummary.innerHTML = `<span>新增 ${summary.new || 0}</span><span>冲突 ${summary.conflict || 0}</span><span>错误 ${summary.error || 0}</span>`; const labels = { new: "新增", conflict: "冲突", error: "错误" }; ui.importRows.replaceChildren(...importPreview.rows.map((row, index) => { const element = document.createElement("div"); element.className = "import-row"; element.dataset.status = row.status; const title = row.item?.title || "无法读取"; const section = SECTION_META[row.item?.section]?.label || row.item?.section || "-"; element.innerHTML = `<span>#${row.row}</span><span class="import-status">${labels[row.status]}</span><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><small title="${escapeHtml(row.error || (row.groups || []).join("、"))}">${escapeHtml(row.error || (row.groups || []).join("、") || section)}</small><select aria-label="导入操作" ${row.status === "error" ? "disabled" : ""}>${row.status === "new" ? '<option value="create">导入</option><option value="skip">跳过</option>' : row.status === "conflict" ? '<option value="skip">跳过</option><option value="overwrite">覆盖</option>' : '<option value="skip">跳过</option>'}</select>`; const select = element.querySelector("select"); select.value = row.action; select.addEventListener("change", () => importPreview.rows[index].action = select.value); return element; })); ui.commitImport.disabled = !importPreview.rows.some(row => row.status !== "error"); }
+async function commitCustomImport() { if (!importPreview) return; ui.commitImport.disabled = true; try { const result = await request("/api/custom-prompts/import", { method: "POST", body: JSON.stringify({ rows: importPreview.rows }) }); ui.importDialog.close(); await loadCustomGroups(); await loadPool(); renderDimensions(); toast(`导入完成：新增 ${result.imported}，更新 ${result.updated}，跳过 ${result.skipped}`); } catch (error) { ui.commitImport.disabled = false; toast(error.message); } }
+
+function artistName(value) { let name = String(value || "").trim(); if (name.startsWith("@")) name = name.slice(1).trim(); else if (name.toLowerCase().startsWith("by ")) name = name.slice(3).trim(); return name; }
+function artistTokens() { return ui.manual_artist.value.split(",").map(artistName).filter(Boolean); }
+function appendArtist(name) { const values = artistTokens(); const keys = new Set(values.map(value => value.toLowerCase())); const clean = artistName(name); if (clean && !keys.has(clean.toLowerCase())) values.push(clean); ui.manual_artist.value = values.join(", "); schedulePersist(); }
+async function loadArtistFavorites() { try { artistFavoritesData = await request("/api/favorites/artist"); } catch { artistFavoritesData = { groups: [], items: [] }; } renderArtistFavorites(); }
+function renderArtistFavorites() { const items = (artistFavoritesData.items || []).filter(item => item.groupIds?.length); ui.artistFavorites.replaceChildren(...items.slice(0, 8).map(item => { const button = document.createElement("button"); button.type = "button"; button.className = "artist-chip"; button.title = `追加 ${item.name}`; button.textContent = item.nickname || item.name; button.addEventListener("click", () => appendArtist(item.name)); return button; })); ui.artistFavoriteList.replaceChildren(...(items.length ? items.map(item => { const row = document.createElement("div"); row.className = "artist-favorite-row"; row.innerHTML = `<button type="button" title="追加到固定画师">${escapeHtml(item.nickname || item.name)}</button><button class="button ghost compact" type="button">追加</button><button class="icon-button dark" type="button" title="取消收藏" aria-label="取消收藏">×</button>`; row.children[0].addEventListener("click", () => appendArtist(item.name)); row.children[1].addEventListener("click", () => appendArtist(item.name)); row.children[2].addEventListener("click", () => removeArtistFavorite(item.name)); return row; }) : [Object.assign(document.createElement("div"), { className: "artist-favorite-empty", textContent: "还没有收藏画师" })])); }
+async function openArtistDialog() { await loadArtistFavorites(); ui.artistDialog.showModal(); }
+async function saveCurrentArtistFavorites() { const values = artistTokens(); if (!values.length) { toast("请先输入画师名称"); return; } try { for (const name of values) artistFavoritesData = await request("/api/favorites/artist/item", { method: "PUT", body: JSON.stringify({ name, favorite: true }) }); renderArtistFavorites(); toast(`已收藏 ${values.length} 位画师`); } catch (error) { toast(error.message); } }
+async function removeArtistFavorite(name) { try { artistFavoritesData = await request("/api/favorites/artist/item", { method: "PUT", body: JSON.stringify({ name, favorite: false }) }); renderArtistFavorites(); toast("已取消收藏画师"); } catch (error) { toast(error.message); } }
 
 ui.settingsForm.addEventListener("submit", async event => { event.preventDefault(); ui.startButton.disabled = true; persistNow(); try { renderBatch(await request("/api/batches", { method: "POST", body: JSON.stringify(readSettings()) })); toast("批次已开始"); } catch (error) { toast(error.message); await refreshConnection(); } });
 ui.settingsForm.addEventListener("input", event => { if (event.target.matches("input, textarea, select")) schedulePersist(); }); ui.settingsForm.addEventListener("change", schedulePersist);
@@ -338,8 +372,11 @@ ui.selectedOnly.addEventListener("change", () => { currentView().selectedOnly = 
 ui.clearFilters.addEventListener("click", () => { const language = currentView().language; poolViews[activeSection] = { ...defaultView(), language }; ui.poolSearch.value = ""; ui.poolSort.value = ""; ui.selectedOnly.checked = false; poolPage = 1; loadPool(); schedulePersist(); });
 ui.poolPrev.addEventListener("click", () => { poolPage -= 1; loadPool(); }); ui.poolNext.addEventListener("click", () => { poolPage += 1; loadPool(); });
 ui.selectPage.addEventListener("click", () => selectCurrentPage(true)); ui.selectAllPool.addEventListener("click", () => { draft.pools[activeSection] = { mode: "all", ids: [], excluded_ids: [] }; renderPoolItems(); renderDimensions(); updatePoolOverview(); updatePoseConflict(); schedulePersist(); });
-ui.clearPool.addEventListener("click", () => { draft.pools[activeSection] = { mode: "include", ids: [], excluded_ids: [] }; renderPoolItems(); renderDimensions(); updatePoolOverview(); updatePoseConflict(); schedulePersist(); }); ui.addCustom.addEventListener("click", () => openCustom());
+ui.clearPool.addEventListener("click", () => { draft.pools[activeSection] = { mode: "include", ids: [], excluded_ids: [] }; renderPoolItems(); renderDimensions(); updatePoolOverview(); updatePoseConflict(); schedulePersist(); }); ui.addCustom.addEventListener("click", () => openCustom()); ui.importCustom.addEventListener("click", openImportDialog);
 ui.customForm.addEventListener("submit", saveCustom); ui.cancelCustom.addEventListener("click", () => ui.customDialog.close()); ui.closeCustom.addEventListener("click", () => ui.customDialog.close()); ui.deleteCustom.addEventListener("click", deleteCustomItem);
+ui.customGroupForm.addEventListener("submit", saveCustomGroup); ui.deleteCustomGroup.addEventListener("click", removeCustomGroup); ui.closeCustomGroup.addEventListener("click", () => ui.customGroupDialog.close()); ui.cancelCustomGroup.addEventListener("click", () => ui.customGroupDialog.close());
+ui.importFile.addEventListener("change", previewImportFile); ui.commitImport.addEventListener("click", commitCustomImport); ui.closeImport.addEventListener("click", () => ui.importDialog.close()); ui.cancelImport.addEventListener("click", () => ui.importDialog.close());
+ui.manageArtists.addEventListener("click", openArtistDialog); ui.saveCurrentArtists.addEventListener("click", saveCurrentArtistFavorites); ui.closeArtists.addEventListener("click", () => ui.artistDialog.close()); ui.cancelArtists.addEventListener("click", () => ui.artistDialog.close());
 ui.favoriteForm.addEventListener("submit", saveFavorite); ui.removeFavorite.addEventListener("click", removeFavorite); ui.closeFavorite.addEventListener("click", () => ui.favoriteDialog.close()); ui.cancelFavorite.addEventListener("click", () => ui.favoriteDialog.close());
 ui.groupForm.addEventListener("submit", saveGroup); ui.deleteGroup.addEventListener("click", deleteFavoriteGroup); ui.closeGroup.addEventListener("click", () => ui.groupDialog.close()); ui.cancelGroup.addEventListener("click", () => ui.groupDialog.close());
 ui.addLora.addEventListener("click", openLoraDialog); ui.resetLoras.addEventListener("click", () => { draft.loras = clone(defaults?.loras || []); renderLoras(); schedulePersist(); toast("已恢复模板默认 LoRA"); }); ui.closeLora.addEventListener("click", () => ui.loraDialog.close()); ui.cancelLora.addEventListener("click", () => ui.loraDialog.close()); ui.loraSearch.addEventListener("input", renderLoraCatalog);
@@ -352,7 +389,7 @@ document.addEventListener("keydown", event => { if (event.key === "Escape" && ui
 async function initialize() {
   try { const payload = await request("/api/config"); config = payload; defaults = payload.defaults; loadStoredView(); const restored = loadStoredDraft(); if (!restored) { applySettings(defaults); ui.draftStatus.textContent = "使用模板默认设置"; } initialized = true; }
   catch (error) { toast(error.message); }
-  await Promise.all([refreshConnection(), pollBatch(), loadHistory(1), loadLoraInventory()]);
+  await Promise.all([refreshConnection(), pollBatch(), loadHistory(1), loadLoraInventory(), loadArtistFavorites()]);
   setInterval(pollBatch, 1200); setInterval(refreshConnection, 5000);
 }
 initialize();

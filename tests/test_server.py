@@ -20,7 +20,7 @@ class FakeComfy:
     def __init__(self):
         self.favorites_data = {
             section: {"groups": [{"id": "default", "name": "Default Favorites", "isSystem": True}], "items": []}
-            for section in ("artist", "character", "lora", "clothing", "background", "pose")
+            for section in ("artist", "character", "lora", "clothing", "background", "pose", "expression")
         }
 
     async def status(self):
@@ -73,6 +73,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             app_dir=APP_DIR,
             comfy=FakeComfy(),
             history_path=Path(self.temp.name) / "history.sqlite3",
+            custom_prompts_path=Path(self.temp.name) / "custom_prompts.json",
         )
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
@@ -120,6 +121,36 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         payload = await deleted.json()
         self.assertEqual(len(payload["items"]), 1)
         self.assertEqual(payload["items"][0]["groupIds"], [])
+
+    async def test_artist_favorites_normalize_prefix_and_preserve_other_sections(self):
+        response = await self.client.put(
+            "/api/favorites/artist/item",
+            json={"name": "@rella", "favorite": True},
+        )
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["items"][0]["name"], "rella")
+        self.assertEqual(payload["items"][0]["groupIds"], ["default"])
+        self.assertEqual(self.client.server.app["comfy"].favorites_data["pose"]["items"], [])
+
+    async def test_custom_group_templates_and_import_flow(self):
+        template = await self.client.get("/api/custom-prompts/templates/csv")
+        self.assertEqual(template.status, 200)
+        self.assertIn("section,title,prompt", (await template.text()).lstrip("\ufeff"))
+        group_response = await self.client.post("/api/custom-groups/expression", json={"name": "Mood"})
+        self.assertEqual(group_response.status, 201)
+        preview_response = await self.client.post(
+            "/api/custom-prompts/import/preview",
+            json={"format": "json", "content": '{"items":[{"section":"expression","title":"Calm","prompt":"calm face","groups":["Mood"]}]}'},
+        )
+        self.assertEqual(preview_response.status, 200)
+        preview = await preview_response.json()
+        self.assertEqual(preview["summary"]["new"], 1)
+        committed = await self.client.post("/api/custom-prompts/import", json={"rows": preview["rows"]})
+        self.assertEqual(committed.status, 200)
+        self.assertEqual((await committed.json())["imported"], 1)
+        pool = await (await self.client.get("/api/pools/expression?q=Calm")).json()
+        self.assertEqual(pool["items"][0]["title"], "Calm")
 
     async def test_missing_lora_returns_clear_error(self):
         settings = {

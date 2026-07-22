@@ -239,6 +239,7 @@ class WorkflowTests(unittest.TestCase):
             {"random_character_count": 0},
             {"random_clothing_count": 6},
             {"random_pose_count": True},
+            {"random_expression_count": 2},
             {"character_detail": "full"},
             {"unknown": 1},
         ):

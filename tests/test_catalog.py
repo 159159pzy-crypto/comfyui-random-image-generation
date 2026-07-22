@@ -116,6 +116,70 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("1boy", first["composer_prompt"])
         self.assertEqual(len(first["selected"]["character"]), 1)
 
+    def test_expression_pool_is_builtin_and_adds_one_expression(self):
+        self.assertGreater(self.catalog.count("expression"), 10)
+        self.assertGreater(self.catalog.search("expression", categories=["愉悦"])["total"], 0)
+        settings = validate_settings({
+            **DEFAULT_SETTINGS,
+            "random_expression": True,
+            "random_expression_count": 1,
+            "pools": {
+                **DEFAULT_SETTINGS["pools"],
+                "expression": {"mode": "all", "ids": [], "excluded_ids": []},
+            },
+        })
+        resolved = self.catalog.resolve_prompt(settings, 44)
+        self.assertEqual(len(resolved["selected"]["expression"]), 1)
+        self.assertIn(resolved["selected"]["expression"][0]["tags"][0], resolved["full_prompt"])
+
+        fixed = self.catalog.resolve_prompt(validate_settings({
+            **DEFAULT_SETTINGS,
+            "fixed_expression": "gentle smile, relaxed expression",
+        }), 45)
+        self.assertIn("gentle smile, relaxed expression", fixed["full_prompt"])
+        self.assertEqual(fixed["selected"]["expression"], [])
+
+    def test_custom_groups_and_import_preserve_overwritten_id(self):
+        path = self.root / "custom.json"
+        path.write_text(json.dumps({
+            "version": 2,
+            "items": [{"id": "custom:legacy", "section": "pose", "title": "Wave", "prompt": "waving"}],
+        }), encoding="utf-8")
+        store = CustomPromptStore(path, self.catalog)
+        group = store.create_group("pose", {"name": "Hands"})["group"]
+        store.update("custom:legacy", {"groupIds": [group["id"]]})
+        self.assertEqual(store.list_groups("pose")["groups"][0]["count"], 1)
+        preview = store.preview_import("json", json.dumps({"items": [
+            {"section": "pose", "title": "Wave", "prompt": "waving hand", "groups": ["Hands", "Daily"]},
+        ]}))
+        self.assertEqual(preview["summary"], {"new": 0, "conflict": 1, "error": 0})
+        preview["rows"][0]["action"] = "overwrite"
+        result = store.commit_import(preview["rows"])
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(store.list("pose")[0]["id"], "custom:legacy")
+        self.assertEqual(store.list("pose")[0]["prompt"], "waving hand")
+        self.assertEqual({value["name"] for value in store.list_groups("pose")["groups"]}, {"Hands", "Daily"})
+
+    def test_import_rejects_duplicate_rows_and_tampered_builtin_overwrite(self):
+        store = CustomPromptStore(self.root / "custom.json", self.catalog)
+        preview = store.preview_import("json", json.dumps({"items": [
+            {"section": "expression", "title": "My Mood", "prompt": "soft smile"},
+            {"section": "expression", "title": "My Mood", "prompt": "angry face"},
+        ]}))
+        self.assertEqual(preview["summary"], {"new": 1, "conflict": 0, "error": 1})
+        self.assertIn("重名", preview["rows"][1]["error"])
+
+        with self.assertRaisesRegex(CatalogError, "内置条目不可覆盖"):
+            store.commit_import([{
+                "action": "create",
+                "item": {"section": "expression", "title": "温柔微笑", "prompt": "tampered"},
+            }])
+        with self.assertRaisesRegex(CatalogError, "没有可覆盖"):
+            store.commit_import([{
+                "action": "overwrite",
+                "item": {"section": "expression", "title": "Missing", "prompt": "missing"},
+            }])
+
     def test_empty_pool_and_excess_count_are_rejected(self):
         settings = validate_settings({**DEFAULT_SETTINGS, "random_pose": True})
         with self.assertRaises(CatalogError):

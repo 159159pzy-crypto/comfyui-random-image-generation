@@ -32,20 +32,24 @@ DEFAULT_LORAS = [
 MAX_LORAS = 64
 MIN_LORA_STRENGTH = -100.0
 MAX_LORA_STRENGTH = 100.0
+PROMPT_SECTIONS = ("character", "clothing", "pose", "background", "expression")
 DEFAULT_SETTINGS = {
     "count": 10,
     "random_character": False,
     "random_clothing": False,
     "random_pose": False,
     "random_background": False,
+    "random_expression": False,
     "random_character_count": 1,
     "random_clothing_count": 1,
     "random_pose_count": 1,
     "random_background_count": 1,
+    "random_expression_count": 1,
     "fixed_character": "",
     "fixed_clothing": "",
     "fixed_pose": "",
     "fixed_background": "",
+    "fixed_expression": "",
     "female_count": 1,
     "male_count": 0,
     "loras": DEFAULT_LORAS,
@@ -54,6 +58,7 @@ DEFAULT_SETTINGS = {
         "clothing": {"mode": "include", "ids": [], "excluded_ids": []},
         "pose": {"mode": "include", "ids": [], "excluded_ids": []},
         "background": {"mode": "include", "ids": [], "excluded_ids": []},
+        "expression": {"mode": "include", "ids": [], "excluded_ids": []},
     },
     "character_detail": "trigger_tags",
     "manual_artist": "",
@@ -161,14 +166,16 @@ def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]
     if unknown:
         raise WorkflowError(f"未知参数: {', '.join(sorted(unknown))}")
 
-    legacy_pools = "pools" not in overrides and any(overrides.get(f"random_{section}") for section in ("character", "clothing", "pose", "background"))
+    legacy_pools = "pools" not in overrides and any(overrides.get(f"random_{section}") for section in PROMPT_SECTIONS)
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     settings.update(overrides)
     settings["count"] = _integer("生成数量", settings["count"], 1, 1000)
-    for name in ("random_character", "random_clothing", "random_pose", "random_background"):
+    for name in tuple(f"random_{section}" for section in PROMPT_SECTIONS):
         settings[name] = _boolean(name, settings[name])
-    for name in ("random_character_count", "random_clothing_count", "random_pose_count", "random_background_count"):
+    for name in tuple(f"random_{section}_count" for section in PROMPT_SECTIONS):
         settings[name] = _integer(name, settings[name], 1, 5)
+    if settings["random_expression_count"] != 1:
+        raise WorkflowError("表情随机池每张只能抽取 1 项")
     settings["female_count"] = _integer("女性人数", settings["female_count"], 0, 5)
     settings["male_count"] = _integer("男性人数", settings["male_count"], 0, 5)
     total_people = settings["female_count"] + settings["male_count"]
@@ -181,12 +188,12 @@ def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]
     if legacy_pools:
         pools = {
             section: {"mode": "all", "ids": [], "excluded_ids": []}
-            for section in ("character", "clothing", "pose", "background")
+            for section in PROMPT_SECTIONS
         }
     if not isinstance(pools, dict):
         raise WorkflowError("pools 必须是对象")
     normalized_pools = {}
-    for section in ("character", "clothing", "pose", "background"):
+    for section in PROMPT_SECTIONS:
         selection = pools.get(section, {})
         if not isinstance(selection, dict):
             raise WorkflowError(f"{section} 随机池设置无效")
@@ -216,6 +223,7 @@ def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]
         "fixed_clothing",
         "fixed_pose",
         "fixed_background",
+        "fixed_expression",
         "quality_prompt",
         "extra_prompt",
         "negative_prompt",

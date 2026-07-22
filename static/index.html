@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#111615">
   <title>Anima Random Studio</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722-7">
+  <link rel="stylesheet" href="/static/styles.css?v=20260722-8">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -53,7 +53,8 @@
           <div class="section-heading"><h2>提示词池</h2><span id="poolOverview">0 项已选</span></div>
           <div id="dimensionList" class="dimension-list"></div>
           <label class="field"><span>角色标签</span><select id="character_detail"><option value="trigger_tags">触发词 + 特征</option><option value="trigger">仅触发词</option></select></label>
-          <label class="field"><span>固定画师</span><input id="manual_artist" type="text" placeholder="例如 anmi, @rella"></label>
+          <label class="field"><span>固定画师</span><span class="artist-input-row"><input id="manual_artist" type="text" placeholder="例如 anmi, @rella"><button id="manageArtists" class="icon-button dark" type="button" title="管理收藏画师" aria-label="管理收藏画师">♡</button></span></label>
+          <div id="artistFavorites" class="artist-favorites" aria-label="收藏画师快捷入口"></div>
         </section>
 
         <details class="control-section advanced-section">
@@ -116,6 +117,7 @@
       <button id="selectPage" class="button ghost" type="button">选中本页</button>
       <button id="selectAllPool" class="button ghost" type="button">全选词库</button>
       <button id="clearPool" class="button ghost" type="button">清空</button>
+      <button id="importCustom" class="button ghost compact" type="button">批量导入</button>
       <button id="addCustom" class="button primary compact" type="button"><span aria-hidden="true">+</span> 自定义</button>
     </div>
     <div class="pool-browser">
@@ -150,8 +152,43 @@
         <label class="field"><span>Anima 大品类</span><select id="customCategory"><option value="">未分类</option><option>Gestures &amp; Arms</option><option>Standing &amp; Dynamic</option><option>Sitting Poses</option><option>Lying &amp; Prone</option><option>Adjusting &amp; Dressing</option><option>Props &amp; Holding</option><option>Duo &amp; Interaction</option><option>Daily &amp; Miscellaneous</option></select></label>
         <label class="field"><span>细分 traits</span><input id="customTraits" type="text" maxlength="1000" placeholder="hand, pointing"></label>
       </div>
+      <fieldset class="field group-fieldset"><legend>自定义分组（可多选）</legend><div id="customGroupChecks" class="favorite-groups"></div></fieldset>
       <label class="field"><span>提示词</span><textarea id="customPrompt" rows="6" maxlength="20000" required></textarea></label>
       <div class="dialog-actions"><button id="deleteCustom" class="button danger" type="button" hidden>删除</button><span></span><button id="cancelCustom" class="button ghost" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="customGroupDialog" class="compact-dialog">
+    <form id="customGroupForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">CUSTOM GROUP</span><h2 id="customGroupDialogTitle">新建自定义分组</h2></div><button id="closeCustomGroup" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <input id="customGroupId" type="hidden">
+      <label class="field"><span>分组名称</span><input id="customGroupName" type="text" maxlength="100" required></label>
+      <div class="dialog-actions"><button id="deleteCustomGroup" class="button danger" type="button" hidden>删除分组</button><span></span><button id="cancelCustomGroup" class="button ghost" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="importDialog" class="import-dialog">
+    <form method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">BATCH IMPORT</span><h2>批量导入自定义项</h2></div><button id="closeImport" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div class="import-tools">
+        <label class="button primary compact file-button" for="importFile">选择 JSON / CSV</label><input id="importFile" class="file-input" type="file" accept=".json,.csv,application/json,text/csv">
+        <a class="button ghost compact" href="/api/custom-prompts/templates/json" download>JSON 模板</a>
+        <a class="button ghost compact" href="/api/custom-prompts/templates/csv" download>CSV 模板</a>
+      </div>
+      <p id="importHint" class="import-hint">选择文件后会先校验，不会立即写入。</p>
+      <div id="importSummary" class="import-summary" hidden></div>
+      <div id="importRows" class="import-rows"></div>
+      <div class="dialog-actions"><span></span><span></span><button id="cancelImport" class="button ghost" type="button">取消</button><button id="commitImport" class="button primary" type="button" disabled>确认导入</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="artistDialog" class="compact-dialog artist-dialog">
+    <form method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">ARTIST FAVORITES</span><h2>收藏画师</h2></div><button id="closeArtists" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <button id="saveCurrentArtists" class="button primary" type="button">收藏当前输入</button>
+      <p class="import-hint">当前输入会按逗号拆分。点击收藏项可追加到固定画师并自动去重。</p>
+      <div id="artistFavoriteList" class="artist-favorite-list"></div>
+      <div class="dialog-actions"><span></span><span></span><button id="cancelArtists" class="button ghost" type="button">完成</button></div>
     </form>
   </dialog>
 
@@ -200,6 +237,6 @@
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260722-7" defer></script>
+  <script src="/static/app.js?v=20260722-8" defer></script>
 </body>
 </html>
