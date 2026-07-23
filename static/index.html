@@ -14,7 +14,7 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260723-apple-3">
+  <link rel="stylesheet" href="/static/styles.css?v=20260724-groups-1">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -257,8 +257,36 @@
     <form id="groupForm" method="dialog">
       <div class="dialog-heading"><div><span class="kicker">COLLECTION</span><h2 id="groupDialogTitle">新建收藏分组</h2></div><button id="closeGroup" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
       <input id="groupId" type="hidden">
-      <label class="field"><span>分组名称</span><input id="groupName" type="text" maxlength="100" required></label>
-      <div class="dialog-actions"><button id="deleteGroup" class="button danger" type="button" hidden>删除分组</button><span></span><button id="cancelGroup" class="button ghost" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+      <label id="groupNameField" class="field"><span>分组名称</span><input id="groupName" type="text" maxlength="100" required></label>
+      <button id="importChildGroup" class="button secondary import-child-button" type="button" hidden><span aria-hidden="true">＋</span> 导入自定义分组为子分组</button>
+      <div class="dialog-actions"><button id="deleteGroup" class="button danger" type="button" hidden>删除分组</button><span></span><button id="cancelGroup" class="button ghost" type="button">取消</button><button id="saveGroupButton" class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="childGroupDialog" class="compact-dialog child-group-dialog">
+    <form id="childGroupForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">IMPORT CHILD GROUP</span><h2 id="childGroupTitle">导入收藏子分组</h2></div><button id="closeChildGroup" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <p id="childGroupHint" class="import-hint"></p>
+      <label class="search-field child-group-search"><span aria-hidden="true">⌕</span><input id="childGroupSearch" type="search" placeholder="搜索自定义分组"></label>
+      <div id="childGroupList" class="child-group-list" role="radiogroup" aria-label="可导入的自定义分组"></div>
+      <div id="childGroupEmpty" class="inline-empty" hidden>没有可导入的非空自定义分组。</div>
+      <div id="childGroupError" class="field-error" role="alert" hidden></div>
+      <div class="dialog-actions"><span></span><span></span><button id="cancelChildGroup" class="button ghost" type="button">取消</button><button id="confirmChildGroup" class="button primary" type="submit" disabled>导入</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="deleteGroupDialog" class="compact-dialog delete-group-dialog">
+    <form id="deleteGroupForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">DELETE GROUP</span><h2 id="deleteGroupTitle">删除分组</h2></div><button id="closeDeleteGroup" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <p id="deleteGroupSummary" class="delete-group-summary"></p>
+      <div id="deleteGroupStats" class="delete-group-stats"></div>
+      <fieldset class="delete-choice-list">
+        <legend>删除方式</legend>
+        <label class="delete-choice"><input id="deleteGroupKeep" type="radio" name="deleteGroupMode" value="keep" checked><span><strong>仅删除分组</strong><small id="deleteGroupKeepHint">条目保留；失去最后收藏分组的条目会移入“我的收藏”。</small></span></label>
+        <label id="deleteGroupItemsOption" class="delete-choice"><input id="deleteGroupItems" type="radio" name="deleteGroupMode" value="items"><span><strong id="deleteGroupItemsTitle">同时删除独占条目</strong><small id="deleteGroupItemsHint"></small></span></label>
+      </fieldset>
+      <div id="deleteGroupError" class="field-error" role="alert" hidden></div>
+      <div class="dialog-actions"><span></span><span></span><button id="cancelDeleteGroup" class="button ghost" type="button">取消</button><button id="confirmDeleteGroup" class="button danger" type="submit">删除</button></div>
     </form>
   </dialog>
 
@@ -289,6 +317,6 @@
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260723-apple-3" defer></script>
+  <script src="/static/app.js?v=20260724-groups-1" defer></script>
 </body>
 </html>

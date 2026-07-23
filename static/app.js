@@ -16,6 +16,7 @@ const DRAFT_KEY = "anima-random-studio:draft:v2";
 const LEGACY_DRAFT_KEY = "anima-random-studio:draft:v1";
 const VIEW_KEY = "anima-random-studio:pool-view:v1";
 const THEME_KEY = "anima-random-studio:theme:v1";
+const GROUP_TREE_KEY = "anima-random-studio:favorite-tree:v1";
 const INTERNAL_HIRES_PERCENT = 45;
 const LEGACY_DEFAULT_LORAS = [
   { filename: "anima-highres-aesthetic-boost.safetensors", enabled: true, strength: 0.75 },
@@ -37,7 +38,10 @@ const ui = Object.fromEntries([
   "loraDialog", "closeLora", "cancelLora", "loraSearch", "loraCatalog", "loraCatalogEmpty", "loraCatalogMeta",
   "draftStatus", "resetSettings", "clearDraft", "favoriteDialog", "favoriteForm", "favoriteTitle", "favoriteGroups",
   "favoriteNickname", "removeFavorite", "closeFavorite", "cancelFavorite", "groupDialog", "groupForm", "groupDialogTitle",
-  "groupId", "groupName", "deleteGroup", "closeGroup", "cancelGroup", "customGroupDialog", "customGroupForm", "customGroupDialogTitle",
+  "groupId", "groupName", "groupNameField", "deleteGroup", "closeGroup", "cancelGroup", "saveGroupButton", "importChildGroup",
+  "childGroupDialog", "childGroupForm", "childGroupTitle", "childGroupHint", "childGroupSearch", "childGroupList", "childGroupEmpty", "childGroupError", "closeChildGroup", "cancelChildGroup", "confirmChildGroup",
+  "deleteGroupDialog", "deleteGroupForm", "deleteGroupTitle", "deleteGroupSummary", "deleteGroupStats", "deleteGroupKeep", "deleteGroupKeepHint", "deleteGroupItemsOption", "deleteGroupItems", "deleteGroupItemsTitle", "deleteGroupItemsHint", "deleteGroupError", "closeDeleteGroup", "cancelDeleteGroup", "confirmDeleteGroup",
+  "customGroupDialog", "customGroupForm", "customGroupDialogTitle",
   "customGroupId", "customGroupName", "deleteCustomGroup", "closeCustomGroup", "cancelCustomGroup", "importDialog", "importDialogTitle", "importFile",
   "importJsonTemplate", "importCsvTemplate", "importTargetGroups", "closeImport", "cancelImport", "importHint", "importSummary", "importRows", "commitImport", "artistDialog", "closeArtists",
   "cancelArtists", "saveCurrentArtists", "artistFavoriteList"
@@ -72,6 +76,7 @@ let poolItems = [];
 let poolFacets = {};
 let poolRequest = 0;
 let editingCustom = null;
+let editingCustomGroup = null;
 let editingFavoriteItem = null;
 let loraInventory = [];
 let loraInventoryLoaded = false;
@@ -86,6 +91,18 @@ let resourceError = "";
 let resourcesLoaded = false;
 let hiresPercent = INTERNAL_HIRES_PERCENT;
 let importPreview = null;
+let editingGroup = null;
+let childGroupParent = null;
+let selectedChildSource = "";
+let pendingGroupDelete = null;
+let collapsedFavoriteGroups = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem(GROUP_TREE_KEY) || "{}");
+    return Object.fromEntries(SECTIONS.map(section => [section, new Set(value[section] || [])]));
+  } catch {
+    return Object.fromEntries(SECTIONS.map(section => [section, new Set()]));
+  }
+})();
 const poseItemCache = new Map();
 
 function defaultView() {
@@ -358,14 +375,75 @@ function sidebarSection(title, items, kind, activeValues, multi = false) {
   return section;
 }
 
+function favoriteChildren(parentId) {
+  return (favoritesData.groups || []).filter(group => (group.parentId || null) === (parentId || null));
+}
+function favoriteGroup(id) { return (favoritesData.groups || []).find(group => group.id === id) || null; }
+function favoriteDescendantIds(groupId) {
+  const ids = new Set(); const pending = [groupId];
+  while (pending.length) { const id = pending.pop(); if (ids.has(id)) continue; ids.add(id); favoriteChildren(id).forEach(group => pending.push(group.id)); }
+  return ids;
+}
+function favoriteGroupPath(group) {
+  const names = []; const seen = new Set(); let current = group;
+  while (current && !seen.has(current.id)) { seen.add(current.id); names.unshift(current.id === "default" ? "我的收藏" : current.name); current = current.parentId ? favoriteGroup(current.parentId) : null; }
+  return names.join(" / ");
+}
+function persistFavoriteTree() {
+  const value = Object.fromEntries(SECTIONS.map(section => [section, [...collapsedFavoriteGroups[section]]]));
+  localStorage.setItem(GROUP_TREE_KEY, JSON.stringify(value));
+}
+function focusFavoriteTreeRow(groupId) {
+  queueMicrotask(() => {
+    const row = ui.poolSidebar.querySelector(`.favorite-tree-row[data-group-id="${CSS.escape(groupId)}"]`);
+    if (!row) return;
+    ui.poolSidebar.querySelectorAll('.favorite-tree [role="treeitem"]').forEach(item => { item.tabIndex = item === row ? 0 : -1; });
+    row.focus();
+  });
+}
+function toggleFavoriteTreeGroup(groupId, restoreFocus = false) {
+  const collapsed = collapsedFavoriteGroups[activeSection];
+  collapsed.has(groupId) ? collapsed.delete(groupId) : collapsed.add(groupId);
+  persistFavoriteTree(); renderPoolSidebar();
+  if (restoreFocus) focusFavoriteTreeRow(groupId);
+}
+function renderFavoriteTree(container, view) {
+  container.className = "favorite-tree"; container.setAttribute("role", "tree"); container.setAttribute("aria-label", "收藏分组树");
+  const allRow = document.createElement("div"); allRow.className = `favorite-tree-row favorite-all-row${view.filters.collection ? "" : " active"}`; allRow.setAttribute("role", "treeitem"); allRow.setAttribute("aria-level", "1"); allRow.tabIndex = view.filters.collection ? -1 : 0;
+  allRow.innerHTML = `<span class="tree-spacer" aria-hidden="true"></span><button type="button" class="group-select"><span>全部${escapeHtml(SECTION_META[activeSection].label)}</span><small>${config.catalog?.counts?.[activeSection] || ""}</small></button><span></span>`;
+  allRow.querySelector(".group-select").addEventListener("click", () => { view.filters.collection = ""; poolPage = 1; loadPool(); schedulePersist(); renderPoolSidebar(); });
+  container.append(allRow);
+
+  const collapsed = collapsedFavoriteGroups[activeSection];
+  const appendGroup = (group, depth) => {
+    const children = favoriteChildren(group.id); const isCollapsed = collapsed.has(group.id); const active = view.filters.collection === group.id;
+    const row = document.createElement("div"); row.className = `favorite-tree-row${active ? " active" : ""}`; row.dataset.groupId = group.id; row.dataset.parentId = group.parentId || ""; row.style.setProperty("--tree-depth", String(Math.min(depth, 4))); row.title = favoriteGroupPath(group); row.setAttribute("role", "treeitem"); row.setAttribute("aria-level", String(depth + 1)); row.setAttribute("aria-selected", String(active)); if (children.length) row.setAttribute("aria-expanded", String(!isCollapsed)); row.tabIndex = active ? 0 : -1;
+    const disclosure = document.createElement(children.length ? "button" : "span"); disclosure.className = children.length ? "tree-disclosure" : "tree-spacer"; if (children.length) { disclosure.type = "button"; disclosure.tabIndex = -1; disclosure.title = isCollapsed ? "展开子分组" : "折叠子分组"; disclosure.setAttribute("aria-label", disclosure.title); disclosure.textContent = "›"; disclosure.addEventListener("click", event => { event.stopPropagation(); toggleFavoriteTreeGroup(group.id, true); }); }
+    const button = document.createElement("button"); button.type = "button"; button.className = "group-select"; button.innerHTML = `<span>${escapeHtml(group.id === "default" ? "我的收藏" : group.name)}</span><small>${group.totalCount ?? 0}</small>`; button.addEventListener("click", () => { view.filters.collection = group.id; poolPage = 1; loadPool(); schedulePersist(); renderPoolSidebar(); });
+    const edit = document.createElement("button"); edit.type = "button"; edit.className = "collection-edit"; edit.title = group.isSystem ? "管理子分组" : "管理收藏分组"; edit.setAttribute("aria-label", `${edit.title} ${group.id === "default" ? "我的收藏" : group.name}`); edit.textContent = "···"; edit.addEventListener("click", event => { event.stopPropagation(); openGroupDialog(group); });
+    row.append(disclosure, button, edit); container.append(row);
+    if (!isCollapsed) children.forEach(child => appendGroup(child, depth + 1));
+  };
+  favoriteChildren(null).forEach(group => appendGroup(group, 0));
+}
+function handleFavoriteTreeKeydown(event) {
+  const row = event.target.closest('[role="treeitem"]');
+  if (!row || !row.closest(".favorite-tree")) return;
+  const rows = [...row.closest(".favorite-tree").querySelectorAll('[role="treeitem"]')];
+  const index = rows.indexOf(row); const groupId = row.dataset.groupId || ""; const group = groupId ? favoriteGroup(groupId) : null;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); const next = rows[index + (event.key === "ArrowDown" ? 1 : -1)]; if (next) { row.tabIndex = -1; next.tabIndex = 0; next.focus(); } }
+  else if (event.key === "ArrowRight" && group) { event.preventDefault(); if (row.getAttribute("aria-expanded") === "false") toggleFavoriteTreeGroup(groupId, true); else { const next = rows[index + 1]; if (next) { row.tabIndex = -1; next.tabIndex = 0; next.focus(); } } }
+  else if (event.key === "ArrowLeft" && group) { event.preventDefault(); if (row.getAttribute("aria-expanded") === "true") toggleFavoriteTreeGroup(groupId, true); else if (group.parentId) { const parent = rows.find(item => item.dataset.groupId === group.parentId); if (parent) { row.tabIndex = -1; parent.tabIndex = 0; parent.focus(); } } }
+  else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); row.querySelector(".group-select")?.click(); }
+}
+
 function renderPoolSidebar() {
   const view = currentView(); const nav = document.createDocumentFragment();
   const collections = document.createElement("section"); collections.className = "facet-section collections";
   collections.innerHTML = `<div class="facet-heading"><h3>收藏分组</h3><button type="button" title="新建收藏分组" aria-label="新建收藏分组">+</button></div><div></div>`;
   collections.querySelector(".facet-heading button").disabled = !favoritesAvailable; collections.querySelector(".facet-heading button").addEventListener("click", () => openGroupDialog());
   const collectionBody = collections.lastElementChild;
-  const allButton = document.createElement("button"); allButton.type = "button"; allButton.className = view.filters.collection ? "" : "active"; allButton.innerHTML = `<span>全部${SECTION_META[activeSection].label}</span><small>${config.catalog?.counts?.[activeSection] || ""}</small>`; allButton.addEventListener("click", () => { view.filters.collection = ""; poolPage = 1; loadPool(); schedulePersist(); }); collectionBody.append(allButton);
-  for (const group of favoritesData.groups || []) { const count = (favoritesData.items || []).filter(item => item.groupIds?.includes(group.id)).length; const row = document.createElement("div"); row.className = "collection-row"; const button = document.createElement("button"); button.type = "button"; button.className = view.filters.collection === group.id ? "active" : ""; button.innerHTML = `<span>${group.id === "default" ? "我的收藏" : escapeHtml(group.name)}</span><small>${count}</small>`; button.addEventListener("click", () => { view.filters.collection = group.id; poolPage = 1; loadPool(); schedulePersist(); }); row.append(button); if (!group.isSystem) { const edit = document.createElement("button"); edit.type = "button"; edit.className = "collection-edit"; edit.title = "编辑分组"; edit.setAttribute("aria-label", `编辑分组 ${group.name}`); edit.textContent = "···"; edit.addEventListener("click", () => openGroupDialog(group)); row.append(edit); } collectionBody.append(row); }
+  renderFavoriteTree(collectionBody, view);
   nav.append(collections);
   const customSection = document.createElement("section"); customSection.className = "facet-section custom-group-section";
   customSection.innerHTML = `<div class="facet-heading"><h3>自定义分组</h3><button type="button" title="新建自定义分组" aria-label="新建自定义分组">+</button></div><div></div>`;
@@ -412,14 +490,24 @@ function updatePoseConflict() {
   const labels = { hand_action: "手部动作", body_pose: "整体姿态", interaction: "双人互动" }; ui.poseConflict.hidden = false; ui.poseConflict.innerHTML = `<strong>存在潜在姿势冲突</strong><span>${conflicts.map(([slot, names]) => `${labels[slot] || slot}：${names.join("、")}`).join("；")}</span>`;
 }
 
-async function toggleFavorite(item, favorite) { try { favoritesData = await request(`/api/favorites/${activeSection}/item`, { method: "PUT", body: JSON.stringify({ id: item.id, favorite }) }); favoritesAvailable = true; if (!favorite && currentView().filters.collection) await loadPool(); else { renderPoolItems(); renderPoolSidebar(); } toast(favorite ? "已加入 Anima 收藏" : "已取消收藏"); } catch (error) { toast(error.message); } }
-function openFavoriteDialog(item) { editingFavoriteItem = item; const saved = favoriteMap().get(favoriteKey(item)) || {}; ui.favoriteTitle.textContent = displayTitle(item); ui.favoriteNickname.value = saved.nickname || ""; ui.favoriteGroups.replaceChildren(...(favoritesData.groups || []).map(group => { const label = document.createElement("label"); label.className = "favorite-group-check"; label.innerHTML = `<input type="checkbox" value="${escapeHtml(group.id)}" ${(saved.groupIds || []).includes(group.id) ? "checked" : ""}><span>${escapeHtml(group.id === "default" ? "我的收藏" : group.name)}</span>`; return label; })); ui.favoriteDialog.showModal(); }
-async function saveFavorite(event) { event.preventDefault(); if (!editingFavoriteItem) return; const groupIds = [...ui.favoriteGroups.querySelectorAll("input:checked")].map(input => input.value); try { favoritesData = await request(`/api/favorites/${activeSection}/item`, { method: "PUT", body: JSON.stringify({ id: editingFavoriteItem.id, favorite: true, groupIds, nickname: ui.favoriteNickname.value }) }); ui.favoriteDialog.close(); renderPoolItems(); renderPoolSidebar(); toast("收藏设置已保存"); } catch (error) { toast(error.message); } }
-async function removeFavorite() { if (!editingFavoriteItem) return; try { favoritesData = await request(`/api/favorites/${activeSection}/item`, { method: "PUT", body: JSON.stringify({ id: editingFavoriteItem.id, favorite: false }) }); ui.favoriteDialog.close(); await loadPool(); toast("已取消收藏"); } catch (error) { toast(error.message); } }
+function reconcileFavoriteCollection() { const view = currentView(); if (view.filters.collection && !favoriteGroup(view.filters.collection)) { view.filters.collection = ""; schedulePersist(); return true; } return false; }
+async function toggleFavorite(item, favorite) { try { favoritesData = await request(`/api/favorites/${activeSection}/item`, { method: "PUT", body: JSON.stringify({ id: item.id, favorite }) }); favoritesAvailable = true; const resetCollection = reconcileFavoriteCollection(); if (resetCollection || (!favorite && currentView().filters.collection)) await loadPool(); else { renderPoolItems(); renderPoolSidebar(); } toast(favorite ? "已加入 Anima 收藏" : "已取消收藏"); } catch (error) { toast(error.message); } }
+function orderedFavoriteGroups() { const result = []; const append = (group, depth) => { result.push({ group, depth }); favoriteChildren(group.id).forEach(child => append(child, depth + 1)); }; favoriteChildren(null).forEach(group => append(group, 0)); return result; }
+function openFavoriteDialog(item) { editingFavoriteItem = item; const saved = favoriteMap().get(favoriteKey(item)) || {}; ui.favoriteTitle.textContent = displayTitle(item); ui.favoriteNickname.value = saved.nickname || ""; ui.favoriteGroups.replaceChildren(...orderedFavoriteGroups().map(({ group, depth }) => { const label = document.createElement("label"); label.className = "favorite-group-check tree-check"; label.style.setProperty("--tree-depth", String(Math.min(depth, 4))); label.title = favoriteGroupPath(group); label.innerHTML = `<input type="checkbox" value="${escapeHtml(group.id)}" ${(saved.groupIds || []).includes(group.id) ? "checked" : ""}><span>${escapeHtml(group.id === "default" ? "我的收藏" : group.name)}</span><small>${group.totalCount ?? 0}</small>`; return label; })); ui.favoriteDialog.showModal(); }
+async function saveFavorite(event) { event.preventDefault(); if (!editingFavoriteItem) return; const groupIds = [...ui.favoriteGroups.querySelectorAll("input:checked")].map(input => input.value); try { favoritesData = await request(`/api/favorites/${activeSection}/item`, { method: "PUT", body: JSON.stringify({ id: editingFavoriteItem.id, favorite: true, groupIds, nickname: ui.favoriteNickname.value }) }); ui.favoriteDialog.close(); if (reconcileFavoriteCollection()) await loadPool(); else { renderPoolItems(); renderPoolSidebar(); } toast("收藏设置已保存"); } catch (error) { toast(error.message); } }
+async function removeFavorite() { if (!editingFavoriteItem) return; try { favoritesData = await request(`/api/favorites/${activeSection}/item`, { method: "PUT", body: JSON.stringify({ id: editingFavoriteItem.id, favorite: false }) }); ui.favoriteDialog.close(); reconcileFavoriteCollection(); await loadPool(); toast("已取消收藏"); } catch (error) { toast(error.message); } }
 
-function openGroupDialog(group = null) { ui.groupId.value = group?.id || ""; ui.groupName.value = group?.name || ""; ui.groupDialogTitle.textContent = group ? "编辑收藏分组" : "新建收藏分组"; ui.deleteGroup.hidden = !group; ui.groupDialog.showModal(); }
+function openGroupDialog(group = null) { editingGroup = group; ui.groupId.value = group?.id || ""; ui.groupName.value = group?.name || ""; ui.groupDialogTitle.textContent = !group ? "新建收藏分组" : group.isSystem ? "管理我的收藏" : "编辑收藏分组"; ui.groupNameField.hidden = Boolean(group?.isSystem); ui.groupName.required = !group?.isSystem; ui.deleteGroup.hidden = !group || group.isSystem; ui.importChildGroup.hidden = !group; ui.saveGroupButton.hidden = Boolean(group?.isSystem); ui.groupDialog.showModal(); }
 async function saveGroup(event) { event.preventDefault(); const id = ui.groupId.value; try { favoritesData = await request(id ? `/api/favorites/${activeSection}/groups/${encodeURIComponent(id)}` : `/api/favorites/${activeSection}/groups`, { method: id ? "PUT" : "POST", body: JSON.stringify({ name: ui.groupName.value }) }); ui.groupDialog.close(); renderPoolSidebar(); toast(id ? "收藏分组已更新" : "收藏分组已创建"); } catch (error) { toast(error.message); } }
-async function deleteFavoriteGroup() { const id = ui.groupId.value; if (!id || !confirm("删除这个收藏分组？收藏条目本身不会删除。")) return; try { favoritesData = await request(`/api/favorites/${activeSection}/groups/${encodeURIComponent(id)}`, { method: "DELETE" }); if (currentView().filters.collection === id) currentView().filters.collection = ""; ui.groupDialog.close(); await loadPool(); toast("收藏分组已删除"); } catch (error) { toast(error.message); } }
+function setChildGroupError(message = "") { ui.childGroupError.textContent = message; ui.childGroupError.hidden = !message; }
+function renderChildGroupSources() { const query = ui.childGroupSearch.value.trim().toLocaleLowerCase(); const siblings = favoriteChildren(childGroupParent?.id); const available = customGroups.filter(group => !query || group.name.toLocaleLowerCase().includes(query)); ui.childGroupList.replaceChildren(...available.map(group => { const duplicate = siblings.some(item => item.sourceCustomGroupId === group.id || item.name.trim().toLocaleLowerCase() === group.name.trim().toLocaleLowerCase()); const disabled = !group.count || duplicate; const label = document.createElement("label"); label.className = `child-group-option${disabled ? " disabled" : ""}`; label.title = duplicate ? "当前父组下已经导入" : !group.count ? "空分组不能导入" : `导入 ${group.count} 项`; label.innerHTML = `<input type="radio" name="childGroupSource" value="${escapeHtml(group.id)}" ${selectedChildSource === group.id ? "checked" : ""} ${disabled ? "disabled" : ""}><span><strong>${escapeHtml(group.name)}</strong><small>${duplicate ? "已导入" : !group.count ? "空分组" : `${group.count} 项 · 一次性快照`}</small></span>`; label.querySelector("input").addEventListener("change", () => { selectedChildSource = group.id; ui.confirmChildGroup.disabled = false; setChildGroupError(); }); return label; })); ui.childGroupEmpty.textContent = customGroups.length ? "没有匹配的自定义分组。" : "当前分类还没有自定义分组。"; ui.childGroupEmpty.hidden = available.length > 0; }
+function openChildGroupDialog(group = editingGroup) { if (!group) return; childGroupParent = group; selectedChildSource = ""; ui.groupDialog.close(); ui.childGroupTitle.textContent = `导入到“${group.id === "default" ? "我的收藏" : group.name}”`; ui.childGroupHint.textContent = "从当前提示词池的自定义分组创建一次性收藏快照，后续两边独立修改。"; ui.childGroupSearch.value = ""; ui.confirmChildGroup.disabled = true; setChildGroupError(); renderChildGroupSources(); ui.childGroupDialog.showModal(); }
+async function importFavoriteChild(event) { event.preventDefault(); if (!childGroupParent || !selectedChildSource || ui.confirmChildGroup.disabled) return; const label = ui.confirmChildGroup.textContent; ui.confirmChildGroup.disabled = true; ui.confirmChildGroup.textContent = "导入中…"; try { favoritesData = await request(`/api/favorites/${activeSection}/groups/${encodeURIComponent(childGroupParent.id)}/children/import`, { method: "POST", body: JSON.stringify({ customGroupId: selectedChildSource }) }); collapsedFavoriteGroups[activeSection].delete(childGroupParent.id); persistFavoriteTree(); ui.childGroupDialog.close(); renderPoolSidebar(); if (currentView().filters.collection === childGroupParent.id) await loadPool(); toast("收藏子分组已导入"); } catch (error) { setChildGroupError(error.message); } finally { ui.confirmChildGroup.disabled = !selectedChildSource; ui.confirmChildGroup.textContent = label; } }
+
+function deleteStat(label, value) { return `<div><strong>${Number(value) || 0}</strong><span>${escapeHtml(label)}</span></div>`; }
+function openDeleteGroupDialog(kind, group) { pendingGroupDelete = { kind, group }; const favorite = kind === "favorite"; const subtree = favorite ? favoriteDescendantIds(group.id) : new Set([group.id]); const directCount = favorite ? Number(group.directCount || 0) : Number(group.count || 0); const affectedFavorites = favorite ? (favoritesData.items || []).filter(item => (item.groupIds || []).some(id => subtree.has(id))) : []; const exclusiveCount = favorite ? affectedFavorites.filter(item => !(item.groupIds || []).some(id => !subtree.has(id))).length : Number(group.exclusiveCount || 0); const totalCount = favorite ? affectedFavorites.length : directCount; const sharedCount = Math.max(0, totalCount - exclusiveCount); const childCount = favorite ? Number(group.childCount || 0) : 0; const canDeleteItems = favorite ? Boolean(group.parentId && !childCount && directCount) : directCount > 0; ui.groupDialog.close(); ui.customGroupDialog.close(); ui.deleteGroupTitle.textContent = `删除“${group.id === "default" ? "我的收藏" : group.name}”`; ui.deleteGroupSummary.textContent = favorite && subtree.size > 1 ? `将删除当前父组及 ${subtree.size - 1} 个后代分组，收藏条目默认保留。` : "默认只删除分组结构，条目保持不变。"; ui.deleteGroupStats.innerHTML = favorite ? `${deleteStat("分组", subtree.size)}${deleteStat("聚合收藏", totalCount)}${deleteStat("独占收藏", exclusiveCount)}${deleteStat("共享收藏", sharedCount)}` : `${deleteStat("组内条目", directCount)}${deleteStat("可删除独占项", exclusiveCount)}${deleteStat("保留共享项", sharedCount)}`; ui.deleteGroupKeep.checked = true; ui.deleteGroupKeepHint.textContent = favorite ? `${exclusiveCount} 项失去最后分组的收藏会移入“我的收藏”，其余收藏保留现有分组。` : "所有自定义提示词都会保留，仅解除当前分组关联。"; ui.deleteGroupItemsOption.hidden = !canDeleteItems; ui.deleteGroupItemsTitle.textContent = favorite ? `同时删除 ${exclusiveCount} 项独占收藏` : `同时删除 ${exclusiveCount} 项独占提示词`; ui.deleteGroupItemsHint.textContent = sharedCount ? `${sharedCount} 项共享条目只会解除当前分组关联。` : "没有共享条目。"; ui.deleteGroupError.hidden = true; ui.deleteGroupError.textContent = ""; ui.confirmDeleteGroup.disabled = false; ui.confirmDeleteGroup.textContent = "删除"; ui.deleteGroupDialog.showModal(); }
+async function confirmGroupDelete(event) { event.preventDefault(); if (!pendingGroupDelete || ui.confirmDeleteGroup.disabled) return; const { kind, group } = pendingGroupDelete; const deleteItems = !ui.deleteGroupItemsOption.hidden && ui.deleteGroupItems.checked; ui.confirmDeleteGroup.disabled = true; ui.confirmDeleteGroup.textContent = "删除中…"; ui.deleteGroupError.hidden = true; try { if (kind === "favorite") { const payload = await request(`/api/favorites/${activeSection}/groups/${encodeURIComponent(group.id)}?deleteItems=${deleteItems}`, { method: "DELETE" }); favoritesData = payload; if ((payload.deletedGroupIds || []).includes(currentView().filters.collection)) currentView().filters.collection = ""; collapsedFavoriteGroups[activeSection] = new Set([...collapsedFavoriteGroups[activeSection]].filter(id => !(payload.deletedGroupIds || []).includes(id))); persistFavoriteTree(); toast(deleteItems ? `已删除分组和 ${payload.deletedFavoriteCount || 0} 项独占收藏` : `已删除 ${payload.deletedGroupCount || 1} 个分组，条目已保留`); } else { const payload = await request(`/api/custom-groups/${activeSection}/${encodeURIComponent(group.id)}?deleteItems=${deleteItems}`, { method: "DELETE" }); customGroups = payload.groups || []; const deletedIds = new Set(payload.deletedItemIds || []); const selection = draft.pools[activeSection]; selection.ids = selection.ids.filter(id => !deletedIds.has(id)); selection.excluded_ids = selection.excluded_ids.filter(id => !deletedIds.has(id)); deletedIds.forEach(id => poseItemCache.delete(id)); if (currentView().filters.customGroup === group.id) currentView().filters.customGroup = ""; schedulePersist(); toast(deleteItems ? `已删除分组和 ${payload.deletedItemCount || 0} 项独占提示词` : "自定义分组已删除，条目已保留"); } ui.deleteGroupDialog.close(); pendingGroupDelete = null; await loadPool(); renderPoolSidebar(); renderDimensions(); updatePoolOverview(); } catch (error) { ui.deleteGroupError.textContent = error.message; ui.deleteGroupError.hidden = false; } finally { ui.confirmDeleteGroup.disabled = false; ui.confirmDeleteGroup.textContent = "删除"; } }
+function deleteFavoriteGroup() { if (editingGroup) openDeleteGroupDialog("favorite", editingGroup); }
 
 function selectCurrentPage(checked) { for (const item of poolItems) { const selection = draft.pools[activeSection]; if (selection.mode === "all") selection.excluded_ids = checked ? selection.excluded_ids.filter(value => value !== item.id) : [...new Set([...selection.excluded_ids, item.id])]; else if (checked) selection.ids = [...new Set([...selection.ids, item.id])]; else selection.ids = selection.ids.filter(value => value !== item.id); } renderPoolItems(); renderDimensions(); updatePoolOverview(); updatePoseConflict(); schedulePersist(); }
 
@@ -427,9 +515,9 @@ function openCustom(item = null) { editingCustom = item; ui.customDialogTitle.te
 async function saveCustom(event) { event.preventDefault(); const payload = { section: activeSection, title: ui.customTitle.value, subtitle: ui.customSubtitle.value, prompt: ui.customPrompt.value, gender: ui.customGender.value, hair: ui.customHair.value, eye: ui.customEye.value, copyright: ui.customSeries.value, categories: ui.customCategory.value ? [ui.customCategory.value] : [], traits: ui.customTraits.value.split(",").map(value => value.trim()).filter(Boolean), groupIds: [...ui.customGroupChecks.querySelectorAll("input:checked")].map(input => input.value) }; try { const item = editingCustom ? await request(`/api/custom-prompts/${editingCustom.id}`, { method: "PUT", body: JSON.stringify(payload) }) : await request("/api/custom-prompts", { method: "POST", body: JSON.stringify(payload) }); if (!selectionHas(activeSection, item.id)) toggleSelection(activeSection, item.id, true); ui.customDialog.close(); await loadCustomGroups(); await loadPool(); toast(editingCustom ? "自定义项已更新" : "自定义项已加入随机池"); } catch (error) { toast(error.message); } }
 async function deleteCustomItem() { if (!editingCustom || !confirm("删除这个自定义项？")) return; try { await request(`/api/custom-prompts/${editingCustom.id}`, { method: "DELETE" }); const selection = draft.pools[activeSection]; selection.ids = selection.ids.filter(id => id !== editingCustom.id); selection.excluded_ids = selection.excluded_ids.filter(id => id !== editingCustom.id); ui.customDialog.close(); await loadPool(); renderDimensions(); updatePoolOverview(); schedulePersist(); toast("自定义项已删除"); } catch (error) { toast(error.message); } }
 
-function openCustomGroupDialog(group = null) { ui.customGroupId.value = group?.id || ""; ui.customGroupName.value = group?.name || ""; ui.customGroupDialogTitle.textContent = group ? "编辑自定义分组" : "新建自定义分组"; ui.deleteCustomGroup.hidden = !group; ui.customGroupDialog.showModal(); }
+function openCustomGroupDialog(group = null) { editingCustomGroup = group; ui.customGroupId.value = group?.id || ""; ui.customGroupName.value = group?.name || ""; ui.customGroupDialogTitle.textContent = group ? "编辑自定义分组" : "新建自定义分组"; ui.deleteCustomGroup.hidden = !group; ui.customGroupDialog.showModal(); }
 async function saveCustomGroup(event) { event.preventDefault(); const id = ui.customGroupId.value; try { const payload = await request(id ? `/api/custom-groups/${activeSection}/${encodeURIComponent(id)}` : `/api/custom-groups/${activeSection}`, { method: id ? "PUT" : "POST", body: JSON.stringify({ name: ui.customGroupName.value }) }); customGroups = payload.groups || []; ui.customGroupDialog.close(); renderPoolSidebar(); toast(id ? "自定义分组已更新" : "自定义分组已创建"); } catch (error) { toast(error.message); } }
-async function removeCustomGroup() { const id = ui.customGroupId.value; if (!id || !confirm("删除这个自定义分组？条目不会被删除。")) return; try { const payload = await request(`/api/custom-groups/${activeSection}/${encodeURIComponent(id)}`, { method: "DELETE" }); customGroups = payload.groups || []; if (currentView().filters.customGroup === id) currentView().filters.customGroup = ""; ui.customGroupDialog.close(); await loadPool(); toast("自定义分组已删除"); } catch (error) { toast(error.message); } }
+function removeCustomGroup() { if (editingCustomGroup) openDeleteGroupDialog("custom", editingCustomGroup); }
 
 function selectedImportGroupIds() { return [...ui.importTargetGroups.querySelectorAll("input:checked")].map(input => input.value); }
 function selectedImportGroupNames() { const selected = new Set(selectedImportGroupIds()); return customGroups.filter(group => selected.has(group.id)).map(group => group.name); }
@@ -681,7 +769,8 @@ ui.restoreSettings.addEventListener("click", () => { if (!selectedRecord) return
 ui.deleteRecord.addEventListener("click", async () => { if (!selectedRecord || !confirm("只删除 WebUI 历史记录，图片文件会保留。继续吗？")) return; try { await request(`/api/history/${selectedRecord.id}`, { method: "DELETE" }); ui.detailDialog.close(); selectedRecord = null; await loadHistory(historyPage); } catch (error) { toast(error.message); } });
 ui.closePool.addEventListener("click", closePool); ui.confirmPool.addEventListener("click", closePool); ui.drawerBackdrop.addEventListener("click", closePool);
 ui.togglePoolSidebar.addEventListener("click", () => setPoolSidebarOpen(!ui.poolSidebar.classList.contains("mobile-open")));
-ui.poolSidebar.addEventListener("click", event => { if (window.innerWidth <= 620 && event.target.closest("button") && !event.target.closest(".facet-heading, .collection-edit")) setPoolSidebarOpen(false); });
+ui.poolSidebar.addEventListener("click", event => { if (window.innerWidth <= 620 && event.target.closest("button") && !event.target.closest(".facet-heading, .collection-edit, .tree-disclosure")) setPoolSidebarOpen(false); });
+ui.poolSidebar.addEventListener("keydown", handleFavoriteTreeKeydown);
 ui.poolSearch.addEventListener("input", () => { currentView().query = ui.poolSearch.value; poolPage = 1; clearTimeout(ui.poolSearch._timer); ui.poolSearch._timer = setTimeout(loadPool, 220); schedulePersist(); });
 ui.poolSort.addEventListener("change", () => { currentView().sort = ui.poolSort.value; poolPage = 1; loadPool(); schedulePersist(); }); ui.poolLanguage.addEventListener("change", () => { currentView().language = ui.poolLanguage.value; renderPoolItems(); schedulePersist(); });
 ui.selectedOnly.addEventListener("change", () => { currentView().selectedOnly = ui.selectedOnly.checked; poolPage = 1; loadPool(); schedulePersist(); });
@@ -703,6 +792,8 @@ for (const control of [ui.model_name, ui.hires_enabled, ui.hires_model_name, ui.
 ui.themeToggle.addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true));
 ui.favoriteForm.addEventListener("submit", saveFavorite); ui.removeFavorite.addEventListener("click", removeFavorite); ui.closeFavorite.addEventListener("click", () => ui.favoriteDialog.close()); ui.cancelFavorite.addEventListener("click", () => ui.favoriteDialog.close());
 ui.groupForm.addEventListener("submit", saveGroup); ui.deleteGroup.addEventListener("click", deleteFavoriteGroup); ui.closeGroup.addEventListener("click", () => ui.groupDialog.close()); ui.cancelGroup.addEventListener("click", () => ui.groupDialog.close());
+ui.importChildGroup.addEventListener("click", () => openChildGroupDialog()); ui.childGroupForm.addEventListener("submit", importFavoriteChild); ui.childGroupSearch.addEventListener("input", renderChildGroupSources); ui.closeChildGroup.addEventListener("click", () => ui.childGroupDialog.close()); ui.cancelChildGroup.addEventListener("click", () => ui.childGroupDialog.close());
+ui.deleteGroupForm.addEventListener("submit", confirmGroupDelete); ui.closeDeleteGroup.addEventListener("click", () => ui.deleteGroupDialog.close()); ui.cancelDeleteGroup.addEventListener("click", () => ui.deleteGroupDialog.close());
 ui.addLora.addEventListener("click", openLoraDialog); ui.resetLoras.addEventListener("click", () => { draft.loras = clone(defaults?.loras || []); renderLoras(); schedulePersist(); toast("已恢复模板默认 LoRA"); }); ui.closeLora.addEventListener("click", () => ui.loraDialog.close()); ui.cancelLora.addEventListener("click", () => ui.loraDialog.close()); ui.loraSearch.addEventListener("input", renderLoraCatalog);
 ui.female_count.addEventListener("input", updatePeopleTotal); ui.male_count.addEventListener("input", updatePeopleTotal);
 ui.resetSettings.addEventListener("click", () => { if (!confirm("恢复全部模板默认设置？")) return; applySettings(defaults); schedulePersist(); toast("已恢复默认设置"); });
