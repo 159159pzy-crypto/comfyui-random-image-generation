@@ -12,8 +12,16 @@ const NATIVE_FACET_LABELS = {
   expression: { categories: "表情分类", traits: "表情特征" },
 };
 const SECTIONS = Object.keys(SECTION_META);
-const DRAFT_KEY = "anima-random-studio:draft:v1";
+const DRAFT_KEY = "anima-random-studio:draft:v2";
+const LEGACY_DRAFT_KEY = "anima-random-studio:draft:v1";
 const VIEW_KEY = "anima-random-studio:pool-view:v1";
+const THEME_KEY = "anima-random-studio:theme:v1";
+const INTERNAL_HIRES_PERCENT = 45;
+const LEGACY_DEFAULT_LORAS = [
+  { filename: "anima-highres-aesthetic-boost.safetensors", enabled: true, strength: 0.75 },
+  { filename: "BlueArchiveStyleB1.safetensors", enabled: true, strength: 0.95 },
+  { filename: "Cunnyfunkyv3.safetensors", enabled: true, strength: 0.75 },
+];
 const ui = Object.fromEntries([
   "connection", "startButton", "stopButton", "batchState", "progressCount", "progressFill", "batchError",
   "settingsForm", "count", "female_count", "male_count", "peopleTotal", "dimensionList", "poolOverview",
@@ -33,7 +41,18 @@ const ui = Object.fromEntries([
   "customGroupId", "customGroupName", "deleteCustomGroup", "closeCustomGroup", "cancelCustomGroup", "importDialog", "importDialogTitle", "importFile",
   "importJsonTemplate", "importCsvTemplate", "importTargetGroups", "closeImport", "cancelImport", "importHint", "importSummary", "importRows", "commitImport", "artistDialog", "closeArtists",
   "cancelArtists", "saveCurrentArtists", "artistFavoriteList"
+  , "artistFavoriteCount", "presetSummary", "presetName", "savePreset", "presetError", "presetList", "presetEmpty",
+  "model_name", "hires_enabled", "hires_model_name", "hiresFields", "repairSummary", "resourceWarning",
+  "detailer_hand", "detailer_nsfw", "detailer_face", "detailer_eyes", "themeToggle", "appError"
 ].map(id => [id, document.getElementById(id)]));
+
+const missingUi = Object.entries(ui).filter(([, element]) => !element).map(([id]) => id);
+if (missingUi.length) {
+  const message = `界面资源版本不一致，缺少控件：${missingUi.join("、")}。请刷新页面。`;
+  const errorPanel = document.getElementById("appError");
+  if (errorPanel) { errorPanel.textContent = message; errorPanel.hidden = false; }
+  throw new Error(message);
+}
 
 let defaults = null;
 let config = { catalog: { counts: {} } };
@@ -61,6 +80,11 @@ let favoritesData = { groups: [], items: [], favorite_keys: [] };
 let favoritesAvailable = false;
 let customGroups = [];
 let artistFavoritesData = { groups: [], items: [] };
+let stylePresets = [];
+let resources = { models: [], upscale_models: [] };
+let resourceError = "";
+let resourcesLoaded = false;
+let hiresPercent = INTERNAL_HIRES_PERCENT;
 let importPreview = null;
 const poseItemCache = new Map();
 
@@ -94,6 +118,23 @@ function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function defaultPools() { return Object.fromEntries(SECTIONS.map(section => [section, { mode: "include", ids: [], excluded_ids: [] }])); }
 function currentView() { return poolViews[activeSection] || (poolViews[activeSection] = defaultView()); }
 
+function applyTheme(theme, persist = false) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  document.querySelector('meta[name="theme-color"]').content = next === "dark" ? "#1c1c1e" : "#f5f5f7";
+  ui.themeToggle.title = next === "dark" ? "切换浅色主题" : "切换深色主题";
+  ui.themeToggle.setAttribute("aria-label", ui.themeToggle.title);
+  ui.themeToggle.setAttribute("aria-pressed", String(next === "dark"));
+  ui.themeToggle.querySelector("span").textContent = next === "dark" ? "☀" : "☾";
+  if (persist) localStorage.setItem(THEME_KEY, next);
+}
+
+function initialTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === "light" || saved === "dark") return saved;
+  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 function normalizeSettings(raw) {
   const merged = { ...defaults, ...raw };
   const hasPools = raw && raw.pools && typeof raw.pools === "object";
@@ -104,6 +145,9 @@ function normalizeSettings(raw) {
   }
   const hasLoras = raw && Object.prototype.hasOwnProperty.call(raw, "loras");
   merged.loras = clone(hasLoras ? (raw.loras || []) : (defaults?.loras || []));
+  merged.hires = { ...(defaults?.hires || { enabled: true, model_name: "", percent: INTERNAL_HIRES_PERCENT }), ...(raw?.hires || {}) };
+  merged.detailers = { ...(defaults?.detailers || { hand: false, nsfw: false, face: false, eyes: false }), ...(raw?.detailers || {}) };
+  merged.manual_artist = canonicalArtists(merged.manual_artist);
   return merged;
 }
 
@@ -113,6 +157,11 @@ function applySettings(raw) {
     const element = ui[name];
     if (element && !["object", "undefined"].includes(typeof value)) element.value = value;
   }
+  ensureSelectValue(ui.model_name, settings.model_name);
+  ensureSelectValue(ui.hires_model_name, settings.hires.model_name);
+  ui.hires_enabled.checked = Boolean(settings.hires.enabled);
+  hiresPercent = Number(settings.hires.percent) || INTERNAL_HIRES_PERCENT;
+  for (const name of ["hand", "nsfw", "face", "eyes"]) ui[`detailer_${name}`].checked = Boolean(settings.detailers[name]);
   draft = {
     modes: Object.fromEntries(SECTIONS.map(section => [section, settings[`random_${section}`] ? "pool" : (settings[`fixed_${section}`] ? "fixed" : "off")])),
     counts: Object.fromEntries(SECTIONS.map(section => [section, Number(settings[`random_${section}_count`] || 1)])),
@@ -120,15 +169,20 @@ function applySettings(raw) {
     pools: clone(settings.pools || defaultPools()),
     loras: clone(settings.loras || []),
   };
-  renderDimensions(); renderLoras(); updatePeopleTotal(); updatePoolOverview();
+  renderDimensions(); renderLoras(); updatePeopleTotal(); updatePoolOverview(); updateRepairControls();
 }
 
 function readSettings() {
+  const normalizedArtist = canonicalArtists(ui.manual_artist.value);
+  if (ui.manual_artist.value !== normalizedArtist) ui.manual_artist.value = normalizedArtist;
   const settings = {
     count: Number(ui.count.value), female_count: Number(ui.female_count.value), male_count: Number(ui.male_count.value),
-    character_detail: ui.character_detail.value, manual_artist: ui.manual_artist.value, quality_prompt: ui.quality_prompt.value,
+    character_detail: ui.character_detail.value, manual_artist: normalizedArtist, quality_prompt: ui.quality_prompt.value,
     extra_prompt: ui.extra_prompt.value, negative_prompt: ui.negative_prompt.value, width: Number(ui.width.value),
     height: Number(ui.height.value), steps: Number(ui.steps.value), cfg: Number(ui.cfg.value), pools: clone(draft.pools), loras: clone(draft.loras),
+    model_name: ui.model_name.value,
+    hires: { enabled: ui.hires_enabled.checked, model_name: ui.hires_model_name.value, percent: hiresPercent || INTERNAL_HIRES_PERCENT },
+    detailers: { hand: ui.detailer_hand.checked, nsfw: ui.detailer_nsfw.checked, face: ui.detailer_face.checked, eyes: ui.detailer_eyes.checked },
   };
   for (const section of SECTIONS) {
     settings[`random_${section}`] = draft.modes[section] === "pool";
@@ -147,7 +201,8 @@ function persistNow() {
   if (!initialized) return;
   const savedAt = new Date().toISOString();
   try {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 1, savedAt, settings: readSettings() }));
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 2, savedAt, settings: readSettings() }));
+    localStorage.removeItem(LEGACY_DRAFT_KEY);
     localStorage.setItem(VIEW_KEY, JSON.stringify({ version: 1, activeSection, views: poolViews }));
     ui.draftStatus.textContent = `本地草稿已保存 ${formatSavedTime(savedAt)}`;
   } catch { ui.draftStatus.textContent = "浏览器未允许保存草稿"; }
@@ -166,12 +221,30 @@ function loadStoredView() {
 
 function loadStoredDraft() {
   try {
-    const payload = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
-    if (payload?.version !== 1 || !payload.settings || typeof payload.settings !== "object") return false;
-    applySettings(payload.settings);
+    const current = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+    const legacy = current ? null : JSON.parse(localStorage.getItem(LEGACY_DRAFT_KEY) || "null");
+    const payload = current || legacy;
+    if (![1, 2].includes(payload?.version) || !payload.settings || typeof payload.settings !== "object") return false;
+    const settings = clone(payload.settings);
+    if (payload.version === 1 && isLegacyDefaultLoras(settings.loras)) settings.loras = [];
+    applySettings(settings);
+    if (payload.version === 1) {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 2, savedAt: payload.savedAt, settings }));
+      localStorage.removeItem(LEGACY_DRAFT_KEY);
+    }
     ui.draftStatus.textContent = `已恢复草稿 ${formatSavedTime(payload.savedAt)}`;
     return true;
-  } catch { localStorage.removeItem(DRAFT_KEY); return false; }
+  } catch { localStorage.removeItem(DRAFT_KEY); localStorage.removeItem(LEGACY_DRAFT_KEY); return false; }
+}
+
+function isLegacyDefaultLoras(value) {
+  if (!Array.isArray(value) || value.length !== LEGACY_DEFAULT_LORAS.length) return false;
+  return value.every((item, index) => {
+    const expected = LEGACY_DEFAULT_LORAS[index];
+    return normalizedPath(item?.filename) === normalizedPath(expected.filename)
+      && Boolean(item?.enabled) === expected.enabled
+      && Number(item?.strength) === expected.strength;
+  });
 }
 
 function selectedCount(section) {
@@ -198,14 +271,30 @@ function renderDimensions() {
 function updatePeopleTotal() { const total = Number(ui.female_count.value || 0) + Number(ui.male_count.value || 0); ui.peopleTotal.textContent = total ? `共 ${total} 人` : "不限人数"; }
 function updatePoolOverview() { ui.poolOverview.textContent = `${SECTIONS.reduce((sum, section) => sum + selectedCount(section), 0)} 项已选`; }
 
-function loraItem(filename) { return loraInventory.find(item => item.filename === filename) || null; }
+function normalizedPath(value) { return String(value || "").replaceAll("\\", "/").toLowerCase(); }
+function loraItem(filename) {
+  const identity = normalizedPath(filename);
+  const exact = loraInventory.find(item => normalizedPath(item.filename) === identity);
+  if (exact) return exact;
+  if (identity.includes("/")) return null;
+  const matches = loraInventory.filter(item => normalizedPath(item.filename).split("/").pop() === identity);
+  return matches.length === 1 ? matches[0] : null;
+}
+function loraPresentation(inventoryItem, fallback) {
+  const path = String(inventoryItem?.normalized_path || fallback || "").replaceAll("\\", "/");
+  const parts = path.split("/").filter(Boolean);
+  const basename = inventoryItem?.basename || parts.pop() || "未命名 LoRA";
+  const folder = inventoryItem?.folder || parts.join("/") || "根目录";
+  return { path, basename, folder, label: `${folder} / ${basename}` };
+}
 function renderLoras() {
   const loras = Array.isArray(draft.loras) ? draft.loras : []; const enabled = loras.filter(item => item.enabled).length;
   ui.loraSummary.textContent = `${enabled} 启用 / ${loras.length} 配置`; ui.loraEmpty.hidden = loras.length > 0;
   ui.loraList.replaceChildren(...loras.map((item, index) => {
     const available = !loraInventoryLoaded || Boolean(loraItem(item.filename)); const high = Math.abs(Number(item.strength)) > 2; const row = document.createElement("div");
     row.className = `lora-row${available ? "" : " missing"}`;
-    row.innerHTML = `<input class="lora-toggle" type="checkbox" ${item.enabled ? "checked" : ""} title="启用 LoRA" aria-label="启用 ${escapeHtml(item.filename)}"><div class="lora-name"><strong title="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</strong><small class="${available && !high ? "" : "lora-warning"}">${available ? (high ? "高强度 · 模型 + CLIP" : "模型 + CLIP") : "文件不存在"}</small></div><input class="lora-strength" type="number" min="-100" max="100" step="0.05" value="${Number(item.strength)}" title="LoRA strength" aria-label="${escapeHtml(item.filename)} 强度"><div class="lora-actions"><button class="icon-button dark" type="button" data-lora-up title="上移" aria-label="上移">↑</button><button class="icon-button dark" type="button" data-lora-down title="下移" aria-label="下移">↓</button><button class="icon-button dark" type="button" data-lora-remove title="移除" aria-label="移除">×</button></div>`;
+    const inventoryItem = loraItem(item.filename); const display = loraPresentation(inventoryItem, item.filename);
+    row.innerHTML = `<input class="lora-toggle" type="checkbox" ${item.enabled ? "checked" : ""} title="启用 LoRA" aria-label="启用 ${escapeHtml(item.filename)}"><div class="lora-name"><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small class="${available && !high ? "" : "lora-warning"}">${available ? (high ? "高强度 · 模型 + CLIP" : "模型 + CLIP") : "文件不存在"}</small></div><input class="lora-strength" type="number" min="-100" max="100" step="0.05" value="${Number(item.strength)}" title="LoRA strength" aria-label="${escapeHtml(item.filename)} 强度"><div class="lora-actions"><button class="icon-button dark" type="button" data-lora-up title="上移" aria-label="上移">↑</button><button class="icon-button dark" type="button" data-lora-down title="下移" aria-label="下移">↓</button><button class="icon-button dark" type="button" data-lora-remove title="移除" aria-label="移除">×</button></div>`;
     row.querySelector(".lora-toggle").addEventListener("change", event => { item.enabled = event.target.checked; renderLoras(); schedulePersist(); });
     row.querySelector(".lora-strength").addEventListener("change", event => { const value = Number(event.target.value); if (!Number.isFinite(value) || value < -100 || value > 100) { toast("LoRA strength 必须在 -100 到 100 之间"); renderLoras(); return; } item.strength = Math.round(value * 100) / 100; renderLoras(); schedulePersist(); });
     row.querySelector("[data-lora-up]").disabled = index === 0; row.querySelector("[data-lora-down]").disabled = index === loras.length - 1;
@@ -214,8 +303,8 @@ function renderLoras() {
   }));
 }
 function moveLora(index, delta) { const next = index + delta; if (next < 0 || next >= draft.loras.length) return; [draft.loras[index], draft.loras[next]] = [draft.loras[next], draft.loras[index]]; renderLoras(); schedulePersist(); }
-async function loadLoraInventory() { try { const data = await request("/api/loras"); loraInventory = data.items || []; loraInventoryLoaded = true; loraInventoryError = ""; renderLoras(); renderLoraCatalog(); } catch (error) { loraInventoryLoaded = false; loraInventoryError = error.message; renderLoraCatalog(); } }
-function renderLoraCatalog() { if (!ui.loraCatalog) return; const query = String(ui.loraSearch.value || "").trim().toLowerCase(); const configured = new Set(draft.loras.map(item => item.filename)); const items = loraInventory.filter(item => !query || `${item.filename} ${item.display_name || ""}`.toLowerCase().includes(query)); ui.loraCatalogEmpty.hidden = Boolean(loraInventoryError) || items.length > 0; ui.loraCatalog.replaceChildren(...items.map(item => { const button = document.createElement("button"); button.type = "button"; button.className = "lora-catalog-item"; button.disabled = configured.has(item.filename); button.innerHTML = `<span><strong>${escapeHtml(item.display_name || item.filename)}</strong><small>${escapeHtml(item.filename)}${configured.has(item.filename) ? " · 已配置" : ""}</small></span><span aria-hidden="true">${configured.has(item.filename) ? "✓" : "+"}</span>`; button.addEventListener("click", () => { draft.loras.push({ filename: item.filename, enabled: true, strength: 1 }); renderLoras(); renderLoraCatalog(); schedulePersist(); }); return button; })); ui.loraCatalogMeta.textContent = loraInventoryError || `${loraInventory.length} 个本地 LoRA`; }
+async function loadLoraInventory() { try { const data = await request("/api/loras"); loraInventory = data.items || []; loraInventoryLoaded = true; loraInventoryError = ""; renderLoras(); renderLoraCatalog(); } catch (error) { loraInventoryLoaded = false; loraInventoryError = error.message; renderLoraCatalog(); } updateRepairControls(); }
+function renderLoraCatalog() { if (!ui.loraCatalog) return; const query = String(ui.loraSearch.value || "").trim().toLowerCase(); const configured = new Set(draft.loras.map(item => normalizedPath(loraItem(item.filename)?.filename || item.filename))); const items = loraInventory.filter(item => !query || `${item.normalized_path || item.filename} ${item.display_name || ""}`.toLowerCase().includes(query)); ui.loraCatalogEmpty.hidden = Boolean(loraInventoryError) || items.length > 0; ui.loraCatalog.replaceChildren(...items.map(item => { const configuredItem = configured.has(normalizedPath(item.filename)); const display = loraPresentation(item, item.filename); const button = document.createElement("button"); button.type = "button"; button.className = "lora-catalog-item"; button.disabled = configuredItem; button.innerHTML = `<span><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small>${escapeHtml(item.display_name || display.basename)}${configuredItem ? " · 已配置" : ""}</small></span><span aria-hidden="true">${configuredItem ? "✓" : "+"}</span>`; button.addEventListener("click", () => { draft.loras.push({ filename: item.filename, enabled: true, strength: 1 }); renderLoras(); renderLoraCatalog(); schedulePersist(); }); return button; })); ui.loraCatalogMeta.textContent = loraInventoryError || `${loraInventory.length} 个本地 LoRA`; }
 async function openLoraDialog() { ui.loraSearch.value = ""; ui.loraDialog.showModal(); if (!loraInventoryLoaded) await loadLoraInventory(); renderLoraCatalog(); }
 
 function renderBatch(batch) { currentBatch = batch; const active = Boolean(batch && ["running", "stopping"].includes(batch.status)); const completed = batch?.completed || 0; const total = batch?.total || 0; const labels = { running: "正在生成", stopping: "完成当前张后停止", completed: "批次完成", stopped: "已停止", error: "执行失败" }; ui.batchState.textContent = batch ? (labels[batch.status] || batch.status) : "等待任务"; ui.progressCount.textContent = `${completed} / ${total}`; ui.progressFill.style.width = total ? `${Math.min(100, completed / total * 100)}%` : "0%"; ui.stopButton.disabled = !active || batch.status === "stopping"; ui.startButton.disabled = active || !ui.connection.classList.contains("online"); ui.batchError.hidden = !batch?.error; ui.batchError.textContent = batch?.error || ""; if (batch && !active && lastTerminalBatch !== `${batch.id}:${batch.status}:${completed}`) { lastTerminalBatch = `${batch.id}:${batch.status}:${completed}`; loadHistory(1); } }
@@ -428,11 +517,157 @@ async function commitCustomImport() {
   }
 }
 
+function ensureSelectValue(select, value) {
+  if (!select || !value) return;
+  if (![...select.options].some(option => option.value === value)) select.add(new Option(value, value));
+  select.value = value;
+}
+function populateSelect(select, values, selected) {
+  select.replaceChildren(...values.map(value => new Option(value, value)));
+  ensureSelectValue(select, selected);
+}
+function populateResourceSelect(select, values, selected, emptyText) {
+  const options = values.map(value => new Option(value, value));
+  if (selected && !values.includes(selected)) {
+    const missing = new Option(`当前缺失 · ${selected}`, selected);
+    missing.dataset.missing = "true";
+    options.unshift(missing);
+  }
+  if (!options.length) options.push(new Option(emptyText, ""));
+  select.replaceChildren(...options);
+  select.value = selected && [...select.options].some(option => option.value === selected) ? selected : "";
+}
+function modelLabel(value) {
+  const filename = String(value || "未选择模型").replaceAll("\\", "/").split("/").pop();
+  return filename.replace(/\.(safetensors|ckpt|pth)$/i, "");
+}
+async function loadResources() {
+  const selectedModel = ui.model_name.value || defaults?.model_name || "";
+  const selectedUpscaler = ui.hires_model_name.value || defaults?.hires?.model_name || "";
+  resourcesLoaded = false;
+  resourceError = "";
+  ui.model_name.disabled = true;
+  ui.hires_model_name.disabled = true;
+  ui.model_name.replaceChildren(new Option("正在读取模型...", ""));
+  ui.hires_model_name.replaceChildren(new Option("正在读取放大模型...", ""));
+  updateRepairControls();
+  try {
+    const payload = await request("/api/resources");
+    resources = {
+      models: Array.isArray(payload.models) ? payload.models : [],
+      upscale_models: Array.isArray(payload.upscale_models) ? payload.upscale_models : [],
+    };
+    resourcesLoaded = true;
+    populateResourceSelect(ui.model_name, resources.models, selectedModel, "没有可用主模型");
+    populateResourceSelect(ui.hires_model_name, resources.upscale_models, selectedUpscaler, "没有可用放大模型");
+    ui.model_name.disabled = resources.models.length === 0;
+  } catch (error) {
+    resources = { models: [], upscale_models: [] };
+    resourceError = `模型资源读取失败：${error.message}`;
+    populateResourceSelect(ui.model_name, [], selectedModel, "模型资源离线");
+    populateResourceSelect(ui.hires_model_name, [], selectedUpscaler, "放大模型资源离线");
+    ui.model_name.disabled = true;
+  }
+  updateRepairControls();
+}
+function updateRepairControls() {
+  const detailerCount = [ui.detailer_hand, ui.detailer_nsfw, ui.detailer_face, ui.detailer_eyes].filter(input => input.checked).length;
+  ui.repairSummary.textContent = `${modelLabel(ui.model_name.value || defaults?.model_name)} · ${ui.hires_enabled.checked ? "高清开启" : "高清关闭"} · ${detailerCount} 项细修`;
+  ui.hiresFields.classList.toggle("disabled", !ui.hires_enabled.checked);
+  ui.hires_model_name.disabled = !ui.hires_enabled.checked || !resourcesLoaded;
+  const settings = readSettings(); const warnings = [];
+  if (resourceError) warnings.push(resourceError);
+  if (resourcesLoaded && !resources.models.length) warnings.push("ComfyUI 当前没有可用主模型");
+  if (resourcesLoaded && !resources.upscale_models.length) warnings.push("ComfyUI 当前没有可用放大模型");
+  if (resourcesLoaded && !resources.models.includes(settings.model_name)) warnings.push(`主模型不可用：${settings.model_name}`);
+  if (resourcesLoaded && settings.hires.enabled && !resources.upscale_models.includes(settings.hires.model_name)) warnings.push(`高清模型不可用：${settings.hires.model_name}`);
+  const missingLoras = settings.loras.filter(item => !loraItem(item.filename)).map(item => item.filename);
+  if (loraInventoryLoaded && missingLoras.length) warnings.push(`LoRA 不可用：${missingLoras.join("、")}`);
+  ui.resourceWarning.hidden = warnings.length === 0;
+  ui.resourceWarning.textContent = warnings.join("；");
+}
+
+const PRESET_SETTING_KEYS = ["model_name", "loras", "hires", "detailers", "manual_artist", "quality_prompt", "extra_prompt", "negative_prompt", "width", "height", "steps", "cfg"];
+function presetSnapshot() { const settings = readSettings(); return Object.fromEntries(PRESET_SETTING_KEYS.map(key => [key, clone(settings[key])])); }
+async function loadStylePresets() { try { const data = await request("/api/style-presets"); stylePresets = data.items || []; renderStylePresets(); } catch (error) { toast(error.message); } }
+function setPresetFeedback(message = "", type = "error") {
+  ui.presetError.textContent = message;
+  ui.presetError.hidden = !message;
+  ui.presetError.dataset.type = type;
+  ui.presetName.setAttribute("aria-invalid", String(Boolean(message) && type === "error"));
+}
+function renderStylePresets() {
+  ui.presetSummary.textContent = `${stylePresets.length} 个预设`;
+  ui.presetEmpty.hidden = stylePresets.length > 0;
+  ui.presetList.replaceChildren(...stylePresets.map(item => {
+    const row = document.createElement("div"); row.className = `preset-row${item.favorite ? " favorite" : ""}`;
+    const activeLoras = (item.settings?.loras || []).filter(lora => lora.enabled).length;
+    row.innerHTML = `<button class="preset-apply" type="button"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.settings?.model_name || "未指定模型")} · ${activeLoras} LoRA</small></button><div class="preset-actions"><button type="button" data-preset-favorite title="${item.favorite ? "取消收藏" : "收藏"}" aria-label="${item.favorite ? "取消收藏" : "收藏"}">${item.favorite ? "★" : "☆"}</button><button type="button" data-preset-update title="用当前设置覆盖" aria-label="用当前设置覆盖">↻</button><button type="button" data-preset-rename title="重命名" aria-label="重命名">✎</button><button type="button" data-preset-delete title="删除" aria-label="删除">×</button></div>`;
+    row.querySelector(".preset-apply").addEventListener("click", () => { applySettings({ ...readSettings(), ...item.settings }); schedulePersist(); toast(`已应用预设：${item.name}`); });
+    row.querySelector("[data-preset-favorite]").addEventListener("click", () => updateStylePreset(item, { favorite: !item.favorite }));
+    row.querySelector("[data-preset-update]").addEventListener("click", () => { if (confirm(`用当前设置覆盖“${item.name}”？`)) updateStylePreset(item, { settings: presetSnapshot() }); });
+    row.querySelector("[data-preset-rename]").addEventListener("click", () => { const name = prompt("新的预设名称", item.name); if (name?.trim()) updateStylePreset(item, { name: name.trim() }); });
+    row.querySelector("[data-preset-delete]").addEventListener("click", () => deleteStylePreset(item));
+    return row;
+  }));
+}
+async function createStylePreset() {
+  if (ui.savePreset.disabled) return;
+  const name = ui.presetName.value.trim();
+  if (!name) { setPresetFeedback("请输入预设名称"); ui.presetName.focus(); return; }
+  if (stylePresets.some(item => item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    setPresetFeedback("已有同名预设，请改名或使用覆盖按钮"); ui.presetName.focus(); return;
+  }
+  const originalLabel = ui.savePreset.textContent;
+  ui.savePreset.disabled = true;
+  ui.savePreset.textContent = "保存中…";
+  setPresetFeedback("正在写入本地预设…", "pending");
+  try {
+    const created = await request("/api/style-presets", { method: "POST", body: JSON.stringify({ name, favorite: false, settings: presetSnapshot() }) });
+    const favoriteCount = stylePresets.findIndex(item => !item.favorite);
+    stylePresets.splice(favoriteCount < 0 ? stylePresets.length : favoriteCount, 0, created);
+    ui.presetName.value = "";
+    renderStylePresets();
+    setPresetFeedback(`已保存“${created.name}”`, "success");
+    toast("风格预设已保存");
+  } catch (error) {
+    setPresetFeedback(error.message);
+    toast(error.message);
+  } finally {
+    ui.savePreset.disabled = false;
+    ui.savePreset.textContent = originalLabel;
+  }
+}
+async function updateStylePreset(item, changes) { try { await request(`/api/style-presets/${encodeURIComponent(item.id)}`, { method: "PUT", body: JSON.stringify(changes) }); await loadStylePresets(); } catch (error) { toast(error.message); } }
+async function deleteStylePreset(item) { if (!confirm(`删除预设“${item.name}”？`)) return; try { await request(`/api/style-presets/${encodeURIComponent(item.id)}`, { method: "DELETE" }); await loadStylePresets(); toast("风格预设已删除"); } catch (error) { toast(error.message); } }
+
 function artistName(value) { let name = String(value || "").trim(); if (name.startsWith("@")) name = name.slice(1).trim(); else if (name.toLowerCase().startsWith("by ")) name = name.slice(3).trim(); return name; }
-function artistTokens() { return ui.manual_artist.value.split(",").map(artistName).filter(Boolean); }
-function appendArtist(name) { const values = artistTokens(); const keys = new Set(values.map(value => value.toLowerCase())); const clean = artistName(name); if (clean && !keys.has(clean.toLowerCase())) values.push(clean); ui.manual_artist.value = values.join(", "); schedulePersist(); }
+function artistTokensFrom(value) { const values = String(value || "").replaceAll("\r", ",").replaceAll("\n", ",").split(/,|(?=@)/).map(artistName).filter(Boolean); const seen = new Set(); return values.filter(name => { const key = name.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; }); }
+function canonicalArtists(value) { return artistTokensFrom(value).map(name => `@${name}`).join(", "); }
+function artistTokens() { return artistTokensFrom(ui.manual_artist.value); }
+function appendArtist(name) { const values = artistTokens(); const keys = new Set(values.map(value => value.toLowerCase())); const clean = artistName(name); if (clean && !keys.has(clean.toLowerCase())) values.push(clean); ui.manual_artist.value = values.map(value => `@${value}`).join(", "); schedulePersist(); }
+function artistEditingValue(value) {
+  return String(value || "").replaceAll("\r", ",").replaceAll("\n", ",").split(",").map(part => {
+    const leading = part.match(/^\s*/)?.[0] || "";
+    let name = part.slice(leading.length);
+    if (/^by\s+/i.test(name)) name = name.replace(/^by\s+/i, "@");
+    else if (name && !name.startsWith("@")) name = `@${name}`;
+    return name;
+  }).join(", ");
+}
+function normalizeArtistField(finalize = false) {
+  const input = ui.manual_artist;
+  const raw = input.value;
+  const caret = input.selectionStart ?? raw.length;
+  const transform = finalize ? canonicalArtists : artistEditingValue;
+  const next = transform(raw);
+  if (next === raw) return;
+  const nextCaret = transform(raw.slice(0, caret)).length;
+  input.value = next;
+  if (document.activeElement === input) input.setSelectionRange(nextCaret, nextCaret);
+}
 async function loadArtistFavorites() { try { artistFavoritesData = await request("/api/favorites/artist"); } catch { artistFavoritesData = { groups: [], items: [] }; } renderArtistFavorites(); }
-function renderArtistFavorites() { const items = (artistFavoritesData.items || []).filter(item => item.groupIds?.length); ui.artistFavorites.replaceChildren(...items.slice(0, 8).map(item => { const button = document.createElement("button"); button.type = "button"; button.className = "artist-chip"; button.title = `追加 ${item.name}`; button.textContent = item.nickname || item.name; button.addEventListener("click", () => appendArtist(item.name)); return button; })); ui.artistFavoriteList.replaceChildren(...(items.length ? items.map(item => { const row = document.createElement("div"); row.className = "artist-favorite-row"; row.innerHTML = `<button type="button" title="追加到固定画师">${escapeHtml(item.nickname || item.name)}</button><button class="button ghost compact" type="button">追加</button><button class="icon-button dark" type="button" title="取消收藏" aria-label="取消收藏">×</button>`; row.children[0].addEventListener("click", () => appendArtist(item.name)); row.children[1].addEventListener("click", () => appendArtist(item.name)); row.children[2].addEventListener("click", () => removeArtistFavorite(item.name)); return row; }) : [Object.assign(document.createElement("div"), { className: "artist-favorite-empty", textContent: "还没有收藏画师" })])); }
+function renderArtistFavorites() { const items = (artistFavoritesData.items || []).filter(item => item.groupIds?.length); ui.artistFavoriteCount.textContent = `${items.length} 位`; ui.artistFavorites.replaceChildren(...items.slice(0, 12).map(item => { const button = document.createElement("button"); button.type = "button"; button.className = "artist-chip"; button.title = item.nickname ? `追加 @${item.name} · ${item.nickname}` : `追加 @${item.name}`; button.innerHTML = `<strong>@${escapeHtml(item.name)}</strong>${item.nickname ? `<small>${escapeHtml(item.nickname)}</small>` : ""}`; button.addEventListener("click", () => appendArtist(item.name)); return button; })); ui.artistFavoriteList.replaceChildren(...(items.length ? items.map(item => { const row = document.createElement("div"); row.className = "artist-favorite-row"; row.innerHTML = `<button class="artist-favorite-name" type="button" title="追加到固定画师"><strong>@${escapeHtml(item.name)}</strong>${item.nickname ? `<small>${escapeHtml(item.nickname)}</small>` : ""}</button><button class="button ghost compact" type="button">追加</button><button class="icon-button dark" type="button" title="取消收藏" aria-label="取消收藏">×</button>`; row.children[0].addEventListener("click", () => appendArtist(item.name)); row.children[1].addEventListener("click", () => appendArtist(item.name)); row.children[2].addEventListener("click", () => removeArtistFavorite(item.name)); return row; }) : [Object.assign(document.createElement("div"), { className: "artist-favorite-empty", textContent: "还没有收藏画师" })])); }
 async function openArtistDialog() { await loadArtistFavorites(); ui.artistDialog.showModal(); }
 async function saveCurrentArtistFavorites() { const values = artistTokens(); if (!values.length) { toast("请先输入画师名称"); return; } try { for (const name of values) artistFavoritesData = await request("/api/favorites/artist/item", { method: "PUT", body: JSON.stringify({ name, favorite: true }) }); renderArtistFavorites(); toast(`已收藏 ${values.length} 位画师`); } catch (error) { toast(error.message); } }
 async function removeArtistFavorite(name) { try { artistFavoritesData = await request("/api/favorites/artist/item", { method: "PUT", body: JSON.stringify({ name, favorite: false }) }); renderArtistFavorites(); toast("已取消收藏画师"); } catch (error) { toast(error.message); } }
@@ -458,19 +693,41 @@ ui.customForm.addEventListener("submit", saveCustom); ui.cancelCustom.addEventLi
 ui.customGroupForm.addEventListener("submit", saveCustomGroup); ui.deleteCustomGroup.addEventListener("click", removeCustomGroup); ui.closeCustomGroup.addEventListener("click", () => ui.customGroupDialog.close()); ui.cancelCustomGroup.addEventListener("click", () => ui.customGroupDialog.close());
 ui.importFile.addEventListener("change", previewImportFile); ui.commitImport.addEventListener("click", commitCustomImport); ui.closeImport.addEventListener("click", () => ui.importDialog.close()); ui.cancelImport.addEventListener("click", () => ui.importDialog.close());
 ui.manageArtists.addEventListener("click", openArtistDialog); ui.saveCurrentArtists.addEventListener("click", saveCurrentArtistFavorites); ui.closeArtists.addEventListener("click", () => ui.artistDialog.close()); ui.cancelArtists.addEventListener("click", () => ui.artistDialog.close());
+ui.savePreset.addEventListener("click", createStylePreset); ui.presetName.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); createStylePreset(); } });
+ui.presetName.addEventListener("input", () => setPresetFeedback());
+ui.manual_artist.addEventListener("input", () => { normalizeArtistField(false); schedulePersist(); });
+ui.manual_artist.addEventListener("paste", () => queueMicrotask(() => { normalizeArtistField(true); schedulePersist(); }));
+ui.manual_artist.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); normalizeArtistField(true); schedulePersist(); } });
+ui.manual_artist.addEventListener("blur", () => { normalizeArtistField(true); schedulePersist(); });
+for (const control of [ui.model_name, ui.hires_enabled, ui.hires_model_name, ui.detailer_hand, ui.detailer_nsfw, ui.detailer_face, ui.detailer_eyes]) control.addEventListener("change", () => { updateRepairControls(); schedulePersist(); });
+ui.themeToggle.addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true));
 ui.favoriteForm.addEventListener("submit", saveFavorite); ui.removeFavorite.addEventListener("click", removeFavorite); ui.closeFavorite.addEventListener("click", () => ui.favoriteDialog.close()); ui.cancelFavorite.addEventListener("click", () => ui.favoriteDialog.close());
 ui.groupForm.addEventListener("submit", saveGroup); ui.deleteGroup.addEventListener("click", deleteFavoriteGroup); ui.closeGroup.addEventListener("click", () => ui.groupDialog.close()); ui.cancelGroup.addEventListener("click", () => ui.groupDialog.close());
 ui.addLora.addEventListener("click", openLoraDialog); ui.resetLoras.addEventListener("click", () => { draft.loras = clone(defaults?.loras || []); renderLoras(); schedulePersist(); toast("已恢复模板默认 LoRA"); }); ui.closeLora.addEventListener("click", () => ui.loraDialog.close()); ui.cancelLora.addEventListener("click", () => ui.loraDialog.close()); ui.loraSearch.addEventListener("input", renderLoraCatalog);
 ui.female_count.addEventListener("input", updatePeopleTotal); ui.male_count.addEventListener("input", updatePeopleTotal);
 ui.resetSettings.addEventListener("click", () => { if (!confirm("恢复全部模板默认设置？")) return; applySettings(defaults); schedulePersist(); toast("已恢复默认设置"); });
-ui.clearDraft.addEventListener("click", () => { if (!confirm("清除本地草稿并恢复默认设置？收藏不会被删除。")) return; localStorage.removeItem(DRAFT_KEY); localStorage.removeItem(VIEW_KEY); poolViews = Object.fromEntries(SECTIONS.map(section => [section, defaultView()])); applySettings(defaults); ui.draftStatus.textContent = "本地草稿已清除"; toast("已清除本地草稿"); });
+ui.clearDraft.addEventListener("click", () => { if (!confirm("清除本地草稿并恢复默认设置？收藏不会被删除。")) return; localStorage.removeItem(DRAFT_KEY); localStorage.removeItem(LEGACY_DRAFT_KEY); localStorage.removeItem(VIEW_KEY); poolViews = Object.fromEntries(SECTIONS.map(section => [section, defaultView()])); applySettings(defaults); ui.draftStatus.textContent = "本地草稿已清除"; toast("已清除本地草稿"); });
 document.querySelectorAll("[data-mobile-view]").forEach(button => button.addEventListener("click", () => { const view = button.dataset.mobileView; document.querySelectorAll(".mobile-tabs button").forEach(item => item.classList.toggle("active", item === button)); document.querySelector(".workspace").dataset.mobileView = view; }));
 document.addEventListener("keydown", event => { if (event.key === "Escape" && ui.poolDrawer.classList.contains("open")) closePool(); });
 
 async function initialize() {
-  try { const payload = await request("/api/config"); config = payload; defaults = payload.defaults; loadStoredView(); const restored = loadStoredDraft(); if (!restored) { applySettings(defaults); ui.draftStatus.textContent = "使用模板默认设置"; } initialized = true; }
-  catch (error) { toast(error.message); }
-  await Promise.all([refreshConnection(), pollBatch(), loadHistory(1), loadLoraInventory(), loadArtistFavorites()]);
+  applyTheme(initialTheme());
+  try {
+    const payload = await request("/api/config");
+    config = payload;
+    defaults = payload.defaults;
+    loadStoredView();
+    const restored = loadStoredDraft();
+    if (!restored) { applySettings(defaults); ui.draftStatus.textContent = "使用模板默认设置"; }
+    initialized = true;
+  } catch (error) {
+    const message = `界面初始化失败：${error.message}`;
+    ui.appError.textContent = message;
+    ui.appError.hidden = false;
+    toast(message);
+    return;
+  }
+  await Promise.allSettled([loadResources(), refreshConnection(), pollBatch(), loadHistory(1), loadLoraInventory(), loadArtistFavorites(), loadStylePresets()]);
   setInterval(pollBatch, 1200); setInterval(refreshConnection, 5000);
 }
 initialize();
