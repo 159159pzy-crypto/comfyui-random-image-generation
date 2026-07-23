@@ -125,7 +125,25 @@ class CustomPromptStore:
             group["id"]: sum(group["id"] in item.get("groupIds", []) for item in self.items if item["section"] == section)
             for group in groups
         }
-        return {"groups": [{**group, "count": counts[group["id"]]} for group in groups]}
+        exclusive_counts = {
+            group["id"]: sum(
+                item["section"] == section
+                and group["id"] in item.get("groupIds", [])
+                and len(item.get("groupIds", [])) == 1
+                for item in self.items
+            )
+            for group in groups
+        }
+        return {
+            "groups": [
+                {
+                    **group,
+                    "count": counts[group["id"]],
+                    "exclusiveCount": exclusive_counts[group["id"]],
+                }
+                for group in groups
+            ]
+        }
 
     def create_group(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._check_section(section)
@@ -149,17 +167,37 @@ class CustomPromptStore:
         self._save()
         return self.list_groups(section)
 
-    def delete_group(self, section: str, group_id: str) -> dict[str, Any]:
+    def delete_group(
+        self, section: str, group_id: str, delete_items: bool = False
+    ) -> dict[str, Any]:
         self._check_section(section)
         if not any(item["id"] == group_id for item in self.groups[section]):
             raise KeyError(group_id)
         self.groups[section] = [item for item in self.groups[section] if item["id"] != group_id]
+        deleted_item_ids: list[str] = []
+        detached_item_count = 0
+        next_items: list[dict[str, Any]] = []
         for item in self.items:
-            if item["section"] == section:
-                item["groupIds"] = [value for value in item.get("groupIds", []) if value != group_id]
+            group_ids = list(item.get("groupIds", []))
+            if item["section"] != section or group_id not in group_ids:
+                next_items.append(item)
+                continue
+            remaining = [value for value in group_ids if value != group_id]
+            if delete_items and not remaining:
+                deleted_item_ids.append(item["id"])
+                continue
+            item["groupIds"] = remaining
+            detached_item_count += 1
+            next_items.append(item)
+        self.items = next_items
         self._save()
         self.catalog.set_custom_items(self.items)
-        return self.list_groups(section)
+        return {
+            **self.list_groups(section),
+            "deletedItemIds": deleted_item_ids,
+            "deletedItemCount": len(deleted_item_ids),
+            "detachedItemCount": detached_item_count,
+        }
 
     def template(self, section: str, file_format: str) -> tuple[str, str, bytes]:
         self._check_section(section)
