@@ -55,6 +55,17 @@ async def _json_body(request: web.Request) -> dict[str, Any]:
     return value
 
 
+def _query_bool(request: web.Request, name: str, default: bool = False) -> bool:
+    raw = request.query.get(name)
+    if raw is None:
+        return default
+    if raw.lower() in {"1", "true", "yes"}:
+        return True
+    if raw.lower() in {"0", "false", "no"}:
+        return False
+    raise WorkflowError(f"{name} 必须是布尔值")
+
+
 def create_app(
     *,
     app_dir: str | Path = APP_DIR,
@@ -89,11 +100,23 @@ def create_app(
         if not collection:
             return None
         payload = await favorites.get(section)
+        collection_ids = {collection}
+        if collection != "__all__":
+            pending = [collection]
+            while pending:
+                parent_id = pending.pop()
+                children = [
+                    group["id"]
+                    for group in payload["groups"]
+                    if group.get("parentId") == parent_id and group["id"] not in collection_ids
+                ]
+                collection_ids.update(children)
+                pending.extend(children)
         return {
             favorite_key(section, item)
             for item in payload["items"]
             if (collection == "__all__" and item.get("groupIds"))
-            or collection in (item.get("groupIds") or [])
+            or bool(collection_ids.intersection(item.get("groupIds") or []))
         }
 
     async def config(_: web.Request) -> web.Response:
@@ -189,9 +212,39 @@ def create_app(
             )
         )
 
+    async def import_favorite_child_group(request: web.Request) -> web.Response:
+        section = request.match_info["section"]
+        body = await _json_body(request)
+        custom_group_id = str(body.get("customGroupId") or "").strip()
+        if not custom_group_id:
+            raise WorkflowError("customGroupId 不能为空")
+        source_group = next(
+            (
+                group
+                for group in custom_prompts.list_groups(section)["groups"]
+                if group["id"] == custom_group_id
+            ),
+            None,
+        )
+        if source_group is None:
+            raise KeyError(custom_group_id)
+        return web.json_response(
+            await favorites.import_custom_group(
+                section,
+                request.match_info["parent_id"],
+                source_group,
+                custom_prompts.list(section, custom_group_id),
+            ),
+            status=201,
+        )
+
     async def delete_favorite_group(request: web.Request) -> web.Response:
         return web.json_response(
-            await favorites.delete_group(request.match_info["section"], request.match_info["group_id"])
+            await favorites.delete_group(
+                request.match_info["section"],
+                request.match_info["group_id"],
+                _query_bool(request, "deleteItems"),
+            )
         )
 
     async def list_custom_prompts(request: web.Request) -> web.Response:
@@ -232,7 +285,11 @@ def create_app(
 
     async def delete_custom_group(request: web.Request) -> web.Response:
         return web.json_response(
-            custom_prompts.delete_group(request.match_info["section"], request.match_info["group_id"])
+            custom_prompts.delete_group(
+                request.match_info["section"],
+                request.match_info["group_id"],
+                _query_bool(request, "deleteItems"),
+            )
         )
 
     async def custom_template(request: web.Request) -> web.Response:
@@ -352,6 +409,10 @@ def create_app(
     app.router.add_put("/api/favorites/{section}/item", update_favorite)
     app.router.add_post("/api/favorites/{section}/groups", create_favorite_group)
     app.router.add_put("/api/favorites/{section}/groups/{group_id}", update_favorite_group)
+    app.router.add_post(
+        "/api/favorites/{section}/groups/{parent_id}/children/import",
+        import_favorite_child_group,
+    )
     app.router.add_delete("/api/favorites/{section}/groups/{group_id}", delete_favorite_group)
     app.router.add_get("/api/pools/{section}", pool)
     app.router.add_post("/api/pools/{section}/query", pool_query)

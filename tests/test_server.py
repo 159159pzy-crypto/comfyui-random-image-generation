@@ -165,7 +165,60 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted.status, 200)
         payload = await deleted.json()
         self.assertEqual(len(payload["items"]), 1)
-        self.assertEqual(payload["items"][0]["groupIds"], [])
+        self.assertEqual(payload["items"][0]["groupIds"], ["default"])
+
+    async def test_favorite_child_import_parent_filter_and_safe_delete_api(self):
+        source = await self.client.post("/api/custom-groups/pose", json={"name": "Snapshot"})
+        source_id = (await source.json())["group"]["id"]
+        custom = await self.client.post(
+            "/api/custom-prompts",
+            json={
+                "section": "pose",
+                "title": "Snapshot Pose",
+                "prompt": "snapshot pose",
+                "groupIds": [source_id],
+            },
+        )
+        custom_id = (await custom.json())["id"]
+        parent = await self.client.post("/api/favorites/pose/groups", json={"name": "Parent"})
+        parent_id = (await parent.json())["group"]["id"]
+
+        imported = await self.client.post(
+            f"/api/favorites/pose/groups/{parent_id}/children/import",
+            json={"customGroupId": source_id},
+        )
+        self.assertEqual(imported.status, 201)
+        imported_payload = await imported.json()
+        child = imported_payload["group"]
+        self.assertEqual(child["parentId"], parent_id)
+        self.assertEqual(child["sourceCustomGroupId"], source_id)
+        child_with_stats = next(
+            group for group in imported_payload["groups"] if group["id"] == child["id"]
+        )
+        self.assertEqual(child_with_stats["directCount"], 1)
+
+        duplicate = await self.client.post(
+            f"/api/favorites/pose/groups/{parent_id}/children/import",
+            json={"customGroupId": source_id},
+        )
+        self.assertEqual(duplicate.status, 400)
+        filtered = await (
+            await self.client.get(
+                f"/api/pools/pose?collection={parent_id}&q=Snapshot%20Pose"
+            )
+        ).json()
+        self.assertEqual([item["id"] for item in filtered["items"]], [custom_id])
+
+        invalid_bool = await self.client.delete(
+            f"/api/favorites/pose/groups/{child['id']}?deleteItems=maybe"
+        )
+        self.assertEqual(invalid_bool.status, 400)
+        deleted = await self.client.delete(f"/api/favorites/pose/groups/{parent_id}")
+        self.assertEqual(deleted.status, 200)
+        payload = await deleted.json()
+        self.assertEqual(payload["deletedGroupCount"], 2)
+        favorite = next(item for item in payload["items"] if item["id"] == custom_id)
+        self.assertEqual(favorite["groupIds"], ["default"])
 
     async def test_artist_favorites_normalize_prefix_and_preserve_other_sections(self):
         response = await self.client.put(
