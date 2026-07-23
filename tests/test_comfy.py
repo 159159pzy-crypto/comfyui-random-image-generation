@@ -6,7 +6,41 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
-from anima_webui.comfy import extract_positive_prompt  # noqa: E402
+from anima_webui.comfy import ComfyClient, ComfyError, extract_positive_prompt  # noqa: E402
+
+
+class FakeInventoryClient(ComfyClient):
+    def __init__(self):
+        super().__init__()
+
+    async def object_info(self):
+        return {
+            "LoraLoader": {"input": {"required": {"lora_name": [["风格\\one.safetensors"]]}}},
+            "UNETLoader": {"input": {"required": {"unet_name": [["model.safetensors"]]}}},
+            "UpscaleModelLoader": {
+                "input": {"required": {"model_name": ["COMBO", {"options": ["upscale.pth"]}]}}
+            },
+            "easy hiresFix": {"input": {"required": {"model_name": [["upscale.pth"]]}}},
+        }
+
+    async def _json(self, method, path, **kwargs):
+        if path == "/anima-tools/lora/manifest":
+            return {"items": [{"filename": "风格/one.safetensors", "display_name": "One"}]}
+        raise ComfyError("unexpected")
+
+
+class InventoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lora_inventory_deduplicates_path_separators(self):
+        client = FakeInventoryClient()
+        inventory = await client.lora_inventory()
+        self.assertEqual(inventory["count"], 1)
+        self.assertEqual(inventory["items"][0]["filename"], "风格\\one.safetensors")
+        self.assertEqual(inventory["items"][0]["normalized_path"], "风格/one.safetensors")
+        self.assertEqual(inventory["items"][0]["folder"], "风格")
+
+    async def test_resource_inventory_reads_live_choices(self):
+        resources = await FakeInventoryClient().resource_inventory()
+        self.assertEqual(resources, {"models": ["model.safetensors"], "upscale_models": ["upscale.pth"]})
 
 
 class PositivePromptTests(unittest.TestCase):

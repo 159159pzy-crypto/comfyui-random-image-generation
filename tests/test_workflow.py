@@ -15,6 +15,7 @@ from anima_webui.workflow import (  # noqa: E402
     MAX_SAMPLE_SEED,
     WorkflowError,
     build_submission,
+    normalize_artist_tags,
     prepare_templates,
     read_json,
     render_workflows,
@@ -43,6 +44,16 @@ class WorkflowTests(unittest.TestCase):
         after = [hashlib.sha256(path.read_bytes()).hexdigest() for path in (self.api_path, self.ui_path)]
         self.assertEqual(before, after)
 
+    def test_source_workflows_have_no_default_lora_slots(self):
+        self.assertFalse(
+            any(key.startswith("lora_") for key in self.api_source["2"]["inputs"])
+        )
+        visual_lora = next(node for node in self.ui_source["nodes"] if node["id"] == 2)
+        self.assertEqual(
+            visual_lora["widgets_values"],
+            [{}, {"type": "PowerLoraLoaderHeaderWidget"}, {}, ""],
+        )
+
     def test_prompt_nodes_are_replaced_without_touching_core_nodes(self):
         self.assertNotIn("3", self.api)
         self.assertNotIn("4", self.api)
@@ -50,8 +61,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.api["42"]["class_type"], "AnimaPromptPlusClipEncode")
         self.assertEqual(self.api["42"]["inputs"]["extra_prompt"], ["60", 0])
         self.assertIsInstance(self.api["45"]["inputs"]["text"], str)
-        for node_id in ("1", "2", "5", "12", "17", "18", "22", "26", "48", "51"):
+        for node_id in ("1", "2", "5", "12", "17", "18", "22", "26", "48"):
             self.assertEqual(self.api[node_id]["class_type"], self.api_source[node_id]["class_type"])
+        self.assertEqual(self.api["61"]["class_type"], "UpscaleModelLoader")
+        self.assertEqual(self.api["62"]["class_type"], "ImageUpscaleWithModel")
+        self.assertEqual(self.api["51"]["class_type"], "ImageScaleBy")
 
     def test_render_injects_controls_and_seeds(self):
         settings = {
@@ -92,7 +106,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(composer["background_count"], 4)
         self.assertEqual(composer["extra_prompt"], "rain")
         self.assertEqual(composer["seed"], 987)
-        self.assertEqual(api["42"]["inputs"]["artist_tags"], "anmi")
+        self.assertEqual(api["42"]["inputs"]["artist_tags"], "@anmi")
         self.assertEqual(api["42"]["inputs"]["character_tags"], "fixed hero")
         self.assertEqual(api["42"]["inputs"]["clothing_tags"], "")
         self.assertEqual(api["42"]["inputs"]["pose_tags"], "fixed pose")
@@ -170,6 +184,7 @@ class WorkflowTests(unittest.TestCase):
         legacy = dict(DEFAULT_SETTINGS)
         legacy.pop("loras")
         self.assertEqual(validate_settings(legacy)["loras"], DEFAULT_LORAS)
+        self.assertEqual(DEFAULT_LORAS, [])
         self.assertEqual(validate_settings({**DEFAULT_SETTINGS, "loras": []})["loras"], [])
         normalized = validate_loras(
             {
@@ -183,7 +198,8 @@ class WorkflowTests(unittest.TestCase):
 
         invalid_loras = (
             [{"filename": "one.safetensors", "enabled": True, "strength": 1}] * 2,
-            [{"filename": "folder/one.safetensors", "enabled": True, "strength": 1}],
+            [{"filename": "../one.safetensors", "enabled": True, "strength": 1}],
+            [{"filename": "C:\\models\\one.safetensors", "enabled": True, "strength": 1}],
             [{"filename": "one.safetensors", "enabled": "yes", "strength": 1}],
             [{"filename": "one.safetensors", "enabled": True, "strength": float("inf")}],
             [{"filename": "one.safetensors", "enabled": True, "strength": 100.01}],
@@ -191,6 +207,22 @@ class WorkflowTests(unittest.TestCase):
         for loras in invalid_loras:
             with self.subTest(loras=loras), self.assertRaises(WorkflowError):
                 validate_settings({**DEFAULT_SETTINGS, "loras": loras})
+
+        nested = validate_loras(
+            {"loras": [{"filename": "风格/one.safetensors", "enabled": True, "strength": 1}]},
+            ["风格\\one.safetensors"],
+        )
+        self.assertEqual(nested[0]["filename"], "风格\\one.safetensors")
+        legacy = validate_loras(
+            {"loras": [{"filename": "one.safetensors", "enabled": True, "strength": 1}]},
+            ["风格\\one.safetensors"],
+        )
+        self.assertEqual(legacy[0]["filename"], "风格\\one.safetensors")
+        with self.assertRaisesRegex(WorkflowError, "多个子目录"):
+            validate_loras(
+                {"loras": [{"filename": "one.safetensors", "enabled": True, "strength": 1}]},
+                ["风格\\one.safetensors", "人物\\one.safetensors"],
+            )
 
         with self.assertRaisesRegex(WorkflowError, "missing.safetensors"):
             validate_loras(
@@ -210,12 +242,78 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.api, api_before)
         self.assertEqual(self.ui, ui_before)
 
+    def test_model_hires_and_detailer_chain_are_rendered(self):
+        settings = {
+            **DEFAULT_SETTINGS,
+            "model_name": "alternate.safetensors",
+            "hires": {"enabled": False, "model_name": "upscale.pth", "percent": 60},
+            "detailers": {"hand": True, "nsfw": False, "face": True, "eyes": False},
+        }
+        api, ui = render_workflows(self.api, self.ui, settings, 11, 12, "test")
+        self.assertEqual(api["1"]["inputs"]["unet_name"], "alternate.safetensors")
+        self.assertNotIn("51", api)
+        self.assertNotIn("61", api)
+        self.assertNotIn("62", api)
+        self.assertEqual(api["27"]["inputs"]["image"], ["48", 0])
+        self.assertEqual(api["29"]["inputs"]["image"], ["27", 0])
+        self.assertEqual(api["12"]["inputs"]["images"], ["29", 0])
+        self.assertEqual(api["13"]["inputs"]["Select to add Wildcard"], "Select the Wildcard to add to the text")
+        self.assertEqual(api["15"]["inputs"]["Select to add LoRA"], "Select the LoRA to add to the text")
+        self.assertNotIn("28", api)
+        self.assertNotIn("30", api)
+        modes = {node["id"]: node["mode"] for node in ui["nodes"]}
+        self.assertEqual(modes[51], 4)
+        self.assertEqual(modes[27], 0)
+        self.assertEqual(modes[29], 0)
+        self.assertEqual(modes[28], 4)
+
+    def test_hires_settings_keep_save_connected(self):
+        settings = {
+            **DEFAULT_SETTINGS,
+            "hires": {"enabled": True, "model_name": "upscale.pth", "percent": 60},
+        }
+        api, ui = render_workflows(self.api, self.ui, settings, 11, 12, "test")
+        self.assertEqual(api["61"]["inputs"]["model_name"], "upscale.pth")
+        self.assertEqual(api["62"]["inputs"]["image"], ["48", 0])
+        self.assertEqual(api["51"]["inputs"]["scale_by"], 0.6)
+        self.assertEqual(api["12"]["inputs"]["images"], ["51", 0])
+        nodes = {node["id"]: node for node in ui["nodes"]}
+        self.assertEqual(nodes[61]["widgets_values"][0], "upscale.pth")
+        self.assertEqual(nodes[51]["widgets_values"][1], 0.6)
+
+    def test_each_detailer_and_full_chain_keep_declared_order(self):
+        node_for = {"hand": "27", "nsfw": "28", "face": "29", "eyes": "30"}
+        for enabled_names in (("hand",), ("nsfw",), ("face",), ("eyes",), tuple(node_for)):
+            detailers = {name: name in enabled_names for name in node_for}
+            with self.subTest(enabled=enabled_names):
+                api, _ = render_workflows(
+                    self.api,
+                    self.ui,
+                    {**DEFAULT_SETTINGS, "hires": {**DEFAULT_SETTINGS["hires"], "enabled": False}, "detailers": detailers},
+                    11,
+                    12,
+                    "test",
+                )
+                current = ["48", 0]
+                for name, node_id in node_for.items():
+                    if detailers[name]:
+                        self.assertEqual(api[node_id]["inputs"]["image"], current)
+                        current = [node_id, 0]
+                    else:
+                        self.assertNotIn(node_id, api)
+                self.assertEqual(api["12"]["inputs"]["images"], current)
+
+    def test_artist_tags_are_canonical_and_independent(self):
+        self.assertEqual(normalize_artist_tags("@anmi @rella, by Foo, anmi"), "@anmi, @rella, @Foo")
+        settings = validate_settings({**DEFAULT_SETTINGS, "manual_artist": "anmi, @rella"})
+        self.assertEqual(settings["manual_artist"], "@anmi, @rella")
+
     def test_submission_embeds_recoverable_workflow(self):
         payload = build_submission(self.api, self.ui, DEFAULT_SETTINGS, 11, 12, "prefix", "client", 1)
         self.assertIn("prompt", payload)
         extra = payload["extra_data"]["extra_pnginfo"]
         self.assertEqual(extra["anima_random_webui"]["sample_seed"], 11)
-        self.assertEqual(extra["workflow"]["last_node_id"], 60)
+        self.assertEqual(extra["workflow"]["last_node_id"], 62)
 
     def test_visual_links_are_unique_and_reference_existing_nodes(self):
         node_ids = {int(node["id"]) for node in self.ui["nodes"]}

@@ -43,6 +43,12 @@ class FakeComfy:
     async def lora_filenames(self):
         return [item["filename"] for item in DEFAULT_SETTINGS["loras"]]
 
+    async def resource_inventory(self):
+        return {
+            "models": [DEFAULT_SETTINGS["model_name"]],
+            "upscale_models": [DEFAULT_SETTINGS["hires"]["model_name"]],
+        }
+
     async def favorites(self):
         return copy.deepcopy(self.favorites_data)
 
@@ -75,6 +81,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             comfy=FakeComfy(),
             history_path=Path(self.temp.name) / "history.sqlite3",
             custom_prompts_path=Path(self.temp.name) / "custom_prompts.json",
+            style_presets_path=Path(self.temp.name) / "style_presets.json",
         )
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
@@ -87,6 +94,14 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/")
         self.assertEqual(response.status, 200)
         self.assertIn("Anima", await response.text())
+        self.assertEqual(
+            response.headers["Cache-Control"], "no-cache, max-age=0, must-revalidate"
+        )
+        static_response = await self.client.get("/static/app.js")
+        self.assertEqual(
+            static_response.headers["Cache-Control"],
+            "no-cache, max-age=0, must-revalidate",
+        )
         status = await (await self.client.get("/api/status")).json()
         self.assertTrue(status["online"])
         self.assertEqual(status["device"], "GPU")
@@ -95,11 +110,40 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/api/loras")
         self.assertEqual(response.status, 200)
         payload = await response.json()
-        self.assertEqual(payload["count"], 3)
+        self.assertEqual(payload["count"], 0)
         self.assertEqual(
             [item["filename"] for item in payload["items"]],
             [item["filename"] for item in DEFAULT_SETTINGS["loras"]],
         )
+
+    async def test_config_has_empty_default_loras(self):
+        payload = await (await self.client.get("/api/config")).json()
+        self.assertEqual(payload["defaults"]["loras"], [])
+
+    async def test_resources_and_style_preset_crud(self):
+        resources = await (await self.client.get("/api/resources")).json()
+        self.assertEqual(resources["models"], [DEFAULT_SETTINGS["model_name"]])
+        snapshot = {
+            key: copy.deepcopy(DEFAULT_SETTINGS[key])
+            for key in ("model_name", "loras", "hires", "detailers", "manual_artist", "quality_prompt", "extra_prompt", "negative_prompt", "width", "height", "steps", "cfg")
+        }
+        created = await self.client.post(
+            "/api/style-presets",
+            json={"name": "Soft", "favorite": False, "settings": snapshot},
+        )
+        self.assertEqual(created.status, 201)
+        item = await created.json()
+        updated = await self.client.put(
+            f"/api/style-presets/{item['id']}", json={"favorite": True, "name": "Soft Light"}
+        )
+        self.assertEqual(updated.status, 200)
+        self.assertTrue((await updated.json())["favorite"])
+        listing = await (await self.client.get("/api/style-presets")).json()
+        self.assertEqual(listing["items"][0]["name"], "Soft Light")
+        self.assertTrue(Path(self.temp.name, "style_presets.json").is_file())
+        deleted = await self.client.delete(f"/api/style-presets/{item['id']}")
+        self.assertEqual(deleted.status, 200)
+        self.assertEqual((await (await self.client.get("/api/style-presets")).json())["count"], 0)
 
     async def test_favorite_crud_preserves_other_sections(self):
         pool = await (await self.client.get("/api/pools/pose?page=1&limit=1")).json()

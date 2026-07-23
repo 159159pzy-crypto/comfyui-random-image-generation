@@ -1,8 +1,8 @@
 {
   "id": "f7a250a1-53fb-496b-8c39-c60d9e764028",
   "revision": 0,
-  "last_node_id": 60,
-  "last_link_id": 101,
+  "last_node_id": 62,
+  "last_link_id": 102,
   "nodes": [
     {
       "id": 53,
@@ -572,7 +572,7 @@
           "widget": {
             "name": "extra_prompt"
           },
-          "link": 101
+          "link": 102
         },
         {
           "name": "separator",
@@ -1949,7 +1949,6 @@
           "links": [
             1,
             57,
-            70,
             71,
             75,
             91
@@ -3209,14 +3208,14 @@
     },
     {
       "id": 51,
-      "type": "easy hiresFix",
+      "type": "ImageScaleBy",
       "pos": [
         1380,
         1080
       ],
       "size": [
-        230,
-        514
+        300,
+        110
       ],
       "flags": {
         "collapsed": false
@@ -3225,66 +3224,107 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "pipe",
-          "shape": 7,
-          "type": "PIPE_LINE",
-          "link": null
-        },
-        {
           "name": "image",
-          "shape": 7,
           "type": "IMAGE",
-          "link": 69
-        },
-        {
-          "name": "vae",
-          "shape": 7,
-          "type": "VAE",
-          "link": 70
+          "link": 101
         }
       ],
       "outputs": [
         {
-          "name": "pipe",
-          "type": "PIPE_LINE",
-          "links": null
-        },
-        {
-          "name": "image",
+          "name": "IMAGE",
           "type": "IMAGE",
           "links": [
             72
           ]
-        },
-        {
-          "name": "latent",
-          "type": "LATENT",
-          "links": null
         }
       ],
       "properties": {
-        "Node name for S&R": "easy hiresFix",
-        "cnr_id": "comfyui-easy-use",
-        "ver": "71c7865d2d3c934ccb99f24171e08ae5a81148ac",
-        "aux_id": "yolain/ComfyUI-Easy-Use"
+        "Node name for S&R": "ImageScaleBy",
+        "cnr_id": "comfy-core",
+        "ver": "0.11.0"
       },
       "widgets_values": [
-        "4x_foolhardy_Remacri.pth",
-        true,
         "lanczos",
-        "by percentage",
-        45,
-        1024,
-        1024,
-        1024,
-        "disabled",
-        "Hide",
-        0,
-        "ComfyUI"
+        0.45
       ],
-      "color": "#323",
-      "bgcolor": "#535",
-      "shape": "default"
+      "title": "高清输出比例"
+    },
+    {
+      "id": 61,
+      "type": "UpscaleModelLoader",
+      "pos": [
+        730,
+        1080
+      ],
+      "size": [
+        300,
+        82
+      ],
+      "flags": {},
+      "order": 46,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "UPSCALE_MODEL",
+          "type": "UPSCALE_MODEL",
+          "links": [
+            70
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UpscaleModelLoader",
+        "cnr_id": "comfy-core",
+        "ver": "0.11.0"
+      },
+      "widgets_values": [
+        "4x_foolhardy_Remacri.pth"
+      ],
+      "title": "高清修复模型"
+    },
+    {
+      "id": 62,
+      "type": "ImageUpscaleWithModel",
+      "pos": [
+        1050,
+        1080
+      ],
+      "size": [
+        300,
+        82
+      ],
+      "flags": {},
+      "order": 47,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "upscale_model",
+          "type": "UPSCALE_MODEL",
+          "link": 70
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 69
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            101
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageUpscaleWithModel",
+        "cnr_id": "comfy-core",
+        "ver": "0.11.0"
+      },
+      "widgets_values": [],
+      "title": "高清模型放大"
     },
     {
       "id": 24,
@@ -3435,120 +3475,6 @@
         {
           "type": "PowerLoraLoaderHeaderWidget"
         },
-        {
-          "on": false,
-          "lora": "Niji_oil_painting_anima_epoch05.safetensors",
-          "strength": 0.8,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "p1ct01_v1_epoch20.safetensors",
-          "strength": 0.95,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "RealSkin SliderV2.safetensors",
-          "strength": -4.163336342344337e-17,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "atomsphere_style_v1.2_miaomiaoherum13-e05.safetensors",
-          "strength": 0.6499999999999997,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "Niji_oil_painting_anima_epoch05.safetensors",
-          "strength": 0.65,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "reina1_v1_epoch16.safetensors",
-          "strength": 0.7999999999999998,
-          "strengthTwo": null
-        },
-        {
-          "on": true,
-          "lora": "anima-highres-aesthetic-boost.safetensors",
-          "strength": 0.75,
-          "strengthTwo": null
-        },
-        {
-          "on": true,
-          "lora": "BlueArchiveStyleB1.safetensors",
-          "strength": 0.95,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "xipaearly2026_AnimaP_v03.safetensors",
-          "strength": 0.7499999999999998,
-          "strengthTwo": null
-        },
-        {
-          "on": true,
-          "lora": "Cunnyfunkyv3.safetensors",
-          "strength": 0.75,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "anima-base-1-light-concepts-v31.safetensors",
-          "strength": 0.6,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "dksnpromax_v1_epoch50.safetensors",
-          "strength": 0.7999999999999998,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "reina1_v1_epoch16.safetensors",
-          "strength": 0.9,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "shaobayan1_v1_epoch27.safetensors",
-          "strength": 0.85,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "rucarachiv4-6.safetensors",
-          "strength": 0.8999999999999999,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "shaobayan1_v1_epoch27.safetensors",
-          "strength": 0.8999999999999999,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "xipaearly2026_AnimaP_v03.safetensors",
-          "strength": 1,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "xipaearly2026_AnimaB_v01-1.safetensors",
-          "strength": 1,
-          "strengthTwo": null
-        },
-        {
-          "on": false,
-          "lora": "anima-base-1-photo-background-v4.safetensors",
-          "strength": 1,
-          "strengthTwo": null
-        },
         {},
         ""
       ],
@@ -3576,7 +3502,7 @@
           "type": "STRING",
           "slot_index": 0,
           "links": [
-            101
+            102
           ]
         }
       ],
@@ -4123,17 +4049,17 @@
       69,
       48,
       0,
-      51,
+      62,
       1,
       "IMAGE"
     ],
     [
       70,
-      22,
+      61,
       0,
-      51,
-      2,
-      "VAE"
+      62,
+      0,
+      "UPSCALE_MODEL"
     ],
     [
       71,
@@ -4146,7 +4072,7 @@
     [
       72,
       51,
-      1,
+      0,
       21,
       0,
       "IMAGE"
@@ -4377,6 +4303,14 @@
     ],
     [
       101,
+      62,
+      0,
+      51,
+      0,
+      "IMAGE"
+    ],
+    [
+      102,
       60,
       0,
       42,

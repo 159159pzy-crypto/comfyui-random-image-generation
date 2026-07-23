@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,23 +13,26 @@ DEFAULT_NEGATIVE = (
     "worst quality, low quality, lowres, score_1, score_2, score_3, blurry, "
     "jpeg artifacts, bad anatomy, watermark, artist name,"
 )
-DEFAULT_LORAS = [
-    {
-        "filename": "anima-highres-aesthetic-boost.safetensors",
-        "enabled": True,
-        "strength": 0.75,
-    },
-    {
-        "filename": "BlueArchiveStyleB1.safetensors",
-        "enabled": True,
-        "strength": 0.95,
-    },
-    {
-        "filename": "Cunnyfunkyv3.safetensors",
-        "enabled": True,
-        "strength": 0.75,
-    },
-]
+DEFAULT_LORAS: list[dict[str, Any]] = []
+DEFAULT_MODEL = "miaomiaoHarem_anima14.safetensors"
+DEFAULT_HIRES = {
+    "enabled": True,
+    "model_name": "4x_foolhardy_Remacri.pth",
+    "percent": 45,
+}
+DEFAULT_DETAILERS = {
+    "hand": False,
+    "nsfw": False,
+    "face": False,
+    "eyes": False,
+}
+DETAILER_ORDER = tuple(DEFAULT_DETAILERS)
+DETAILER_NODES = {
+    "hand": {"detector": 8, "editor": 13, "detailer": 27, "detector_input": "bbox_detector"},
+    "nsfw": {"detector": 9, "editor": 14, "detailer": 28, "detector_input": "segm_detector"},
+    "face": {"detector": 10, "editor": 15, "detailer": 29, "detector_input": "bbox_detector"},
+    "eyes": {"detector": 11, "editor": 16, "detailer": 30, "detector_input": "bbox_detector"},
+}
 MAX_LORAS = 64
 MIN_LORA_STRENGTH = -100.0
 MAX_LORA_STRENGTH = 100.0
@@ -52,7 +56,10 @@ DEFAULT_SETTINGS = {
     "fixed_expression": "",
     "female_count": 1,
     "male_count": 0,
+    "model_name": DEFAULT_MODEL,
     "loras": DEFAULT_LORAS,
+    "hires": DEFAULT_HIRES,
+    "detailers": DEFAULT_DETAILERS,
     "pools": {
         "character": {"mode": "include", "ids": [], "excluded_ids": []},
         "clothing": {"mode": "include", "ids": [], "excluded_ids": []},
@@ -76,6 +83,9 @@ MAX_SAMPLE_SEED = 1125899906842624
 COMPOSER_ID = 60
 POSITIVE_ID = 42
 NEGATIVE_ID = 45
+HIRES_SCALE_ID = 51
+HIRES_MODEL_ID = 61
+HIRES_UPSCALE_ID = 62
 REMOVED_NODE_IDS = {3, 4}
 
 
@@ -118,6 +128,38 @@ def _text(name: str, value: Any) -> str:
     return value.strip()
 
 
+def normalize_lora_path(value: Any) -> str:
+    filename = _text("LoRA 文件名", value).replace("\\", "/")
+    parts = filename.split("/")
+    if (
+        not filename
+        or filename.startswith("/")
+        or len(filename) >= 2 and filename[1] == ":"
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise WorkflowError("LoRA 文件名必须是安全的相对路径")
+    return "/".join(parts)
+
+
+def normalize_artist_tags(value: Any) -> str:
+    raw = _text("manual_artist", value).replace("\r", ",").replace("\n", ",")
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r",|(?=@)", raw):
+        name = part.strip()
+        if name.startswith("@"):
+            name = name[1:].strip()
+        elif name.lower().startswith("by "):
+            name = name[3:].strip()
+        if not name:
+            continue
+        identity = name.casefold()
+        if identity not in seen:
+            names.append(name)
+            seen.add(identity)
+    return ", ".join(f"@{name}" for name in names)
+
+
 def _normalize_loras(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise WorkflowError("loras 必须是数组")
@@ -128,12 +170,11 @@ def _normalize_loras(value: Any) -> list[dict[str, Any]]:
     for index, item in enumerate(value, 1):
         if not isinstance(item, dict):
             raise WorkflowError(f"loras[{index}] 必须是对象")
-        filename = _text(f"loras[{index}].filename", item.get("filename"))
-        if not filename or "/" in filename or "\\" in filename:
-            raise WorkflowError(f"loras[{index}].filename 必须是本地文件名")
-        if filename in seen:
+        filename = normalize_lora_path(item.get("filename"))
+        identity = filename.casefold()
+        if identity in seen:
             raise WorkflowError(f"LoRA 不能重复配置: {filename}")
-        seen.add(filename)
+        seen.add(identity)
         enabled = _boolean(f"loras[{index}].enabled", item.get("enabled"))
         strength = item.get("strength")
         if isinstance(strength, bool) or not isinstance(strength, (int, float)):
@@ -153,11 +194,52 @@ def validate_loras(settings: dict[str, Any], available_filenames: Any | None = N
     """Validate the persisted LoRA shape and, when available, the ComfyUI inventory."""
     loras = _normalize_loras(settings.get("loras", DEFAULT_LORAS))
     if available_filenames is not None:
-        available = {str(value) for value in available_filenames}
-        missing = [item["filename"] for item in loras if item["filename"] not in available]
-        if missing:
-            raise WorkflowError(f"LoRA 文件不存在: {', '.join(missing)}")
+        available: dict[str, str] = {}
+        by_basename: dict[str, list[str]] = {}
+        for raw in available_filenames:
+            exact = str(raw)
+            normalized = normalize_lora_path(exact)
+            available.setdefault(normalized.casefold(), exact)
+            by_basename.setdefault(normalized.rsplit("/", 1)[-1].casefold(), []).append(exact)
+        for item in loras:
+            normalized = normalize_lora_path(item["filename"])
+            exact = available.get(normalized.casefold())
+            if exact is None and "/" not in normalized:
+                matches = list(dict.fromkeys(by_basename.get(normalized.casefold(), [])))
+                if len(matches) == 1:
+                    exact = matches[0]
+                elif len(matches) > 1:
+                    raise WorkflowError(
+                        f"LoRA 文件名存在多个子目录匹配，请重新选择: {item['filename']}"
+                    )
+            if exact is None:
+                raise WorkflowError(f"LoRA 文件不存在: {item['filename']}")
+            item["filename"] = exact
     return loras
+
+
+def _validate_hires(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise WorkflowError("hires 必须是对象")
+    unknown = set(value) - set(DEFAULT_HIRES)
+    if unknown:
+        raise WorkflowError(f"未知高清修复参数: {', '.join(sorted(unknown))}")
+    merged = {**DEFAULT_HIRES, **value}
+    return {
+        "enabled": _boolean("hires.enabled", merged["enabled"]),
+        "model_name": _text("hires.model_name", merged["model_name"]),
+        "percent": _integer("hires.percent", merged["percent"], 1, 1000),
+    }
+
+
+def _validate_detailers(value: Any) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        raise WorkflowError("detailers 必须是对象")
+    unknown = set(value) - set(DEFAULT_DETAILERS)
+    if unknown:
+        raise WorkflowError(f"未知细节修复模块: {', '.join(sorted(unknown))}")
+    merged = {**DEFAULT_DETAILERS, **value}
+    return {name: _boolean(f"detailers.{name}", merged[name]) for name in DETAILER_ORDER}
 
 
 def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -212,13 +294,18 @@ def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]
             "excluded_ids": list(dict.fromkeys(_text(f"{section} 排除条目", value) for value in excluded_ids)),
         }
     settings["pools"] = normalized_pools
+    settings["model_name"] = _text("model_name", settings["model_name"])
+    if not settings["model_name"]:
+        raise WorkflowError("model_name 不能为空")
     settings["loras"] = validate_loras(settings)
+    settings["hires"] = _validate_hires(settings["hires"])
+    settings["detailers"] = _validate_detailers(settings["detailers"])
 
     if settings["character_detail"] not in {"trigger", "trigger_tags"}:
         raise WorkflowError("character_detail 必须是 trigger 或 trigger_tags")
 
+    settings["manual_artist"] = normalize_artist_tags(settings["manual_artist"])
     for name in (
-        "manual_artist",
         "fixed_character",
         "fixed_clothing",
         "fixed_pose",
@@ -316,6 +403,120 @@ def _visual_node(workflow: dict[str, Any], node_id: int) -> dict[str, Any]:
     raise WorkflowError(f"工作流缺少节点 {node_id}")
 
 
+def _prepare_hires_nodes(api: dict[str, Any], ui: dict[str, Any]) -> None:
+    existing = api.get(str(HIRES_SCALE_ID), {})
+    existing_inputs = existing.get("inputs", {})
+    if existing.get("class_type") == "ImageScaleBy":
+        model_name = api.get(str(HIRES_MODEL_ID), {}).get("inputs", {}).get(
+            "model_name", DEFAULT_HIRES["model_name"]
+        )
+        percent = round(float(existing_inputs.get("scale_by", DEFAULT_HIRES["percent"] / 100)) * 100)
+    else:
+        model_name = existing_inputs.get("model_name", DEFAULT_HIRES["model_name"])
+        percent = existing_inputs.get("percent", DEFAULT_HIRES["percent"])
+    api[str(HIRES_MODEL_ID)] = {
+        "inputs": {"model_name": model_name},
+        "class_type": "UpscaleModelLoader",
+        "_meta": {"title": "高清修复模型"},
+    }
+    api[str(HIRES_UPSCALE_ID)] = {
+        "inputs": {
+            "upscale_model": [str(HIRES_MODEL_ID), 0],
+            "image": ["48", 0],
+        },
+        "class_type": "ImageUpscaleWithModel",
+        "_meta": {"title": "高清模型放大"},
+    }
+    api[str(HIRES_SCALE_ID)] = {
+        "inputs": {
+            "image": [str(HIRES_UPSCALE_ID), 0],
+            "upscale_method": "lanczos",
+            "scale_by": percent / 100,
+        },
+        "class_type": "ImageScaleBy",
+        "_meta": {"title": "高清输出比例"},
+    }
+    api["12"]["inputs"]["images"] = [str(HIRES_SCALE_ID), 0]
+
+    scale_node = _visual_node(ui, HIRES_SCALE_ID)
+    if scale_node.get("type") == "ImageScaleBy":
+        _visual_node(ui, HIRES_MODEL_ID)
+        _visual_node(ui, HIRES_UPSCALE_ID)
+        ui["last_node_id"] = max(int(ui.get("last_node_id", 0)), HIRES_UPSCALE_ID)
+        return
+    image_link = next(item["link"] for item in scale_node["inputs"] if item["name"] == "image")
+    model_link = next(item["link"] for item in scale_node["inputs"] if item["name"] == "vae")
+    output_links = next(item["links"] for item in scale_node["outputs"] if item["name"] == "image")
+    scale_link = max((int(link[0]) for link in ui.get("links", [])), default=0) + 1
+
+    for link in ui["links"]:
+        if int(link[0]) == image_link:
+            link[3:6] = [HIRES_UPSCALE_ID, 1, "IMAGE"]
+        elif int(link[0]) == model_link:
+            link[1:6] = [HIRES_MODEL_ID, 0, HIRES_UPSCALE_ID, 0, "UPSCALE_MODEL"]
+        elif int(link[0]) in output_links:
+            link[1] = HIRES_SCALE_ID
+            link[2] = 0
+    ui["links"].append([scale_link, HIRES_UPSCALE_ID, 0, HIRES_SCALE_ID, 0, "IMAGE"])
+
+    vae_node = _visual_node(ui, 22)
+    for output in vae_node.get("outputs", []):
+        links = output.get("links")
+        if isinstance(links, list) and model_link in links:
+            output["links"] = [link for link in links if link != model_link] or None
+
+    x, y = scale_node["pos"]
+    common_properties = {"cnr_id": "comfy-core", "ver": "0.11.0"}
+    ui["nodes"].extend(
+        [
+            {
+                "id": HIRES_MODEL_ID,
+                "type": "UpscaleModelLoader",
+                "pos": [x - 650, y],
+                "size": [300, 82],
+                "flags": {},
+                "order": scale_node.get("order", 0),
+                "mode": scale_node.get("mode", 0),
+                "inputs": [],
+                "outputs": [{"name": "UPSCALE_MODEL", "type": "UPSCALE_MODEL", "links": [model_link]}],
+                "properties": {**common_properties, "Node name for S&R": "UpscaleModelLoader"},
+                "widgets_values": [model_name],
+                "title": "高清修复模型",
+            },
+            {
+                "id": HIRES_UPSCALE_ID,
+                "type": "ImageUpscaleWithModel",
+                "pos": [x - 330, y],
+                "size": [300, 82],
+                "flags": {},
+                "order": scale_node.get("order", 0) + 1,
+                "mode": scale_node.get("mode", 0),
+                "inputs": [
+                    {"name": "upscale_model", "type": "UPSCALE_MODEL", "link": model_link},
+                    {"name": "image", "type": "IMAGE", "link": image_link},
+                ],
+                "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [scale_link]}],
+                "properties": {**common_properties, "Node name for S&R": "ImageUpscaleWithModel"},
+                "widgets_values": [],
+                "title": "高清模型放大",
+            },
+        ]
+    )
+    scale_node.update(
+        {
+            "type": "ImageScaleBy",
+            "size": [300, 110],
+            "inputs": [{"name": "image", "type": "IMAGE", "link": scale_link}],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": output_links}],
+            "properties": {**common_properties, "Node name for S&R": "ImageScaleBy"},
+            "widgets_values": ["lanczos", percent / 100],
+            "title": "高清输出比例",
+        }
+    )
+    ui["last_node_id"] = max(int(ui.get("last_node_id", 0)), HIRES_UPSCALE_ID)
+    ui["last_link_id"] = max(int(ui.get("last_link_id", 0)), scale_link)
+
+
 def prepare_templates(
     api_source: dict[str, Any], ui_source: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -324,6 +525,7 @@ def prepare_templates(
 
     for node_id in ("3", "4"):
         api.pop(node_id, None)
+    _prepare_hires_nodes(api, ui)
     api[str(COMPOSER_ID)] = _api_composer()
 
     positive = api[str(POSITIVE_ID)]
@@ -411,6 +613,86 @@ def _set_ui_widget(ui: dict[str, Any], node_id: int, value: Any, index: int | No
     node["widgets_values"] = values
 
 
+def _set_ui_mode(ui: dict[str, Any], node_id: int, enabled: bool) -> None:
+    _visual_node(ui, node_id)["mode"] = 0 if enabled else 4
+
+
+def _ui_widgets(ui: dict[str, Any], node_id: int) -> list[Any]:
+    return list(_visual_node(ui, node_id).get("widgets_values") or [])
+
+
+def _detailer_nodes(
+    ui: dict[str, Any], name: str, image: list[Any]
+) -> tuple[dict[str, dict[str, Any]], list[Any]]:
+    config = DETAILER_NODES[name]
+    detector_id = config["detector"]
+    editor_id = config["editor"]
+    detailer_id = config["detailer"]
+    detector_ui = _visual_node(ui, detector_id)
+    detector_widgets = _ui_widgets(ui, detector_id)
+    editor_widgets = _ui_widgets(ui, editor_id)
+    detailer_widgets = _ui_widgets(ui, detailer_id)
+    detector_type = detector_ui["type"]
+    detector = {
+        "inputs": {"model_name": detector_widgets[0]},
+        "class_type": detector_type,
+        "_meta": {"title": detector_ui.get("title") or detector_type},
+    }
+    editor_inputs = {
+        "wildcard": editor_widgets[0],
+        "Select to add LoRA": "Select the LoRA to add to the text",
+        "Select to add Wildcard": "Select the Wildcard to add to the text",
+        "detailer_pipe": ["18", 0],
+        config["detector_input"]: [str(detector_id), 0],
+    }
+    editor = {
+        "inputs": editor_inputs,
+        "class_type": "EditDetailerPipe",
+        "_meta": {"title": _visual_node(ui, editor_id).get("title") or f"{name.title()} Detailer Pipe"},
+    }
+    detailer_inputs = {
+        "image": image,
+        "detailer_pipe": [str(editor_id), 0],
+        "guide_size": detailer_widgets[0],
+        "guide_size_for": detailer_widgets[1],
+        "max_size": detailer_widgets[2],
+        "seed": ["37", 0],
+        "steps": detailer_widgets[5],
+        "cfg": detailer_widgets[6],
+        "sampler_name": detailer_widgets[7],
+        "scheduler": detailer_widgets[8],
+        "denoise": detailer_widgets[9],
+        "feather": detailer_widgets[10],
+        "noise_mask": detailer_widgets[11],
+        "force_inpaint": detailer_widgets[12],
+        "bbox_threshold": detailer_widgets[13],
+        "bbox_dilation": detailer_widgets[14],
+        "bbox_crop_factor": detailer_widgets[15],
+        "sam_detection_hint": detailer_widgets[16],
+        "sam_dilation": detailer_widgets[17],
+        "sam_threshold": detailer_widgets[18],
+        "sam_bbox_expansion": detailer_widgets[19],
+        "sam_mask_hint_threshold": detailer_widgets[20],
+        "sam_mask_hint_use_negative": detailer_widgets[21],
+        "drop_size": detailer_widgets[22],
+        "refiner_ratio": detailer_widgets[23],
+        "cycle": detailer_widgets[24],
+        "noise_mask_feather": detailer_widgets[26],
+        "tiled_encode": ["50", 0],
+        "tiled_decode": ["50", 0],
+    }
+    detailer = {
+        "inputs": detailer_inputs,
+        "class_type": "FaceDetailerPipe",
+        "_meta": {"title": _visual_node(ui, detailer_id).get("title") or f"{name.title()} Detailer"},
+    }
+    return {
+        str(detector_id): detector,
+        str(editor_id): editor,
+        str(detailer_id): detailer,
+    }, [str(detailer_id), 0]
+
+
 def render_workflows(
     api_template: dict[str, Any],
     ui_template: dict[str, Any],
@@ -430,6 +712,8 @@ def render_workflows(
 
     api = copy.deepcopy(api_template)
     ui = copy.deepcopy(ui_template)
+    api["1"]["inputs"]["unet_name"] = settings["model_name"]
+    _set_ui_widget(ui, 1, settings["model_name"], 0)
     lora_node = api.get("2")
     if not isinstance(lora_node, dict) or not isinstance(lora_node.get("inputs"), dict):
         raise WorkflowError("工作流缺少 LoRA 节点 2")
@@ -495,6 +779,35 @@ def render_workflows(
     api["39"]["inputs"]["value"] = settings["steps"]
     api["41"]["inputs"]["value"] = settings["cfg"]
     api["12"]["inputs"]["filename_prefix"] = filename_prefix
+
+    current_image: list[Any] = ["48", 0]
+    hires = settings["hires"]
+    if hires["enabled"]:
+        api[str(HIRES_MODEL_ID)]["inputs"]["model_name"] = hires["model_name"]
+        api[str(HIRES_UPSCALE_ID)]["inputs"]["image"] = current_image
+        api[str(HIRES_SCALE_ID)]["inputs"]["scale_by"] = hires["percent"] / 100
+        current_image = [str(HIRES_SCALE_ID), 0]
+    else:
+        for node_id in (HIRES_MODEL_ID, HIRES_UPSCALE_ID, HIRES_SCALE_ID):
+            api.pop(str(node_id), None)
+    for node_id in (HIRES_MODEL_ID, HIRES_UPSCALE_ID, HIRES_SCALE_ID):
+        _set_ui_mode(ui, node_id, hires["enabled"])
+    _set_ui_widget(ui, HIRES_MODEL_ID, hires["model_name"], 0)
+    _set_ui_widget(ui, HIRES_SCALE_ID, hires["percent"] / 100, 1)
+
+    for name in DETAILER_ORDER:
+        config = DETAILER_NODES[name]
+        enabled = settings["detailers"][name]
+        for node_id in (config["detector"], config["editor"], config["detailer"]):
+            _set_ui_mode(ui, node_id, enabled)
+        if enabled:
+            nodes, current_image = _detailer_nodes(ui, name, current_image)
+            api.update(nodes)
+        else:
+            for node_id in (config["detector"], config["editor"], config["detailer"]):
+                api.pop(str(node_id), None)
+    api["12"]["inputs"]["images"] = current_image
+    _set_ui_mode(ui, 52, False)
 
     _set_ui_widget(
         ui,
