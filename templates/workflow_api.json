@@ -14,101 +14,6 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
-      "lora_1": {
-        "on": false,
-        "lora": "Niji_oil_painting_anima_epoch05.safetensors",
-        "strength": 0.8
-      },
-      "lora_2": {
-        "on": false,
-        "lora": "p1ct01_v1_epoch20.safetensors",
-        "strength": 0.95
-      },
-      "lora_3": {
-        "on": false,
-        "lora": "RealSkin SliderV2.safetensors",
-        "strength": -4.163336342344337e-17
-      },
-      "lora_4": {
-        "on": false,
-        "lora": "atomsphere_style_v1.2_miaomiaoherum13-e05.safetensors",
-        "strength": 0.6499999999999997
-      },
-      "lora_5": {
-        "on": false,
-        "lora": "Niji_oil_painting_anima_epoch05.safetensors",
-        "strength": 0.65
-      },
-      "lora_6": {
-        "on": false,
-        "lora": "reina1_v1_epoch16.safetensors",
-        "strength": 0.7999999999999998
-      },
-      "lora_7": {
-        "on": true,
-        "lora": "anima-highres-aesthetic-boost.safetensors",
-        "strength": 0.75
-      },
-      "lora_8": {
-        "on": true,
-        "lora": "BlueArchiveStyleB1.safetensors",
-        "strength": 0.95
-      },
-      "lora_9": {
-        "on": false,
-        "lora": "xipaearly2026_AnimaP_v03.safetensors",
-        "strength": 0.7499999999999998
-      },
-      "lora_10": {
-        "on": true,
-        "lora": "Cunnyfunkyv3.safetensors",
-        "strength": 0.75
-      },
-      "lora_11": {
-        "on": false,
-        "lora": "anima-base-1-light-concepts-v31.safetensors",
-        "strength": 0.6
-      },
-      "lora_12": {
-        "on": false,
-        "lora": "dksnpromax_v1_epoch50.safetensors",
-        "strength": 0.7999999999999998
-      },
-      "lora_13": {
-        "on": false,
-        "lora": "reina1_v1_epoch16.safetensors",
-        "strength": 0.9
-      },
-      "lora_14": {
-        "on": false,
-        "lora": "shaobayan1_v1_epoch27.safetensors",
-        "strength": 0.85
-      },
-      "lora_15": {
-        "on": false,
-        "lora": "rucarachiv4-6.safetensors",
-        "strength": 0.8999999999999999
-      },
-      "lora_16": {
-        "on": false,
-        "lora": "shaobayan1_v1_epoch27.safetensors",
-        "strength": 0.8999999999999999
-      },
-      "lora_17": {
-        "on": false,
-        "lora": "xipaearly2026_AnimaP_v03.safetensors",
-        "strength": 1
-      },
-      "lora_18": {
-        "on": false,
-        "lora": "xipaearly2026_AnimaB_v01-1.safetensors",
-        "strength": 1
-      },
-      "lora_19": {
-        "on": false,
-        "lora": "anima-base-1-photo-background-v4.safetensors",
-        "strength": 1
-      },
       "➕ Add Lora": "",
       "model": [
         "1",
@@ -187,7 +92,7 @@
       "filename_prefix": "Anima",
       "images": [
         "51",
-        1
+        0
       ]
     },
     "class_type": "SaveImage",
@@ -445,30 +350,41 @@
   },
   "51": {
     "inputs": {
-      "model_name": "4x_foolhardy_Remacri.pth",
-      "rescale_after_model": true,
-      "rescale_method": "lanczos",
-      "rescale": "by percentage",
-      "percent": 45,
-      "width": 1024,
-      "height": 1024,
-      "longer_side": 1024,
-      "crop": "disabled",
-      "image_output": "Hide",
-      "link_id": 0,
-      "save_prefix": "ComfyUI",
+      "image": [
+        "62",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "scale_by": 0.45
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "高清输出比例"
+    }
+  },
+  "61": {
+    "inputs": {
+      "model_name": "4x_foolhardy_Remacri.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "高清修复模型"
+    }
+  },
+  "62": {
+    "inputs": {
+      "upscale_model": [
+        "61",
+        0
+      ],
       "image": [
         "48",
         0
-      ],
-      "vae": [
-        "22",
-        0
       ]
     },
-    "class_type": "easy hiresFix",
+    "class_type": "ImageUpscaleWithModel",
     "_meta": {
-      "title": "高清修复"
+      "title": "高清模型放大"
     }
   },
   "60": {

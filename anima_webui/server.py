@@ -16,6 +16,7 @@ from .custom_prompts import CustomPromptStore
 from .favorites import FavoritesService, favorite_key
 from .history import HistoryStore
 from .runner import BatchConflict, BatchManager
+from .style_presets import StylePresetStore
 from .workflow import DEFAULT_SETTINGS, WorkflowError, WorkflowTemplates
 
 
@@ -25,7 +26,7 @@ APP_DIR = Path(__file__).resolve().parents[1]
 @web.middleware
 async def error_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
     try:
-        return await handler(request)
+        response = await handler(request)
     except WorkflowError as error:
         return web.json_response({"error": str(error)}, status=400)
     except CatalogError as error:
@@ -38,6 +39,10 @@ async def error_middleware(request: web.Request, handler: Any) -> web.StreamResp
         return web.json_response({"error": str(error)}, status=503)
     except json.JSONDecodeError:
         return web.json_response({"error": "请求 JSON 无效"}, status=400)
+    if request.path == "/" or request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 async def _json_body(request: web.Request) -> dict[str, Any]:
@@ -56,6 +61,7 @@ def create_app(
     comfy: Any | None = None,
     history_path: str | Path | None = None,
     custom_prompts_path: str | Path | None = None,
+    style_presets_path: str | Path | None = None,
     anima_tools_dir: str | Path | None = None,
 ) -> web.Application:
     root = Path(app_dir)
@@ -66,6 +72,7 @@ def create_app(
         custom_prompts_path or root / "data" / "custom_prompts.json", catalog
     )
     favorites = FavoritesService(client, catalog)
+    style_presets = StylePresetStore(style_presets_path or root / "data" / "style_presets.json")
     templates = WorkflowTemplates.load(root / "templates")
     manager = BatchManager(templates, history, client, catalog)
 
@@ -76,6 +83,7 @@ def create_app(
     app["catalog"] = catalog
     app["custom_prompts"] = custom_prompts
     app["favorites"] = favorites
+    app["style_presets"] = style_presets
 
     async def favorite_keys(section: str, collection: str = "") -> set[str] | None:
         if not collection:
@@ -276,6 +284,25 @@ def create_app(
         inventory = await client.lora_inventory()
         return web.json_response(inventory)
 
+    async def resources(_: web.Request) -> web.Response:
+        return web.json_response(await client.resource_inventory())
+
+    async def list_style_presets(_: web.Request) -> web.Response:
+        return web.json_response(style_presets.list())
+
+    async def create_style_preset(request: web.Request) -> web.Response:
+        return web.json_response(style_presets.create(await _json_body(request)), status=201)
+
+    async def update_style_preset(request: web.Request) -> web.Response:
+        return web.json_response(
+            style_presets.update(request.match_info["preset_id"], await _json_body(request))
+        )
+
+    async def delete_style_preset(request: web.Request) -> web.Response:
+        if not style_presets.delete(request.match_info["preset_id"]):
+            raise KeyError(request.match_info["preset_id"])
+        return web.json_response({"deleted": True})
+
     async def start_batch(request: web.Request) -> web.Response:
         await client.status()
         state = await manager.start(await _json_body(request))
@@ -316,6 +343,11 @@ def create_app(
     app.router.add_get("/api/config", config)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/loras", loras)
+    app.router.add_get("/api/resources", resources)
+    app.router.add_get("/api/style-presets", list_style_presets)
+    app.router.add_post("/api/style-presets", create_style_preset)
+    app.router.add_put("/api/style-presets/{preset_id}", update_style_preset)
+    app.router.add_delete("/api/style-presets/{preset_id}", delete_style_preset)
     app.router.add_get("/api/favorites/{section}", get_favorites)
     app.router.add_put("/api/favorites/{section}/item", update_favorite)
     app.router.add_post("/api/favorites/{section}/groups", create_favorite_group)
