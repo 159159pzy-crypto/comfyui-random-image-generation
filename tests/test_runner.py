@@ -43,9 +43,17 @@ class FakeComfy:
         self.block = None
         self.error_at = None
         self.available_loras = [item["filename"] for item in DEFAULT_SETTINGS["loras"]]
+        self.available_models = [DEFAULT_SETTINGS["model_name"]]
+        self.available_upscalers = [DEFAULT_SETTINGS["hires"]["model_name"]]
 
     async def lora_filenames(self):
         return list(self.available_loras)
+
+    async def resource_inventory(self):
+        return {
+            "models": list(self.available_models),
+            "upscale_models": list(self.available_upscalers),
+        }
 
     async def submit(self, payload):
         self.submissions.append(payload)
@@ -186,6 +194,18 @@ class BatchManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(self.manager.state)
         self.assertEqual(self.history.list_images()["total"], 0)
+
+    async def test_missing_models_are_rejected_before_batch_creation(self):
+        self.comfy.available_models = []
+        with self.assertRaisesRegex(ValueError, "主模型不存在"):
+            await self.manager.start(DEFAULT_SETTINGS)
+        self.assertIsNone(self.manager.state)
+
+        self.comfy.available_models = [DEFAULT_SETTINGS["model_name"]]
+        self.comfy.available_upscalers = []
+        with self.assertRaisesRegex(ValueError, "高清修复模型不存在"):
+            await self.manager.start(DEFAULT_SETTINGS)
+        self.assertIsNone(self.manager.state)
 
 
 if __name__ == "__main__":

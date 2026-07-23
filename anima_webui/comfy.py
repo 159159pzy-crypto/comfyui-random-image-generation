@@ -6,6 +6,8 @@ from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
+from .workflow import normalize_lora_path
+
 
 class ComfyError(RuntimeError):
     pass
@@ -77,9 +79,11 @@ class ComfyClient:
             source_available = True
             for item in manifest.get("items") or []:
                 if isinstance(item, dict) and item.get("filename"):
-                    manifest_items[str(item["filename"])] = item
-                    if str(item["filename"]) not in names:
-                        names.append(str(item["filename"]))
+                    filename = str(item["filename"])
+                    identity = normalize_lora_path(filename).casefold()
+                    manifest_items[identity] = item
+                    if not any(normalize_lora_path(name).casefold() == identity for name in names):
+                        names.append(filename)
         except ComfyError:
             pass
 
@@ -87,12 +91,24 @@ class ComfyClient:
             raise ComfyError("无法读取 ComfyUI 本地 LoRA 列表")
 
         items = []
+        seen: set[str] = set()
         for filename in names:
-            metadata = manifest_items.get(filename) or {}
+            normalized = normalize_lora_path(filename)
+            identity = normalized.casefold()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            metadata = manifest_items.get(identity) or {}
             items.append(
                 {
                     "filename": filename,
-                    "display_name": str(metadata.get("display_name") or filename.rsplit(".", 1)[0]),
+                    "normalized_path": normalized,
+                    "folder": normalized.rsplit("/", 1)[0] if "/" in normalized else "",
+                    "basename": normalized.rsplit("/", 1)[-1],
+                    "display_name": str(
+                        metadata.get("display_name")
+                        or normalized.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+                    ),
                     "preview": str(metadata.get("thumb_url") or ""),
                     "has_preview": bool(metadata.get("has_preview")),
                     "size": metadata.get("size"),
@@ -103,6 +119,30 @@ class ComfyClient:
     async def lora_filenames(self) -> list[str]:
         inventory = await self.lora_inventory()
         return [str(item["filename"]) for item in inventory.get("items") or []]
+
+    async def resource_inventory(self) -> dict[str, Any]:
+        object_info = await self.object_info()
+
+        def choices(node_name: str, input_name: str) -> list[str]:
+            node = object_info.get(node_name) or {}
+            required = ((node.get("input") or {}).get("required") or {})
+            value = required.get(input_name)
+            if isinstance(value, list) and value and isinstance(value[0], list):
+                return [str(item) for item in value[0]]
+            if (
+                isinstance(value, list)
+                and len(value) > 1
+                and isinstance(value[1], dict)
+                and isinstance(value[1].get("options"), list)
+            ):
+                return [str(item) for item in value[1]["options"]]
+            return []
+
+        models = choices("UNETLoader", "unet_name")
+        upscale_models = choices("UpscaleModelLoader", "model_name") or choices("easy hiresFix", "model_name")
+        if not models or not upscale_models:
+            raise ComfyError("ComfyUI 未返回模型或高清修复模型列表")
+        return {"models": models, "upscale_models": upscale_models}
 
     async def favorites(self) -> dict[str, Any]:
         return await self._json("GET", "/anima-tools/favorites")

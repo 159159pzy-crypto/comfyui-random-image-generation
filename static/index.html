@@ -5,10 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f5f5f7">
   <title>Anima Studio</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722-apple-1">
+  <script>
+    (() => {
+      const saved = localStorage.getItem("anima-random-studio:theme:v1");
+      const theme = saved === "light" || saved === "dark"
+        ? saved
+        : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/styles.css?v=20260723-apple-3">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
+  <div id="appError" class="app-error" role="alert" hidden></div>
 
   <header class="topbar glass">
     <a class="brand" href="#" aria-label="Anima Random Studio 首页">
@@ -22,6 +32,7 @@
     </div>
     <div class="top-actions">
       <span id="connection" class="status-badge offline"><i></i><span>正在连接</span></span>
+      <button id="themeToggle" class="icon-button theme-toggle" type="button" title="切换深色主题" aria-label="切换深色主题"><span aria-hidden="true">◐</span></button>
       <button id="stopButton" class="button ghost" type="button" disabled>停止</button>
       <button id="startButton" class="button primary" type="submit" form="settingsForm">开始生成</button>
     </div>
@@ -49,12 +60,31 @@
           </div>
         </section>
 
+        <details class="control-section advanced-section preset-section">
+          <summary><span>风格预设</span><span id="presetSummary" class="summary-value">0 个预设</span><i>+</i></summary>
+          <div class="details-content">
+            <div class="preset-create-row">
+              <input id="presetName" type="text" maxlength="100" placeholder="预设名称" aria-label="风格预设名称" aria-describedby="presetError">
+              <button id="savePreset" class="button primary compact" type="button">保存当前</button>
+            </div>
+            <div id="presetError" class="field-error" role="status" hidden></div>
+            <div id="presetList" class="preset-list"></div>
+            <div id="presetEmpty" class="inline-empty">还没有风格预设。</div>
+          </div>
+        </details>
+
         <section class="control-section">
           <div class="section-heading"><h2>提示词池</h2><span id="poolOverview">0 项已选</span></div>
           <div id="dimensionList" class="dimension-list"></div>
           <label class="field"><span>角色标签</span><select id="character_detail"><option value="trigger_tags">触发词 + 特征</option><option value="trigger">仅触发词</option></select></label>
-          <label class="field"><span>固定画师</span><span class="artist-input-row"><input id="manual_artist" type="text" placeholder="例如 anmi, @rella"><button id="manageArtists" class="icon-button dark" type="button" title="管理收藏画师" aria-label="管理收藏画师">♡</button></span></label>
-          <div id="artistFavorites" class="artist-favorites" aria-label="收藏画师快捷入口"></div>
+          <label class="field"><span>固定画师</span><input id="manual_artist" type="text" placeholder="例如 @anmi, @rella" autocomplete="off" spellcheck="false"></label>
+          <details class="artist-favorites-section">
+            <summary><span>收藏画师</span><span id="artistFavoriteCount" class="summary-value">0 位</span><i>+</i></summary>
+            <div class="artist-favorites-body">
+              <div id="artistFavorites" class="artist-favorites" aria-label="收藏画师快捷入口"></div>
+              <button id="manageArtists" class="button ghost compact" type="button">管理收藏</button>
+            </div>
+          </details>
         </section>
 
         <details class="control-section advanced-section">
@@ -75,6 +105,27 @@
             </div>
             <div id="loraList" class="lora-list"></div>
             <div id="loraEmpty" class="inline-empty">未配置 LoRA，模型和 CLIP 将直接透传。</div>
+          </div>
+        </details>
+
+        <details class="control-section advanced-section model-repair-section">
+          <summary><span>模型与修复</span><span id="repairSummary" class="summary-value">高清开启 · 0 项细修</span><i>+</i></summary>
+          <div class="details-content">
+            <label class="field"><span>主模型</span><select id="model_name"><option value="">正在读取模型...</option></select></label>
+            <div id="resourceWarning" class="resource-warning" hidden></div>
+            <div class="switch-list">
+              <label class="switch-row"><span><strong>高清修复</strong><small>使用放大模型增强细节</small></span><input id="hires_enabled" type="checkbox"></label>
+            </div>
+            <div id="hiresFields" class="repair-parameters">
+              <label class="field"><span>放大模型</span><select id="hires_model_name"><option value="">正在读取放大模型...</option></select></label>
+            </div>
+            <div class="detailer-heading"><span>独立细节修复</span></div>
+            <div class="switch-list detailer-switches">
+              <label class="switch-row"><span><strong>手部</strong><small>Hand ADetailer</small></span><input id="detailer_hand" type="checkbox"></label>
+              <label class="switch-row"><span><strong>NSFW</strong><small>NSFW ADetailer</small></span><input id="detailer_nsfw" type="checkbox"></label>
+              <label class="switch-row"><span><strong>面部</strong><small>Face ADetailer</small></span><input id="detailer_face" type="checkbox"></label>
+              <label class="switch-row"><span><strong>眼睛</strong><small>Eyes ADetailer</small></span><input id="detailer_eyes" type="checkbox"></label>
+            </div>
           </div>
         </details>
 
@@ -238,6 +289,6 @@
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260722-apple-1" defer></script>
+  <script src="/static/app.js?v=20260723-apple-3" defer></script>
 </body>
 </html>

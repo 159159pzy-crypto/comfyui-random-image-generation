@@ -9,7 +9,7 @@ from typing import Any
 from .comfy import ComfyError, extract_images, extract_positive_prompt
 from .catalog import PromptCatalog
 from .history import HistoryStore
-from .workflow import MAX_SAMPLE_SEED, WorkflowTemplates, validate_loras, validate_settings
+from .workflow import MAX_SAMPLE_SEED, WorkflowError, WorkflowTemplates, validate_loras, validate_settings
 
 
 class BatchConflict(RuntimeError):
@@ -45,7 +45,14 @@ class BatchManager:
         lora_filenames = getattr(self.comfy, "lora_filenames", None)
         if not lora_filenames:
             raise ComfyError("ComfyUI 客户端无法读取 LoRA 列表")
-        validate_loras(settings, await lora_filenames())
+        settings["loras"] = validate_loras(settings, await lora_filenames())
+        resource_inventory = getattr(self.comfy, "resource_inventory", None)
+        if resource_inventory:
+            resources = await resource_inventory()
+            if settings["model_name"] not in resources.get("models", []):
+                raise WorkflowError(f"主模型不存在: {settings['model_name']}")
+            if settings["hires"]["enabled"] and settings["hires"]["model_name"] not in resources.get("upscale_models", []):
+                raise WorkflowError(f"高清修复模型不存在: {settings['hires']['model_name']}")
         batch_id = uuid.uuid4().hex[:12]
         self.stop_requested = False
         self.state = {
