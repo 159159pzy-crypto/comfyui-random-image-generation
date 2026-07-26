@@ -599,7 +599,9 @@ class PromptCatalog:
 
     def _selection_candidates(self, section: str, selection: dict[str, Any]) -> list[dict[str, Any]]:
         mode = selection.get("mode", "include") if isinstance(selection, dict) else "include"
-        ids = {str(value) for value in selection.get("ids", [])} if isinstance(selection, dict) else set()
+        # 候选顺序参与固定种子抽样,必须按选中顺序确定性去重:
+        # set 的迭代顺序随进程哈希种子变化,会让"复现"在重启后抽出不同条目。
+        ids = list(dict.fromkeys(str(value) for value in selection.get("ids", []))) if isinstance(selection, dict) else []
         excluded = {str(value) for value in selection.get("excluded_ids", [])} if isinstance(selection, dict) else set()
         if mode == "all":
             return [item for item in self._items[section] if item["id"] not in excluded]

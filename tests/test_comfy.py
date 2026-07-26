@@ -2,6 +2,9 @@ import sys
 import unittest
 from pathlib import Path
 
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+
 
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
@@ -38,6 +41,40 @@ class NetworkErrorTests(unittest.IsolatedAsyncioTestCase):
                 await client.status()
         finally:
             await client.close()
+
+
+class PlainTextResponseTests(unittest.IsolatedAsyncioTestCase):
+    """针对原版 ComfyUI(未装 Anima-Tools 扩展)的真实响应形态。"""
+
+    async def asyncSetUp(self):
+        app = web.Application()
+
+        async def object_info(request):
+            return web.json_response(
+                {"LoraLoader": {"input": {"required": {"lora_name": [["one.safetensors"]]}}}}
+            )
+
+        app.router.add_get("/object_info", object_info)
+        # 故意不注册 /anima-tools/*:aiohttp 对未知路由返回纯文本 404,与原版 ComfyUI 一致
+        self.server = TestServer(app)
+        await self.server.start_server()
+        self.client = ComfyClient(f"http://127.0.0.1:{self.server.port}")
+
+    async def asyncTearDown(self):
+        await self.client.close()
+        await self.server.close()
+
+    async def test_non_json_error_body_maps_to_comfy_error(self):
+        # 回归:纯文本 404 曾以 JSONDecodeError 泄漏出 _json,绕过所有
+        # except ComfyError 的降级逻辑,还被错误中间件误判成客户端请求 JSON 无效。
+        with self.assertRaisesRegex(ComfyError, "404"):
+            await self.client._json("GET", "/anima-tools/lora/manifest")
+
+    async def test_lora_inventory_degrades_without_manifest_endpoint(self):
+        # 回归:清单端点不存在时应回退到 LoraLoader 名称,而不是让 /api/loras
+        # 与批次启动整体失败。
+        inventory = await self.client.lora_inventory()
+        self.assertEqual([item["filename"] for item in inventory["items"]], ["one.safetensors"])
 
 
 class FakeInventoryClient(ComfyClient):

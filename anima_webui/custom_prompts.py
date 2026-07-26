@@ -91,13 +91,25 @@ class CustomPromptStore:
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-            raw_groups = payload.get("groups", {}) if isinstance(payload, dict) else {}
+            if not isinstance(payload, dict):
+                raise CatalogError("自定义提示词文件不是 JSON 对象")
+            # 手改文件里 groups/items 可能是 null 或错误类型:null 视为空,
+            # 其余错误类型走坏文件备份,不能以 AttributeError/TypeError 炸掉启动。
+            raw_groups = payload.get("groups") or {}
+            raw_items = payload.get("items") or []
+            if not isinstance(raw_groups, dict) or not isinstance(raw_items, list):
+                raise CatalogError("自定义提示词文件的 groups/items 结构无效")
             groups = {
                 section: self._normalize_groups(raw_groups.get(section, []))
                 for section in SECTIONS
             }
-            raw_items = payload.get("items", []) if isinstance(payload, dict) else []
             items = [self._normalize(item) for item in raw_items if isinstance(item, dict)]
+            self.groups = groups
+            self.items = items
+            self._remove_unknown_group_ids()
+            # set_custom_items 也在保护范围内:_normalize 不校验 id 格式(create 会在
+            # 之后覆盖 id),老格式/手改的 id 在这里才被拒绝,不能因此炸掉启动。
+            self.catalog.set_custom_items(self.items)
         except (OSError, json.JSONDecodeError, CatalogError) as error:
             # 坏文件不再阻断启动:改名备份后以空数据继续,并向界面报告警告。
             backup = backup_corrupt_file(self.path)
@@ -105,12 +117,8 @@ class CustomPromptStore:
             self.load_warnings.append(f"自定义提示词文件无法读取,已备份为 {backup.name} 并以空数据启动")
             self.items = []
             self.groups = {section: [] for section in SECTIONS}
+            # 同时把目录从 set_custom_items 可能留下的半修改状态恢复为无自定义项。
             self.catalog.set_custom_items([])
-            return
-        self.groups = groups
-        self.items = items
-        self._remove_unknown_group_ids()
-        self.catalog.set_custom_items(self.items)
 
     def list(self, section: str | None = None, group_id: str | None = None) -> list[dict[str, Any]]:
         if section and section not in SECTIONS:

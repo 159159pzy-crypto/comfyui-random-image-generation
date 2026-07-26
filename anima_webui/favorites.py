@@ -206,7 +206,12 @@ class FavoritesService:
         enabled = payload.get("favorite", True)
         if not isinstance(enabled, bool):
             raise CatalogError("favorite 必须是布尔值")
-        groups = self._validated_group_ids(current, payload.get("groupIds"), enabled)
+        if "groupIds" not in payload and existing is not None:
+            # 与 nickname 同理:载荷未携带 groupIds 的重复收藏(如前端 toggleFavorite)
+            # 保留原分组,重新校验以过滤期间被删除的组。
+            groups = self._validated_group_ids(current, old_group_ids, enabled)
+        else:
+            groups = self._validated_group_ids(current, payload.get("groupIds"), enabled)
         nickname = str(payload.get("nickname") or "").strip()[:300]
         if not enabled:
             if position is not None:
@@ -397,7 +402,12 @@ class FavoritesService:
         enabled = payload.get("favorite", True)
         if not isinstance(enabled, bool):
             raise CatalogError("favorite 必须是布尔值")
-        groups = self._validated_group_ids(current, payload.get("groupIds"), enabled)
+        if "groupIds" not in payload and existing is not None:
+            # 与 update_item 同理:未携带 groupIds 时保留原分组(前端"保存当前画师"
+            # 对每个画师无条件重复收藏,不能因此清掉分组整理)。
+            groups = self._validated_group_ids(current, old_group_ids, enabled)
+        else:
+            groups = self._validated_group_ids(current, payload.get("groupIds"), enabled)
         if not enabled:
             if position is not None:
                 current["items"].pop(position)
