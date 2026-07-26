@@ -226,6 +226,25 @@ class BatchManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "stopped")
         self.assertEqual(len(self.comfy.submissions), 1)
 
+    async def test_stop_with_keep_queue_continues_next_batch(self):
+        # 回归:clearQueue=false(只停当前批次)后,stop_requested 曾让
+        # _advance_queue 直接返回,队列中的批次被永久卡死。
+        self.comfy.block = asyncio.Event()
+        self.comfy.honor_abort = True
+        state = await self.manager.start({**DEFAULT_SETTINGS, "count": 3})
+        while not self.comfy.submissions:
+            await asyncio.sleep(0)
+        await self.manager.start({**DEFAULT_SETTINGS, "count": 1})
+        self.assertEqual(len(self.manager.queue), 1)
+        await self.manager.request_stop(state["id"], clear_queue=False)
+        self.comfy.block.set()
+        result = await self.manager.wait()
+        # 队列中的批次必须自动接续并跑完:最终状态来自接续批次
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(self.manager.queue), 0)
+        self.assertEqual(len(self.comfy.submissions), 2)
+        self.assertEqual((await self.history.get_batch(state["id"]))["status"], "stopped")
+
     async def test_remove_queued_entry(self):
         self.comfy.block = asyncio.Event()
         await self.manager.start({**DEFAULT_SETTINGS, "count": 1})

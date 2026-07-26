@@ -241,8 +241,12 @@ class BatchManager:
             await self._advance_queue()
 
     async def _advance_queue(self) -> None:
-        """当前批次收尾后自动接续队列中的下一个;停止/关闭时不再接续。"""
-        if self.shutting_down or self.stop_requested or not self.queue:
+        """当前批次收尾后自动接续队列中的下一个;关闭时不再接续。
+
+        stop_requested 只作用于当前批次:clearQueue=true 的停止已经清空了队列,
+        clearQueue=false(只停当前)则应继续接续,_begin_batch 会复位该标志。
+        """
+        if self.shutting_down or not self.queue:
             self._stop_monitor()
             return
         entry = self.queue.pop(0)

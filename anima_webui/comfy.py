@@ -49,9 +49,15 @@ class ComfyClient:
         session = await self._get_session()
         try:
             async with session.request(method, f"{self.base_url}{path}", **kwargs) as response:
-                data = await response.json(content_type=None)
+                raw = await response.text()
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    # 非 JSON 响应(如原版 ComfyUI 对未知路由返回纯文本 404)必须归一化为
+                    # ComfyError,否则 JSONDecodeError 会绕过所有 except ComfyError 的降级逻辑。
+                    data = None
                 if response.status >= 400:
-                    message = data.get("error") if isinstance(data, dict) else data
+                    message = data.get("error") if isinstance(data, dict) else raw[:200]
                     raise ComfyError(f"ComfyUI 返回 {response.status}: {message}")
                 if not isinstance(data, dict):
                     raise ComfyError("ComfyUI 返回了无效数据")

@@ -132,6 +132,46 @@ class FavoriteServiceTests(unittest.IsolatedAsyncioTestCase):
                 "pose", "parent_b", {"id": "empty", "name": "Empty"}, []
             )
 
+    async def test_refavorite_without_group_ids_preserves_memberships(self):
+        # 回归:payload 不带 groupIds 的重复收藏(前端 toggleFavorite 就是这么发的)
+        # 曾把分组重置为 ["default"],悄悄摧毁用户的分组整理。
+        item = custom_item("custom:first", "First")
+        comfy = FakeComfy(
+            {
+                "pose": {
+                    "groups": [
+                        {"id": "default", "name": "Default"},
+                        {"id": "g1", "name": "G1"},
+                        {"id": "g2", "name": "G2"},
+                    ],
+                    "items": [],
+                }
+            }
+        )
+        service = FavoritesService(comfy, FakeCatalog([item]))
+        await service.update_item("pose", {"id": "custom:first", "favorite": True, "groupIds": ["g1", "g2"]})
+        result = await service.update_item("pose", {"id": "custom:first", "favorite": True})
+        self.assertEqual(result["items"][0]["groupIds"], ["g1", "g2"])
+        # 显式携带 groupIds 时仍然生效
+        result = await service.update_item("pose", {"id": "custom:first", "favorite": True, "groupIds": ["g2"]})
+        self.assertEqual(result["items"][0]["groupIds"], ["g2"])
+
+    async def test_artist_refavorite_without_group_ids_preserves_memberships(self):
+        # 回归:同一缺陷的画师路径——前端"保存当前画师"对每个画师无条件发
+        # favorite:true,不带 groupIds,曾把已分组的画师全部打回默认分组。
+        comfy = FakeComfy(
+            {
+                "artist": {
+                    "groups": [{"id": "default", "name": "Default"}, {"id": "g1", "name": "G1"}],
+                    "items": [],
+                }
+            }
+        )
+        service = FavoritesService(comfy, FakeCatalog())
+        await service.update_item("artist", {"name": "@anmi", "favorite": True, "groupIds": ["g1"]})
+        result = await service.update_item("artist", {"name": "@anmi", "favorite": True})
+        self.assertEqual(result["items"][0]["groupIds"], ["g1"])
+
     async def test_parent_delete_removes_subtree_and_moves_orphans_to_default(self):
         comfy = FakeComfy(
             {
