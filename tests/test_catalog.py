@@ -14,7 +14,7 @@ from anima_webui.custom_prompts import CustomPromptStore  # noqa: E402
 from anima_webui.workflow import DEFAULT_SETTINGS, validate_settings  # noqa: E402
 
 
-class CatalogTests(unittest.TestCase):
+class CatalogTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
@@ -23,6 +23,7 @@ class CatalogTests(unittest.TestCase):
         js.mkdir(parents=True)
         datasets = {
             "character_data.js": [
+                {"name": "hatsune miku", "copyright": "vocaloid", "gender": "1girl", "hair": "blue", "eye": "blue", "post_count": 99},
                 {"name": "alpha", "copyright": "series", "gender": "1girl", "hair": "blue", "eye": "red", "post_count": 20},
                 {"name": "beta", "copyright": "series", "gender": "1boy", "hair": "black", "eye": "blue", "post_count": 10},
                 {"name": "mystery", "copyright": "other", "post_count": 1},
@@ -59,16 +60,16 @@ class CatalogTests(unittest.TestCase):
         result = self.catalog.search("clothing", "外套")
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["id"], "clothing:coat")
-        self.assertEqual(self.catalog.count("character"), 3)
+        self.assertEqual(self.catalog.count("character"), 4)
 
     def test_anima_character_facets_and_combined_filters(self):
         result = self.catalog.search("character", gender="1girl", hair="blue", eye="red", series="series")
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["favorite_key"], "alpha")
         self.assertEqual(result["items"][0]["post_count"], 20)
-        self.assertEqual(self.catalog.search("character", gender="1girl")["total"], 1)
+        self.assertEqual(self.catalog.search("character", gender="1girl")["total"], 2)
         genders = {item["value"]: item["count"] for item in result["facets"]["gender"]}
-        self.assertEqual(genders, {"1boy": 1, "1girl": 1})
+        self.assertEqual(genders, {"1boy": 1, "1girl": 2})
 
     def test_anima_pose_facets_traits_and_conflicts(self):
         filtered = self.catalog.search("pose", categories=["手势与手臂 (Gestures & Arms)"], traits=["hand", "pointing"])
@@ -81,6 +82,31 @@ class CatalogTests(unittest.TestCase):
         first = self.catalog.resolve_selection("pose", compatible, 2, random.Random(9))
         second = self.catalog.resolve_selection("pose", compatible, 2, random.Random(9))
         self.assertEqual([item["id"] for item in first], [item["id"] for item in second])
+
+    def test_builtin_zh_names_apply_to_characters(self):
+        # 热门角色/系列的内置译名:标题、系列、facet 标签与中文搜索。
+        result = self.catalog.search("character", "初音")
+        self.assertEqual(result["total"], 1)
+        entry = result["items"][0]
+        self.assertEqual(entry["title"], "hatsune miku")
+        self.assertEqual(entry["title_zh"], "初音未来")
+        self.assertEqual(entry["subtitle_zh"], "VOCALOID")
+        unmapped = self.catalog.search("character", "alpha")["items"][0]
+        self.assertEqual(unmapped["title_zh"], "")
+        series = {item["value"]: item["label_zh"] for item in self.catalog.facets("character")["series"]}
+        self.assertEqual(series["vocaloid"], "VOCALOID")
+
+    def test_facets_carry_chinese_labels(self):
+        # 双语分类「中文 (English)」的中文半边随 facet 返回;性别值给出中文标签。
+        clothing = self.catalog.facets("clothing")["categories"]
+        labels = {entry["value"]: entry["label_zh"] for entry in clothing}
+        self.assertEqual(labels["Casual & Daily"], "日常/休闲")
+        self.assertEqual(labels["Dress & Gown"], "礼服/裙装")
+        expression = self.catalog.facets("expression")["categories"]
+        self.assertTrue(all(entry["label_zh"] == entry["value"] for entry in expression))
+        gender = {entry["value"]: entry["label_zh"] for entry in self.catalog.facets("character")["gender"]}
+        self.assertEqual(gender["1girl"], "女性")
+        self.assertEqual(gender["1boy"], "男性")
 
     def test_anima_clothing_and_background_native_categories(self):
         clothing = self.catalog.search("clothing", categories=["Casual & Daily"], traits=["red", "long sleeves"])
@@ -96,14 +122,14 @@ class CatalogTests(unittest.TestCase):
             ["Nature & Outdoors", "Urban & Daily"],
         )
 
-    def test_custom_prompt_crud_updates_catalog(self):
+    async def test_custom_prompt_crud_updates_catalog(self):
         store = CustomPromptStore(self.root / "custom.json", self.catalog)
-        item = store.create({"section": "pose", "title": "挥手", "prompt": "waving hand", "categories": ["Gestures & Arms"], "traits": ["hand"]})
+        item = await store.create({"section": "pose", "title": "挥手", "prompt": "waving hand", "categories": ["Gestures & Arms"], "traits": ["hand"]})
         self.assertTrue(item["id"].startswith("custom:"))
         self.assertEqual(self.catalog.search("pose", "挥手")["total"], 1)
-        updated = store.update(item["id"], {"title": "招手"})
+        updated = await store.update(item["id"], {"title": "招手"})
         self.assertEqual(updated["prompt"], "waving hand")
-        self.assertTrue(store.delete(item["id"]))
+        self.assertTrue(await store.delete(item["id"]))
         self.assertEqual(self.catalog.search("pose", "招手")["total"], 0)
 
     def test_resolution_is_deterministic_and_strips_person_count_tags(self):
@@ -139,16 +165,16 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("gentle smile, relaxed expression", fixed["full_prompt"])
         self.assertEqual(fixed["selected"]["expression"], [])
 
-    def test_custom_groups_and_import_preserve_overwritten_id(self):
+    async def test_custom_groups_and_import_preserve_overwritten_id(self):
         path = self.root / "custom.json"
         path.write_text(json.dumps({
             "version": 2,
             "items": [{"id": "custom:legacy", "section": "pose", "title": "Wave", "prompt": "waving"}],
         }), encoding="utf-8")
         store = CustomPromptStore(path, self.catalog)
-        legacy_group = store.create_group("pose", {"name": "Legacy"})["group"]
-        target_group = store.create_group("pose", {"name": "Batch"})["group"]
-        store.update("custom:legacy", {"groupIds": [legacy_group["id"]]})
+        legacy_group = (await store.create_group("pose", {"name": "Legacy"}))["group"]
+        target_group = (await store.create_group("pose", {"name": "Batch"}))["group"]
+        await store.update("custom:legacy", {"groupIds": [legacy_group["id"]]})
         self.assertEqual(
             {value["name"]: value["count"] for value in store.list_groups("pose")["groups"]},
             {"Legacy": 1, "Batch": 0},
@@ -158,7 +184,7 @@ class CatalogTests(unittest.TestCase):
         ]}), "pose")
         self.assertEqual(preview["summary"], {"new": 0, "conflict": 1, "error": 0})
         preview["rows"][0]["action"] = "overwrite"
-        result = store.commit_import(preview["rows"], "pose", [target_group["id"]])
+        result = await store.commit_import(preview["rows"], "pose", [target_group["id"]])
         self.assertEqual(result["updated"], 1)
         self.assertEqual(store.list("pose")[0]["id"], "custom:legacy")
         self.assertEqual(store.list("pose")[0]["prompt"], "waving hand")
@@ -192,7 +218,7 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual(content_type, "text/csv")
                 self.assertIn(f"{section},{title},", text)
 
-    def test_import_rejects_duplicate_rows_and_tampered_builtin_overwrite(self):
+    async def test_import_rejects_duplicate_rows_and_tampered_builtin_overwrite(self):
         store = CustomPromptStore(self.root / "custom.json", self.catalog)
         preview = store.preview_import("json", json.dumps({"items": [
             {"section": "expression", "title": "My Mood", "prompt": "soft smile"},
@@ -208,32 +234,32 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("当前池", cross_section["rows"][0]["error"])
 
         with self.assertRaisesRegex(CatalogError, "不存在的分组"):
-            store.commit_import([{
+            await store.commit_import([{
                 "action": "create",
                 "item": {"section": "expression", "title": "New Mood", "prompt": "soft face"},
             }], "expression", ["custom_group_missing"])
         self.assertEqual(store.list("expression"), [])
 
-        pose_group = store.create_group("pose", {"name": "Pose Only"})["group"]
+        pose_group = (await store.create_group("pose", {"name": "Pose Only"}))["group"]
         with self.assertRaisesRegex(CatalogError, "不存在的分组"):
-            store.commit_import([{
+            await store.commit_import([{
                 "action": "create",
                 "item": {"section": "expression", "title": "Cross Group", "prompt": "soft face"},
             }], "expression", [pose_group["id"]])
         with self.assertRaisesRegex(CatalogError, "当前池"):
-            store.commit_import([{
+            await store.commit_import([{
                 "action": "create",
                 "item": {"section": "pose", "title": "Tampered", "prompt": "waving"},
             }], "expression")
         self.assertEqual(store.list("expression"), [])
 
         with self.assertRaisesRegex(CatalogError, "内置条目不可覆盖"):
-            store.commit_import([{
+            await store.commit_import([{
                 "action": "create",
                 "item": {"section": "expression", "title": "温柔微笑", "prompt": "tampered"},
             }], "expression")
         with self.assertRaisesRegex(CatalogError, "没有可覆盖"):
-            store.commit_import([{
+            await store.commit_import([{
                 "action": "overwrite",
                 "item": {"section": "expression", "title": "Missing", "prompt": "missing"},
             }], "expression")

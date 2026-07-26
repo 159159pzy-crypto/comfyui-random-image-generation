@@ -14,7 +14,7 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260724-groups-1">
+  <link rel="stylesheet" href="/static/styles.css?v=20260726-liquidglass-2">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -25,16 +25,9 @@
       <span class="brand-mark">A</span>
       <span class="brand-copy"><strong>Anima</strong><small>创作工作室</small></span>
     </a>
-    <div class="batch-summary" aria-live="polite">
-      <div class="batch-summary-copy"><span id="batchState">等待任务</span><strong id="progressCount">0 / 0</strong></div>
-      <div class="progress-track"><div id="progressFill"></div></div>
-      <p id="batchError" hidden></p>
-    </div>
-    <div class="top-actions">
+    <div class="top-meta">
       <span id="connection" class="status-badge offline"><i></i><span>正在连接</span></span>
       <button id="themeToggle" class="icon-button theme-toggle" type="button" title="切换深色主题" aria-label="切换深色主题"><span aria-hidden="true">◐</span></button>
-      <button id="stopButton" class="button ghost" type="button" disabled>停止</button>
-      <button id="startButton" class="button primary" type="submit" form="settingsForm">开始生成</button>
     </div>
   </header>
 
@@ -49,7 +42,7 @@
         <div class="panel-title">
           <div><span class="kicker">COMPOSITION</span><h1>生成设置</h1><small id="draftStatus" class="draft-status">本地草稿待保存</small></div>
           <div class="draft-actions"><button id="resetSettings" class="icon-button dark" type="button" title="恢复默认设置" aria-label="恢复默认设置">↺</button><button id="clearDraft" class="icon-button dark" type="button" title="清除本地草稿" aria-label="清除本地草稿">⌫</button></div>
-          <label class="quantity-field"><span>批次数量</span><input id="count" type="number" min="1" max="1000" step="1" required></label>
+          
         </div>
 
         <section class="control-section people-section">
@@ -151,7 +144,24 @@
     </section>
   </main>
 
-  <aside id="poolDrawer" class="pool-drawer glass" aria-hidden="true" aria-labelledby="poolTitle">
+  <div class="command-deck glass" role="group" aria-label="生成控制">
+    <img id="livePreview" class="live-preview" alt="实时预览" hidden>
+    <label class="quantity-field"><span>批次数量</span><input id="count" form="settingsForm" type="number" min="1" max="1000" step="1" required></label>
+    <div class="batch-summary" aria-live="polite">
+      <div class="batch-summary-copy"><span id="batchState">等待任务</span><small id="sampleProgress" hidden></small><button id="queueBadge" class="queue-badge" type="button" hidden aria-haspopup="true" aria-expanded="false">队列 0</button><strong id="progressCount">0 / 0</strong></div>
+      <div class="progress-track"><div id="progressFill"></div></div>
+      <div class="progress-track sample" hidden><div id="sampleFill"></div></div>
+      <p id="batchError" hidden></p>
+    </div>
+    <div class="top-actions">
+      <button id="stopButton" class="button ghost" type="button" disabled>停止</button>
+      <button id="startButton" class="button primary" type="submit" form="settingsForm">开始生成</button>
+    </div>
+  </div>
+
+  <div id="queuePanel" class="queue-panel glass" hidden></div>
+
+  <aside id="poolDrawer" class="pool-drawer glass" aria-hidden="true" aria-labelledby="poolTitle" inert>
     <header class="drawer-header">
       <div><span id="poolKicker" class="kicker">PROMPT POOL</span><h2 id="poolTitle">角色池</h2><p id="poolMeta">0 项可用 · 0 项已选</p></div>
       <button id="closePool" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button>
@@ -311,12 +321,19 @@
         <section id="detailSelection" class="selection-summary"></section>
         <label>完整提示词<textarea id="detailPositive" rows="8" readonly></textarea></label>
         <label>负面提示词<textarea id="detailNegative" rows="5" readonly></textarea></label>
+        <div class="dialog-actions reproduce-actions">
+          <button id="reproduceImage" class="button" type="button" title="使用相同设置与种子重新生成这一张">复现此图</button>
+          <div class="variant-group">
+            <input id="variantCount" type="number" min="1" max="100" value="4" aria-label="变体数量">
+            <button id="variantButton" class="button" type="button" title="使用相同设置、随机种子再生成一批">再抽变体</button>
+          </div>
+        </div>
         <div class="dialog-actions"><button id="restoreSettings" class="button primary" type="button">载入设置</button><span></span><button id="deleteRecord" class="button danger" type="button">删除记录</button></div>
       </div>
     </div>
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260724-groups-1" defer></script>
+  <script src="/static/app.js?v=20260726-v020lg" defer></script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,8 +12,37 @@ from aiohttp.test_utils import TestClient, TestServer
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
-from anima_webui.server import create_app  # noqa: E402
+from anima_webui.server import COMFY_KEY, MANAGER_KEY, create_app  # noqa: E402
 from anima_webui.workflow import DEFAULT_SETTINGS  # noqa: E402
+
+
+# 测试必须密闭:池数据来自 tempdir 里的假 Anima Tools 目录,
+# 不依赖本机 ComfyUI 安装,也不吸入真实词库(回归 #P1-5)。
+FAKE_TOOLS_DATASETS = {
+    "character_data.js": [
+        {"name": "alpha", "copyright": "series", "gender": "1girl", "hair": "blue", "eye": "red", "post_count": 5},
+    ],
+    "clothing_data.js": [
+        {"id": "coat", "name": "Coat", "name_zh": "外套", "tags": "red coat", "categories": ["日常/休闲 (Casual & Daily)"], "traits": ["red"]},
+    ],
+    "pose_data.js": [
+        {"id": "stand", "name": "Standing", "name_zh": "站立", "tags": "standing", "categories": ["站立与动态 (Standing & Dynamic)"], "traits": ["standing"]},
+        {"id": "sit", "name": "Sitting", "name_zh": "坐姿", "tags": "sitting", "categories": ["坐姿 (Sitting Poses)"], "traits": ["sitting"]},
+    ],
+    "background_data.js": [
+        {"id": "room", "name": "Room", "name_zh": "房间", "tags": "indoors", "categories": ["都市与日常 (Urban & Daily)"], "traits": ["indoor"]},
+    ],
+}
+
+
+def _write_fake_tools(root: Path) -> Path:
+    js = root / "tools" / "js"
+    js.mkdir(parents=True)
+    for filename, values in FAKE_TOOLS_DATASETS.items():
+        (js / filename).write_text(
+            f"const data = {json.dumps(values, ensure_ascii=False)};\n", encoding="utf-8"
+        )
+    return root / "tools"
 
 
 class FakeComfy:
@@ -60,7 +90,7 @@ class FakeComfy:
     async def submit(self, payload):
         return "prompt-id"
 
-    async def wait_for_history(self, prompt_id):
+    async def wait_for_history(self, prompt_id, should_abort=None, missing_timeout=30.0):
         return {
             "outputs": {"12": {"images": [{"filename": "test.png", "subfolder": "", "type": "output"}]}},
             "prompt": [0, prompt_id, {}, {"extra_pnginfo": {"anima_prompt": {"42": {"positive": "generated"}}}}],
@@ -76,12 +106,17 @@ class FakeComfy:
 class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self._saved_env = {
+            name: os.environ.pop(name, None)
+            for name in ("ANIMA_TOOLS_DIR", "COMFYUI_ANIMA_TOOLS")
+        }
         app = create_app(
             app_dir=APP_DIR,
             comfy=FakeComfy(),
             history_path=Path(self.temp.name) / "history.sqlite3",
             custom_prompts_path=Path(self.temp.name) / "custom_prompts.json",
             style_presets_path=Path(self.temp.name) / "style_presets.json",
+            anima_tools_dir=_write_fake_tools(Path(self.temp.name)),
         )
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
@@ -89,6 +124,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.close()
         self.temp.cleanup()
+        for name, value in self._saved_env.items():
+            if value is not None:
+                os.environ[name] = value
 
     async def test_index_and_status(self):
         response = await self.client.get("/")
@@ -159,7 +197,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         payload = await saved.json()
         self.assertEqual(payload["items"][0]["nickname"], "memo")
         self.assertIn(group_id, payload["items"][0]["groupIds"])
-        self.assertEqual(self.client.server.app["comfy"].favorites_data["character"]["items"], [])
+        self.assertEqual(self.client.server.app[COMFY_KEY].favorites_data["character"]["items"], [])
 
         deleted = await self.client.delete(f"/api/favorites/pose/groups/{group_id}")
         self.assertEqual(deleted.status, 200)
@@ -229,7 +267,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         payload = await response.json()
         self.assertEqual(payload["items"][0]["name"], "rella")
         self.assertEqual(payload["items"][0]["groupIds"], ["default"])
-        self.assertEqual(self.client.server.app["comfy"].favorites_data["pose"]["items"], [])
+        self.assertEqual(self.client.server.app[COMFY_KEY].favorites_data["pose"]["items"], [])
 
     async def test_custom_group_templates_and_import_flow(self):
         expected_titles = {
@@ -311,7 +349,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         }
         response = await self.client.post("/api/batches", json=settings)
         self.assertEqual(response.status, 201)
-        manager = self.client.server.app["manager"]
+        manager = self.client.server.app[MANAGER_KEY]
         await manager.wait()
         history = await (await self.client.get("/api/history")).json()
         saved = history["items"][0]["settings"]
@@ -322,7 +360,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_batch_completes_and_history_is_paged(self):
         response = await self.client.post("/api/batches", json={**DEFAULT_SETTINGS, "count": 1})
         self.assertEqual(response.status, 201)
-        manager = self.client.server.app["manager"]
+        manager = self.client.server.app[MANAGER_KEY]
         await manager.wait()
         current = await (await self.client.get("/api/batches/current")).json()
         self.assertEqual(current["batch"]["status"], "completed")
@@ -337,6 +375,84 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_history_record_returns_404(self):
         self.assertEqual((await self.client.get("/api/images/999")).status, 404)
+
+    async def test_non_numeric_image_id_returns_404_not_500(self):
+        # 回归 #P2-1:此前 int() 裸抛 ValueError 变成 500。
+        self.assertEqual((await self.client.get("/api/images/abc")).status, 404)
+        self.assertEqual((await self.client.delete("/api/history/abc")).status, 404)
+
+    async def test_pool_query_endpoint_filters_and_selection(self):
+        # 此前 POST /api/pools/{section}/query 零测试覆盖(#P2-13)。
+        payload = await (
+            await self.client.post(
+                "/api/pools/pose/query",
+                json={"page": 1, "limit": 48, "q": "Standing"},
+            )
+        ).json()
+        self.assertEqual([item["id"] for item in payload["items"]], ["pose:stand"])
+        excluded = await (
+            await self.client.post(
+                "/api/pools/pose/query",
+                json={
+                    "page": 1,
+                    "limit": 48,
+                    "selection": {"mode": "include", "ids": ["pose:sit"], "excluded_ids": []},
+                },
+            )
+        ).json()
+        self.assertEqual([item["id"] for item in excluded["items"]], ["pose:sit"])
+        bad = await self.client.post("/api/pools/pose/query", json={"page": "abc"})
+        self.assertEqual(bad.status, 400)
+
+    async def test_non_local_host_or_origin_is_rejected(self):
+        # 回归 #P2-2:恶意网页的 CSRF/DNS 重绑定应被本机来源校验拦截。
+        spoofed_host = await self.client.get("/api/config", headers={"Host": "evil.example:8190"})
+        self.assertEqual(spoofed_host.status, 403)
+        evil_origin = await self.client.post(
+            "/api/style-presets", json={}, headers={"Origin": "http://evil.example"}
+        )
+        self.assertEqual(evil_origin.status, 403)
+        null_origin = await self.client.post("/api/style-presets", json={}, headers={"Origin": "null"})
+        self.assertEqual(null_origin.status, 403)
+        local_origin = await self.client.get(
+            "/api/config", headers={"Origin": f"http://127.0.0.1:{self.client.port}"}
+        )
+        self.assertEqual(local_origin.status, 200)
+
+    async def test_config_exposes_startup_warnings(self):
+        payload = await (await self.client.get("/api/config")).json()
+        self.assertEqual(payload["warnings"], [])
+
+    async def test_current_batch_includes_queue_and_preview_endpoint(self):
+        # 0.2.0:current 返回队列;预览端点无帧时 204,有帧时回图。
+        current = await (await self.client.get("/api/batches/current")).json()
+        self.assertEqual(current["queue"], [])
+        self.assertEqual((await self.client.get("/api/batches/current/preview")).status, 204)
+        manager = self.client.server.app[MANAGER_KEY]
+        manager.preview = (1, "image/jpeg", b"frame")
+        preview = await self.client.get("/api/batches/current/preview")
+        self.assertEqual(preview.status, 200)
+        self.assertEqual(await preview.read(), b"frame")
+        self.assertEqual(preview.headers["Content-Type"], "image/jpeg")
+        missing = await self.client.delete("/api/batches/queue/queue_missing")
+        self.assertEqual(missing.status, 404)
+
+    async def test_batch_with_seeds_reproduces_exact_image(self):
+        # 0.2.0:复现请求携带 seeds,历史记录里的种子必须一字不差。
+        response = await self.client.post(
+            "/api/batches",
+            json={**DEFAULT_SETTINGS, "count": 1, "seeds": {"sample_seed": 987654321, "prompt_seed": 24680}},
+        )
+        self.assertEqual(response.status, 201)
+        await self.client.server.app[MANAGER_KEY].wait()
+        history = await (await self.client.get("/api/history")).json()
+        self.assertEqual(history["items"][0]["sample_seed"], 987654321)
+        self.assertEqual(history["items"][0]["prompt_seed"], 24680)
+        bad = await self.client.post(
+            "/api/batches",
+            json={**DEFAULT_SETTINGS, "count": 1, "seeds": {"sample_seed": -5, "prompt_seed": 1}},
+        )
+        self.assertEqual(bad.status, 400)
 
 
 if __name__ == "__main__":

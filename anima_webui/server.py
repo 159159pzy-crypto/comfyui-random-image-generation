@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import threading
 import webbrowser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -21,6 +23,39 @@ from .workflow import DEFAULT_SETTINGS, WorkflowError, WorkflowTemplates
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
+
+logger = logging.getLogger(__name__)
+
+# aiohttp 4 将移除字符串 app key;统一使用 AppKey(消除弃用告警)。
+COMFY_KEY: web.AppKey[Any] = web.AppKey("comfy", object)
+HISTORY_KEY: web.AppKey[Any] = web.AppKey("history", object)
+MANAGER_KEY: web.AppKey[Any] = web.AppKey("manager", object)
+CATALOG_KEY: web.AppKey[Any] = web.AppKey("catalog", object)
+CUSTOM_PROMPTS_KEY: web.AppKey[Any] = web.AppKey("custom_prompts", object)
+FAVORITES_KEY: web.AppKey[Any] = web.AppKey("favorites", object)
+STYLE_PRESETS_KEY: web.AppKey[Any] = web.AppKey("style_presets", object)
+
+LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
+
+
+def _hostname(value: str) -> str:
+    """从 Host 头(host[:port])或 Origin(scheme://host[:port])提取主机名。"""
+    try:
+        target = value if "://" in value else f"//{value}"
+        return (urlsplit(target).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+@web.middleware
+async def local_only_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    # 只信任本机来源:防御恶意网页发起的 CSRF 与 DNS 重绑定。
+    if _hostname(request.host or "") not in LOCAL_HOSTNAMES:
+        return web.json_response({"error": "仅允许本机访问"}, status=403)
+    origin = request.headers.get("Origin")
+    if origin is not None and (origin == "null" or _hostname(origin) not in LOCAL_HOSTNAMES):
+        return web.json_response({"error": "仅允许本机来源"}, status=403)
+    return await handler(request)
 
 
 @web.middleware
@@ -87,14 +122,20 @@ def create_app(
     templates = WorkflowTemplates.load(root / "templates")
     manager = BatchManager(templates, history, client, catalog)
 
-    app = web.Application(middlewares=[error_middleware])
-    app["comfy"] = client
-    app["history"] = history
-    app["manager"] = manager
-    app["catalog"] = catalog
-    app["custom_prompts"] = custom_prompts
-    app["favorites"] = favorites
-    app["style_presets"] = style_presets
+    startup_warnings = [
+        *history.load_warnings,
+        *custom_prompts.load_warnings,
+        *style_presets.load_warnings,
+    ]
+
+    app = web.Application(middlewares=[error_middleware, local_only_middleware])
+    app[COMFY_KEY] = client
+    app[HISTORY_KEY] = history
+    app[MANAGER_KEY] = manager
+    app[CATALOG_KEY] = catalog
+    app[CUSTOM_PROMPTS_KEY] = custom_prompts
+    app[FAVORITES_KEY] = favorites
+    app[STYLE_PRESETS_KEY] = style_presets
 
     async def favorite_keys(section: str, collection: str = "") -> set[str] | None:
         if not collection:
@@ -129,67 +170,59 @@ def create_app(
                     "path": str(catalog.tools_dir or ""),
                     "counts": {section: catalog.count(section) for section in SECTIONS},
                 },
+                "warnings": startup_warnings,
             }
         )
 
-    async def pool(request: web.Request) -> web.Response:
-        section = request.match_info["section"]
+    async def _pool_response(
+        section: str, params: dict[str, Any], selection: dict[str, Any] | None
+    ) -> web.Response:
+        """GET /api/pools 与 POST /api/pools/query 共用的参数归一化与搜索。"""
         try:
-            page = int(request.query.get("page", "1"))
-            limit = int(request.query.get("limit", "48"))
-        except ValueError as error:
+            page = int(params.get("page") or 1)
+            limit = int(params.get("limit") or 48)
+        except (TypeError, ValueError) as error:
             raise WorkflowError("分页参数无效") from error
-        section = request.match_info["section"]
-        collection = request.query.get("collection", "")
-        sort = request.query.get("sort", "")
+        collection = str(params.get("collection") or "")
+        sort = str(params.get("sort") or "")
         keys = await favorite_keys(section, collection or ("__all__" if sort == "favorite-first" else ""))
         result = catalog.search(
             section,
-            query=request.query.get("q", ""),
-            categories=request.query.getall("category", []),
-            traits=request.query.getall("trait", []),
-            gender=request.query.get("gender", ""),
-            hair=request.query.get("hair", ""),
-            eye=request.query.get("eye", ""),
-            series=request.query.get("series", ""),
-            custom_group=request.query.get("custom_group", ""),
+            query=str(params.get("q") or ""),
+            categories=[str(value) for value in params.get("categories") or []],
+            traits=[str(value) for value in params.get("traits") or []],
+            gender=str(params.get("gender") or ""),
+            hair=str(params.get("hair") or ""),
+            eye=str(params.get("eye") or ""),
+            series=str(params.get("series") or ""),
+            custom_group=str(params.get("custom_group") or ""),
             favorite_keys=keys,
             favorites_only=bool(collection),
             sort=sort,
             page=page,
             limit=limit,
+            selection=selection,
         )
         return web.json_response(result)
 
+    async def pool(request: web.Request) -> web.Response:
+        params: dict[str, Any] = {
+            key: request.query.get(key, "")
+            for key in ("q", "gender", "hair", "eye", "series", "custom_group", "collection", "sort")
+        }
+        params["page"] = request.query.get("page", "1")
+        params["limit"] = request.query.get("limit", "48")
+        params["categories"] = request.query.getall("category", [])
+        params["traits"] = request.query.getall("trait", [])
+        return await _pool_response(request.match_info["section"], params, None)
+
     async def pool_query(request: web.Request) -> web.Response:
-        section = request.match_info["section"]
         body = await _json_body(request)
-        try:
-            page = int(body.get("page", 1))
-            limit = int(body.get("limit", 48))
-        except (TypeError, ValueError) as error:
-            raise WorkflowError("分页参数无效") from error
-        collection = str(body.get("collection") or "")
-        sort = str(body.get("sort") or "")
-        keys = await favorite_keys(section, collection or ("__all__" if sort == "favorite-first" else ""))
-        result = catalog.search(
-            section,
-            query=str(body.get("q", "")),
-            categories=body.get("categories") if isinstance(body.get("categories"), list) else [],
-            traits=body.get("traits") if isinstance(body.get("traits"), list) else [],
-            gender=str(body.get("gender") or ""),
-            hair=str(body.get("hair") or ""),
-            eye=str(body.get("eye") or ""),
-            series=str(body.get("series") or ""),
-            custom_group=str(body.get("custom_group") or ""),
-            favorite_keys=keys,
-            favorites_only=bool(collection),
-            sort=sort,
-            page=page,
-            limit=limit,
-            selection=body.get("selection") if isinstance(body.get("selection"), dict) else None,
-        )
-        return web.json_response(result)
+        params = dict(body)
+        params["categories"] = body.get("categories") if isinstance(body.get("categories"), list) else []
+        params["traits"] = body.get("traits") if isinstance(body.get("traits"), list) else []
+        selection = body.get("selection") if isinstance(body.get("selection"), dict) else None
+        return await _pool_response(request.match_info["section"], params, selection)
 
     async def get_favorites(request: web.Request) -> web.Response:
         return web.json_response(await favorites.get(request.match_info["section"]))
@@ -252,18 +285,18 @@ def create_app(
         return web.json_response({"items": custom_prompts.list(section)})
 
     async def create_custom_prompt(request: web.Request) -> web.Response:
-        return web.json_response(custom_prompts.create(await _json_body(request)), status=201)
+        return web.json_response(await custom_prompts.create(await _json_body(request)), status=201)
 
     async def update_custom_prompt(request: web.Request) -> web.Response:
-        item = custom_prompts.update(request.match_info["item_id"], await _json_body(request))
+        item = await custom_prompts.update(request.match_info["item_id"], await _json_body(request))
         try:
             await favorites.sync_custom(item["section"], item)
-        except ComfyError:
-            pass
+        except ComfyError as error:
+            logger.warning("同步收藏昵称失败(条目 %s): %s", item.get("id"), error)
         return web.json_response(item)
 
     async def delete_custom_prompt(request: web.Request) -> web.Response:
-        if not custom_prompts.delete(request.match_info["item_id"]):
+        if not await custom_prompts.delete(request.match_info["item_id"]):
             raise KeyError(request.match_info["item_id"])
         return web.json_response({"deleted": True})
 
@@ -272,20 +305,20 @@ def create_app(
 
     async def create_custom_group(request: web.Request) -> web.Response:
         return web.json_response(
-            custom_prompts.create_group(request.match_info["section"], await _json_body(request)),
+            await custom_prompts.create_group(request.match_info["section"], await _json_body(request)),
             status=201,
         )
 
     async def update_custom_group(request: web.Request) -> web.Response:
         return web.json_response(
-            custom_prompts.update_group(
+            await custom_prompts.update_group(
                 request.match_info["section"], request.match_info["group_id"], await _json_body(request)
             )
         )
 
     async def delete_custom_group(request: web.Request) -> web.Response:
         return web.json_response(
-            custom_prompts.delete_group(
+            await custom_prompts.delete_group(
                 request.match_info["section"],
                 request.match_info["group_id"],
                 _query_bool(request, "deleteItems"),
@@ -315,7 +348,7 @@ def create_app(
     async def commit_custom_import(request: web.Request) -> web.Response:
         body = await _json_body(request)
         return web.json_response(
-            custom_prompts.commit_import(
+            await custom_prompts.commit_import(
                 body.get("rows"),
                 str(body.get("section") or ""),
                 body.get("targetGroupIds"),
@@ -348,29 +381,46 @@ def create_app(
         return web.json_response(style_presets.list())
 
     async def create_style_preset(request: web.Request) -> web.Response:
-        return web.json_response(style_presets.create(await _json_body(request)), status=201)
+        return web.json_response(await style_presets.create(await _json_body(request)), status=201)
 
     async def update_style_preset(request: web.Request) -> web.Response:
         return web.json_response(
-            style_presets.update(request.match_info["preset_id"], await _json_body(request))
+            await style_presets.update(request.match_info["preset_id"], await _json_body(request))
         )
 
     async def delete_style_preset(request: web.Request) -> web.Response:
-        if not style_presets.delete(request.match_info["preset_id"]):
+        if not await style_presets.delete(request.match_info["preset_id"]):
             raise KeyError(request.match_info["preset_id"])
         return web.json_response({"deleted": True})
 
     async def start_batch(request: web.Request) -> web.Response:
         await client.status()
-        state = await manager.start(await _json_body(request))
+        body = await _json_body(request)
+        seeds = body.pop("seeds", None)  # 复现历史图片时携带固定种子,不属于 settings
+        state = await manager.start(body, seeds=seeds)
         return web.json_response(state, status=201)
 
     async def current_batch(_: web.Request) -> web.Response:
-        return web.json_response({"batch": manager.snapshot()})
+        return web.json_response({"batch": manager.snapshot(), "queue": manager.queue_snapshot()})
 
     async def stop_batch(request: web.Request) -> web.Response:
-        state = await manager.request_stop(request.match_info["batch_id"])
-        return web.json_response(state)
+        state = await manager.request_stop(
+            request.match_info["batch_id"],
+            clear_queue=_query_bool(request, "clearQueue", True),
+        )
+        return web.json_response({"batch": state, "queue": manager.queue_snapshot()})
+
+    async def remove_queued_batch(request: web.Request) -> web.Response:
+        if not manager.remove_queued(request.match_info["queue_id"]):
+            raise KeyError(request.match_info["queue_id"])
+        return web.json_response({"queue": manager.queue_snapshot()})
+
+    async def batch_preview(_: web.Request) -> web.Response:
+        preview = manager.preview
+        if preview is None:
+            return web.Response(status=204)
+        _seq, content_type, body = preview
+        return web.Response(body=body, content_type=content_type, headers={"Cache-Control": "no-store"})
 
     async def list_history(request: web.Request) -> web.Response:
         try:
@@ -378,16 +428,16 @@ def create_app(
             limit = int(request.query.get("limit", "24"))
         except ValueError as error:
             raise WorkflowError("分页参数无效") from error
-        return web.json_response(history.list_images(page, limit))
+        return web.json_response(await history.list_images(page, limit))
 
     async def delete_history(request: web.Request) -> web.Response:
         image_id = int(request.match_info["image_id"])
-        if not history.delete_image(image_id):
+        if not await history.delete_image(image_id):
             raise KeyError(image_id)
         return web.json_response({"deleted": True})
 
     async def image(request: web.Request) -> web.Response:
-        record = history.get_image(int(request.match_info["image_id"]))
+        record = await history.get_image(int(request.match_info["image_id"]))
         body, content_type = await client.image_bytes(record)
         return web.Response(body=body, content_type=content_type.split(";", 1)[0])
 
@@ -429,15 +479,20 @@ def create_app(
     app.router.add_delete("/api/custom-groups/{section}/{group_id}", delete_custom_group)
     app.router.add_post("/api/batches", start_batch)
     app.router.add_get("/api/batches/current", current_batch)
+    app.router.add_get("/api/batches/current/preview", batch_preview)
     app.router.add_post("/api/batches/{batch_id}/stop", stop_batch)
+    app.router.add_delete("/api/batches/queue/{queue_id}", remove_queued_batch)
     app.router.add_get("/api/history", list_history)
-    app.router.add_delete("/api/history/{image_id}", delete_history)
-    app.router.add_get("/api/images/{image_id}", image)
+    app.router.add_delete(r"/api/history/{image_id:\d+}", delete_history)
+    app.router.add_get(r"/api/images/{image_id:\d+}", image)
     app.router.add_get("/", index)
     app.router.add_get("/favicon.ico", favicon)
     app.router.add_static("/static/", root / "static", show_index=False)
 
     async def cleanup(_: web.Application) -> None:
+        manager.shutting_down = True
+        manager.queue.clear()
+        manager._stop_monitor()
         if manager.task and not manager.task.done():
             manager.stop_requested = True
             try:
@@ -449,13 +504,28 @@ def create_app(
             result = close()
             if asyncio.iscoroutine(result):
                 await result
-        history.close()
+        await history.close()
 
     app.on_cleanup.append(cleanup)
     return app
 
 
+def _setup_logging(root: Path) -> None:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        (root / "data").mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(root / "data" / "webui.log", encoding="utf-8"))
+    except OSError:
+        pass
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=handlers,
+    )
+
+
 def main() -> None:
+    _setup_logging(APP_DIR)
     parser = argparse.ArgumentParser(description="Anima Random WebUI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8190)

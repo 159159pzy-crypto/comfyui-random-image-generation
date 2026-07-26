@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import copy
+import functools
 import json
+import logging
 import os
 import tempfile
 import uuid
@@ -9,7 +12,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .persistence import backup_corrupt_file
 from .workflow import DEFAULT_SETTINGS, WorkflowError, validate_settings
+
+
+logger = logging.getLogger(__name__)
+
+
+def _locked(method: Any) -> Any:
+    """变更方法整体串行化:内存修改在事件循环线程完成,写盘经 to_thread 让出循环。"""
+
+    @functools.wraps(method)
+    async def wrapper(self: "StylePresetStore", *args: Any, **kwargs: Any) -> Any:
+        async with self._lock:
+            return await method(self, *args, **kwargs)
+
+    return wrapper
 
 
 PRESET_SETTING_KEYS = (
@@ -46,18 +64,27 @@ class StylePresetStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.items: list[dict[str, Any]] = []
+        self.load_warnings: list[str] = []
+        self._lock = asyncio.Lock()
         self.reload()
 
     def reload(self) -> None:
+        self.load_warnings = []
         if not self.path.is_file():
             self.items = []
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise WorkflowError(f"风格预设文件无法读取: {self.path.name}") from error
-        values = payload.get("items", []) if isinstance(payload, dict) else []
-        self.items = [self._normalize(item, existing=True) for item in values if isinstance(item, dict)]
+            values = payload.get("items", []) if isinstance(payload, dict) else []
+            items = [self._normalize(item, existing=True) for item in values if isinstance(item, dict)]
+        except (OSError, json.JSONDecodeError, WorkflowError) as error:
+            # 坏文件不再阻断启动:改名备份后以空数据继续,并向界面报告警告。
+            backup = backup_corrupt_file(self.path)
+            logger.warning("风格预设文件无法读取(%s),已备份为 %s 并以空数据启动", error, backup.name)
+            self.load_warnings.append(f"风格预设文件无法读取,已备份为 {backup.name} 并以空数据启动")
+            self.items = []
+            return
+        self.items = items
 
     def list(self) -> dict[str, Any]:
         favorites = sorted(
@@ -72,7 +99,8 @@ class StylePresetStore:
         )
         return {"items": copy.deepcopy(favorites + regular), "count": len(self.items)}
 
-    def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+    @_locked
+    async def create(self, payload: dict[str, Any]) -> dict[str, Any]:
         if len(self.items) >= MAX_PRESETS:
             raise WorkflowError(f"风格预设不能超过 {MAX_PRESETS} 个")
         self._ensure_unique_name(payload.get("name"))
@@ -86,10 +114,11 @@ class StylePresetStore:
             }
         )
         self.items.append(item)
-        self._save()
+        await self._save()
         return copy.deepcopy(item)
 
-    def update(self, preset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    @_locked
+    async def update(self, preset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         index = next((index for index, item in enumerate(self.items) if item["id"] == preset_id), None)
         if index is None:
             raise KeyError(preset_id)
@@ -106,15 +135,16 @@ class StylePresetStore:
             }
         )
         self.items[index] = item
-        self._save()
+        await self._save()
         return copy.deepcopy(item)
 
-    def delete(self, preset_id: str) -> bool:
+    @_locked
+    async def delete(self, preset_id: str) -> bool:
         previous = len(self.items)
         self.items = [item for item in self.items if item["id"] != preset_id]
         if len(self.items) == previous:
             return False
-        self._save()
+        await self._save()
         return True
 
     @staticmethod
@@ -151,13 +181,16 @@ class StylePresetStore:
             "updated_at": updated_at,
         }
 
-    def _save(self) -> None:
-        payload = {"version": 1, "items": self.items}
+    async def _save(self) -> None:
+        # 快照序列化在事件循环线程完成(状态一致),fsync 等慢速 I/O 移入工作线程。
+        payload = json.dumps({"version": 1, "items": self.items}, ensure_ascii=False, indent=2) + "\n"
+        await asyncio.to_thread(self._write_text, payload)
+
+    def _write_text(self, text: str) -> None:
         fd, temp_name = tempfile.mkstemp(prefix="style-presets-", suffix=".json", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
+                handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, self.path)

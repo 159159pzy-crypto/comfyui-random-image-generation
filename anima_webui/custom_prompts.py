@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import csv
+import functools
 import io
 import json
+import logging
 import os
 import tempfile
 import uuid
@@ -11,6 +14,21 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import SECTIONS, CatalogError, PromptCatalog, normalize_text
+from .persistence import backup_corrupt_file
+
+
+logger = logging.getLogger(__name__)
+
+
+def _locked(method: Any) -> Any:
+    """变更方法整体串行化:内存修改在事件循环线程完成,写盘经 to_thread 让出循环。"""
+
+    @functools.wraps(method)
+    async def wrapper(self: "CustomPromptStore", *args: Any, **kwargs: Any) -> Any:
+        async with self._lock:
+            return await method(self, *args, **kwargs)
+
+    return wrapper
 
 
 MAX_GROUPS_PER_SECTION = 128
@@ -60,9 +78,12 @@ class CustomPromptStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.items: list[dict[str, Any]] = []
         self.groups: dict[str, list[dict[str, Any]]] = {section: [] for section in SECTIONS}
+        self.load_warnings: list[str] = []
+        self._lock = asyncio.Lock()
         self.reload()
 
     def reload(self) -> None:
+        self.load_warnings = []
         if not self.path.is_file():
             self.items = []
             self.groups = {section: [] for section in SECTIONS}
@@ -70,15 +91,24 @@ class CustomPromptStore:
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise CatalogError(f"自定义提示词文件无法读取: {self.path.name}") from error
-        raw_groups = payload.get("groups", {}) if isinstance(payload, dict) else {}
-        self.groups = {
-            section: self._normalize_groups(raw_groups.get(section, []))
-            for section in SECTIONS
-        }
-        raw_items = payload.get("items", []) if isinstance(payload, dict) else []
-        self.items = [self._normalize(item) for item in raw_items if isinstance(item, dict)]
+            raw_groups = payload.get("groups", {}) if isinstance(payload, dict) else {}
+            groups = {
+                section: self._normalize_groups(raw_groups.get(section, []))
+                for section in SECTIONS
+            }
+            raw_items = payload.get("items", []) if isinstance(payload, dict) else []
+            items = [self._normalize(item) for item in raw_items if isinstance(item, dict)]
+        except (OSError, json.JSONDecodeError, CatalogError) as error:
+            # 坏文件不再阻断启动:改名备份后以空数据继续,并向界面报告警告。
+            backup = backup_corrupt_file(self.path)
+            logger.warning("自定义提示词文件无法读取(%s),已备份为 %s 并以空数据启动", error, backup.name)
+            self.load_warnings.append(f"自定义提示词文件无法读取,已备份为 {backup.name} 并以空数据启动")
+            self.items = []
+            self.groups = {section: [] for section in SECTIONS}
+            self.catalog.set_custom_items([])
+            return
+        self.groups = groups
+        self.items = items
         self._remove_unknown_group_ids()
         self.catalog.set_custom_items(self.items)
 
@@ -90,31 +120,34 @@ class CustomPromptStore:
             values = [item for item in values if group_id in item.get("groupIds", [])]
         return [copy.deepcopy(item) for item in values]
 
-    def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+    @_locked
+    async def create(self, payload: dict[str, Any]) -> dict[str, Any]:
         item = self._normalize({**payload, "id": f"custom:{uuid.uuid4().hex}"})
         self._validate_group_ids(item["section"], item["groupIds"])
         self.items.append(item)
-        self._save()
+        await self._save()
         self.catalog.set_custom_items(self.items)
         return copy.deepcopy(item)
 
-    def update(self, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    @_locked
+    async def update(self, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         index = next((index for index, item in enumerate(self.items) if item["id"] == item_id), None)
         if index is None:
             raise KeyError(item_id)
         item = self._normalize({**self.items[index], **payload, "id": item_id})
         self._validate_group_ids(item["section"], item["groupIds"])
         self.items[index] = item
-        self._save()
+        await self._save()
         self.catalog.set_custom_items(self.items)
         return copy.deepcopy(item)
 
-    def delete(self, item_id: str) -> bool:
+    @_locked
+    async def delete(self, item_id: str) -> bool:
         old_length = len(self.items)
         self.items = [item for item in self.items if item["id"] != item_id]
         if len(self.items) == old_length:
             return False
-        self._save()
+        await self._save()
         self.catalog.set_custom_items(self.items)
         return True
 
@@ -145,7 +178,8 @@ class CustomPromptStore:
             ]
         }
 
-    def create_group(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
+    @_locked
+    async def create_group(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._check_section(section)
         name = self._group_name(payload.get("name"))
         if len(self.groups[section]) >= MAX_GROUPS_PER_SECTION:
@@ -153,10 +187,11 @@ class CustomPromptStore:
         self._ensure_unique_group_name(section, name)
         group = {"id": f"custom_group_{uuid.uuid4().hex[:12]}", "name": name}
         self.groups[section].append(group)
-        self._save()
+        await self._save()
         return {"group": copy.deepcopy(group), **self.list_groups(section)}
 
-    def update_group(self, section: str, group_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    @_locked
+    async def update_group(self, section: str, group_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._check_section(section)
         group = next((item for item in self.groups[section] if item["id"] == group_id), None)
         if group is None:
@@ -164,10 +199,11 @@ class CustomPromptStore:
         name = self._group_name(payload.get("name"))
         self._ensure_unique_group_name(section, name, except_id=group_id)
         group["name"] = name
-        self._save()
+        await self._save()
         return self.list_groups(section)
 
-    def delete_group(
+    @_locked
+    async def delete_group(
         self, section: str, group_id: str, delete_items: bool = False
     ) -> dict[str, Any]:
         self._check_section(section)
@@ -190,7 +226,7 @@ class CustomPromptStore:
             detached_item_count += 1
             next_items.append(item)
         self.items = next_items
-        self._save()
+        await self._save()
         self.catalog.set_custom_items(self.items)
         return {
             **self.list_groups(section),
@@ -260,7 +296,8 @@ class CustomPromptStore:
             "newGroups": {section: sorted(values) for section, values in pending_names.items() if values},
         }
 
-    def commit_import(self, rows: Any, section: str, target_group_ids: Any = None) -> dict[str, Any]:
+    @_locked
+    async def commit_import(self, rows: Any, section: str, target_group_ids: Any = None) -> dict[str, Any]:
         self._check_section(section)
         if not isinstance(rows, list) or len(rows) > MAX_IMPORT_ROWS:
             raise CatalogError("导入确认数据无效")
@@ -317,7 +354,7 @@ class CustomPromptStore:
             else:
                 next_items[position] = item
                 updated += 1
-        self._write(next_groups, next_items)
+        await self._write(next_groups, next_items)
         self.groups = next_groups
         self.items = next_items
         self.catalog.set_custom_items(self.items)
@@ -434,16 +471,19 @@ class CustomPromptStore:
         if section not in SECTIONS:
             raise CatalogError(f"不支持的随机池: {section}")
 
-    def _save(self) -> None:
-        self._write(self.groups, self.items)
+    async def _save(self) -> None:
+        await self._write(self.groups, self.items)
 
-    def _write(self, groups: dict[str, list[dict[str, Any]]], items: list[dict[str, Any]]) -> None:
-        payload = {"version": 3, "groups": groups, "items": items}
+    async def _write(self, groups: dict[str, list[dict[str, Any]]], items: list[dict[str, Any]]) -> None:
+        # 快照序列化在事件循环线程完成(状态一致),fsync 等慢速 I/O 移入工作线程。
+        payload = json.dumps({"version": 3, "groups": groups, "items": items}, ensure_ascii=False, indent=2) + "\n"
+        await asyncio.to_thread(self._write_text, payload)
+
+    def _write_text(self, text: str) -> None:
         fd, temp_name = tempfile.mkstemp(prefix="custom-prompts-", suffix=".json", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
+                handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, self.path)

@@ -17,7 +17,9 @@
 
 ### 生成工作台
 
-- 批量生成、队列状态、停止任务和生成历史。
+- 批量生成、批次队列(运行中再开批次自动排队接续)、停止任务和生成历史。
+- 单张采样进度与实时预览(经由 ComfyUI websocket,断连不影响批次本身)。
+- 历史详情支持一键复现(相同设置与种子)与再抽变体(相同设置、随机种子)。
 - 角色、服装、姿势、背景、表情五类提示词池。
 - 每个池支持随机、固定、关闭、搜索、分类/特征筛选、手动选择和排除项。
 - 女性人数、男性人数、每类抽取数量、宽高、步数、CFG、正负提示词和画师均可独立设置。
@@ -275,7 +277,10 @@ WebUI 前端使用以下本地接口：
 | `DELETE` | `/api/favorites/{section}/groups/{group_id}?deleteItems=false` | 删除收藏分组；默认保留条目 |
 | `GET` | `/api/custom-groups/{section}` | 自定义分组及独占条目统计 |
 | `DELETE` | `/api/custom-groups/{section}/{group_id}?deleteItems=false` | 删除自定义分组或删除独占自定义条目 |
-| `POST` | `/api/batches` | 校验资源并启动批次 |
+| `POST` | `/api/batches` | 校验资源并启动批次;运行中则加入队列;可携带 `seeds` 固定种子复现 |
+| `GET` | `/api/batches/current/preview` | 当前生成的实时预览帧(无帧时 204) |
+| `DELETE` | `/api/batches/queue/{queue_id}` | 移出排队中的批次 |
+| `POST` | `/api/batches/{batch_id}/stop?clearQueue=true` | 停止当前批次,默认同时清空队列 |
 | `GET` | `/api/history` | 分页读取历史记录 |
 
 这些接口默认只绑定本机，不是面向公网的远程服务 API。

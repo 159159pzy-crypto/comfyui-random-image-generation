@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import unittest
 
@@ -203,6 +204,32 @@ class FavoriteServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("leaf", group_ids)
         self.assertIn("unrelated", group_ids)
         self.assertIn("parent", group_ids)
+
+
+class SlowComfy(FakeComfy):
+    """在读/写两侧都插入让出点,制造真实的并发交错窗口。"""
+
+    async def favorites(self):
+        await asyncio.sleep(0)
+        return await super().favorites()
+
+    async def save_favorites(self, payload):
+        await asyncio.sleep(0)
+        return await super().save_favorites(payload)
+
+
+class FavoriteConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_updates_do_not_lose_writes(self):
+        # 回归 #P1-2:收藏变更是「读全量 → 内存改 → 整体写回」,
+        # 无锁时两个并发操作会后写覆盖前写,静默丢失一个收藏。
+        comfy = SlowComfy()
+        service = FavoritesService(comfy, FakeCatalog())
+        await asyncio.gather(
+            service.update_item("artist", {"name": "alpha", "favorite": True}),
+            service.update_item("artist", {"name": "beta", "favorite": True}),
+        )
+        names = {item["name"] for item in comfy.payload["artist"]["items"]}
+        self.assertEqual(names, {"alpha", "beta"})
 
 
 if __name__ == "__main__":

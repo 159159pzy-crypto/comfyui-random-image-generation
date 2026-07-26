@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import copy
+import functools
 import uuid
 from typing import Any
 
@@ -144,10 +146,24 @@ def _group_stats(current: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any
     return result
 
 
+def _locked(method: Any) -> Any:
+    """把整个变更方法包进 self._lock,保证读-改-写不被并发交错。"""
+
+    @functools.wraps(method)
+    async def wrapper(self: "FavoritesService", *args: Any, **kwargs: Any) -> Any:
+        async with self._lock:
+            return await method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class FavoritesService:
     def __init__(self, comfy: Any, catalog: PromptCatalog):
         self.comfy = comfy
         self.catalog = catalog
+        # 所有变更都是「读 ComfyUI 全量 → 内存改 → 整体写回」,
+        # 两次操作并发时后写者会覆盖前写者;用锁把读-改-写串行化。
+        self._lock = asyncio.Lock()
 
     async def get(self, section: str) -> dict[str, Any]:
         section = _section(section)
@@ -169,6 +185,7 @@ class FavoritesService:
             return set()
         return _descendant_ids(current["groups"], group_id)
 
+    @_locked
     async def update_item(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
         section = _section(section)
         if section == "artist":
@@ -206,6 +223,7 @@ class FavoritesService:
         await self.comfy.save_favorites({section: current})
         return await self.get(section)
 
+    @_locked
     async def create_group(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
         section = _section(section)
         name = self._group_name(payload)
@@ -225,6 +243,7 @@ class FavoritesService:
         await self.comfy.save_favorites({section: current})
         return {"group": group, **(await self.get(section))}
 
+    @_locked
     async def import_custom_group(
         self,
         section: str,
@@ -271,6 +290,7 @@ class FavoritesService:
         await self.comfy.save_favorites({section: current})
         return {"group": group, **(await self.get(section))}
 
+    @_locked
     async def update_group(self, section: str, group_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         section = _section(section)
         if group_id == "default":
@@ -286,6 +306,7 @@ class FavoritesService:
         await self.comfy.save_favorites({section: current})
         return await self.get(section)
 
+    @_locked
     async def delete_group(
         self, section: str, group_id: str, delete_items: bool = False
     ) -> dict[str, Any]:
@@ -338,6 +359,7 @@ class FavoritesService:
             "movedToDefaultCount": moved_to_default_count,
         }
 
+    @_locked
     async def sync_custom(self, section: str, item: dict[str, Any]) -> None:
         section = _section(section)
         data = await self.comfy.favorites()

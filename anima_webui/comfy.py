@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -11,6 +13,10 @@ from .workflow import normalize_lora_path
 
 class ComfyError(RuntimeError):
     pass
+
+
+class ComfyAborted(RuntimeError):
+    """等待 ComfyUI 结果时收到停止请求。不是错误,由调用方决定如何收尾。"""
 
 
 def validate_comfy_url(value: str) -> str:
@@ -27,6 +33,7 @@ class ComfyClient:
         self.base_url = validate_comfy_url(base_url)
         self.poll_interval = poll_interval
         self.session: aiohttp.ClientSession | None = None
+        self._object_info_cache: tuple[float, dict[str, Any] | None] = (0.0, None)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
@@ -56,7 +63,15 @@ class ComfyClient:
         return await self._json("GET", "/system_stats")
 
     async def object_info(self) -> dict[str, Any]:
-        return await self._json("GET", "/object_info")
+        # /object_info 返回可达数 MB;批次启动会连续用到两次(LoRA 清单 + 模型校验),
+        # 5 秒内复用同一份结果,避免重复拉取放大启动延迟。
+        loop = asyncio.get_running_loop()
+        timestamp, cached = self._object_info_cache
+        if cached is not None and loop.time() - timestamp < 5.0:
+            return cached
+        data = await self._json("GET", "/object_info")
+        self._object_info_cache = (loop.time(), data)
+        return data
 
     async def lora_inventory(self) -> dict[str, Any]:
         """Return the local LoRA names exposed by ComfyUI plus optional manifest metadata."""
@@ -157,8 +172,71 @@ class ComfyClient:
             raise ComfyError("ComfyUI 未返回 prompt_id")
         return str(prompt_id)
 
-    async def wait_for_history(self, prompt_id: str) -> dict[str, Any]:
+    async def progress_stream(self, client_id: str) -> AsyncIterator[dict[str, Any]]:
+        """连接 ComfyUI 的 websocket,产出进度事件与预览帧。
+
+        文本消息 → {"kind": "event", "payload": {...}}(progress/executing 等);
+        二进制消息(类型 1 = 预览图,前 8 字节为类型+格式头)→
+        {"kind": "preview", "format": "jpeg"|"png", "bytes": ...}。
+        连接失败或断开由调用方处理重连;本方法只负责单次连接的读取。
+        """
+        session = await self._get_session()
+        async with session.ws_connect(
+            f"{self.base_url}/ws?clientId={client_id}", heartbeat=30, max_msg_size=32 * 1024 * 1024
+        ) as ws:
+            async for message in ws:
+                if message.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        payload = json.loads(message.data)
+                    except ValueError:
+                        continue
+                    if isinstance(payload, dict):
+                        yield {"kind": "event", "payload": payload}
+                elif message.type == aiohttp.WSMsgType.BINARY:
+                    raw = message.data
+                    if len(raw) >= 8 and int.from_bytes(raw[:4], "big") == 1:
+                        image_format = int.from_bytes(raw[4:8], "big")
+                        yield {
+                            "kind": "preview",
+                            "format": "png" if image_format == 2 else "jpeg",
+                            "bytes": raw[8:],
+                        }
+                elif message.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                    break
+
+    async def interrupt(self) -> None:
+        """尽力中断 ComfyUI 当前正在执行的任务。"""
+        session = await self._get_session()
+        try:
+            async with session.post(f"{self.base_url}/interrupt") as response:
+                await response.read()
+                if response.status >= 400:
+                    raise ComfyError(f"ComfyUI 返回 {response.status}")
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            raise ComfyError(f"无法连接 ComfyUI: {error}") from error
+
+    async def prompt_queued(self, prompt_id: str) -> bool:
+        """检查任务是否仍在 ComfyUI 的运行/等待队列中。"""
+        data = await self._json("GET", "/queue")
+        for key in ("queue_running", "queue_pending"):
+            for entry in data.get(key) or []:
+                if isinstance(entry, (list, tuple)) and len(entry) > 1 and str(entry[1]) == prompt_id:
+                    return True
+        return False
+
+    async def wait_for_history(
+        self,
+        prompt_id: str,
+        should_abort: Callable[[], bool] | None = None,
+        missing_timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        missing_since: float | None = None
+        next_queue_check = 0.0
+        queued = True
         while True:
+            if should_abort is not None and should_abort():
+                raise ComfyAborted("收到停止请求")
             data = await self._json("GET", f"/history/{prompt_id}")
             entry = data.get(prompt_id)
             if entry:
@@ -167,6 +245,18 @@ class ComfyClient:
                     messages = status.get("messages") or []
                     raise ComfyError(f"ComfyUI 执行失败: {messages[-1] if messages else '未知错误'}")
                 return entry
+            # 任务既不在 history 也不在队列时(历史被清空、ComfyUI 重启丢任务),
+            # 持续 missing_timeout 秒即放弃,避免批次永久卡死。
+            now = loop.time()
+            if now >= next_queue_check:
+                queued = await self.prompt_queued(prompt_id)
+                next_queue_check = now + max(self.poll_interval, 5.0)
+            if queued:
+                missing_since = None
+            elif missing_since is None:
+                missing_since = now
+            elif now - missing_since >= missing_timeout:
+                raise ComfyError("ComfyUI 的队列与历史中都找不到该任务,已放弃等待(历史可能被清空或 ComfyUI 已重启)")
             await asyncio.sleep(self.poll_interval)
 
     async def image_bytes(self, image: dict[str, Any]) -> tuple[bytes, str]:

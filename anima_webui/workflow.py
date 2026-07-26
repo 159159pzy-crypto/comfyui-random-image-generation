@@ -88,6 +88,59 @@ HIRES_MODEL_ID = 61
 HIRES_UPSCALE_ID = 62
 REMOVED_NODE_IDS = {3, 4}
 
+# 模板必需节点总表:构造 WorkflowTemplates 时一次性校验。
+# 工作流重新导出会导致节点重编号,缺失节点应在启动时给出明确错误,
+# 而不是运行期抛出晦涩的 KeyError/IndexError。
+REQUIRED_API_NODES: dict[int, str] = {
+    1: "UNETLoader 主模型",
+    2: "Power LoRA Loader",
+    12: "SaveImage 保存图像",
+    22: "VAE 解码",
+    23: "宽度",
+    31: "高度",
+    35: "批量数量",
+    37: "种子",
+    39: "步数",
+    41: "CFG",
+    POSITIVE_ID: "正向提示词",
+    NEGATIVE_ID: "负向提示词",
+    HIRES_SCALE_ID: "高清修复缩放",
+    HIRES_MODEL_ID: "高清修复模型加载",
+    HIRES_UPSCALE_ID: "高清修复放大",
+    COMPOSER_ID: "Anima 提示词合成器",
+}
+_DETAILER_LABELS = {"hand": "手部", "nsfw": "NSFW", "face": "面部", "eyes": "眼睛"}
+REQUIRED_UI_NODES: dict[int, str] = dict(REQUIRED_API_NODES)
+for _detailer_name, _detailer_nodes in DETAILER_NODES.items():
+    _label = _DETAILER_LABELS[_detailer_name]
+    REQUIRED_UI_NODES[_detailer_nodes["detector"]] = f"{_label} Detailer 检测器"
+    REQUIRED_UI_NODES[_detailer_nodes["editor"]] = f"{_label} Detailer 编辑管线"
+    REQUIRED_UI_NODES[_detailer_nodes["detailer"]] = f"{_label} Detailer"
+
+
+def validate_template_nodes(api: dict[str, Any], ui: dict[str, Any]) -> None:
+    """校验两份模板包含全部必需节点,缺失时给出可行动的错误信息。"""
+    missing_api = [
+        f"{node_id}({label})"
+        for node_id, label in sorted(REQUIRED_API_NODES.items())
+        if str(node_id) not in api
+    ]
+    ui_ids = {node.get("id") for node in ui.get("nodes") or []}
+    missing_ui = [
+        f"{node_id}({label})"
+        for node_id, label in sorted(REQUIRED_UI_NODES.items())
+        if node_id not in ui_ids
+    ]
+    problems = []
+    if missing_api:
+        problems.append(f"API 模板缺少节点 {', '.join(missing_api)}")
+    if missing_ui:
+        problems.append(f"可视化模板缺少节点 {', '.join(missing_ui)}")
+    if problems:
+        raise WorkflowError(
+            "工作流模板与预期结构不符(可能因重新导出导致节点重编号): " + "；".join(problems)
+        )
+
 
 class WorkflowError(ValueError):
     pass
@@ -839,7 +892,7 @@ def render_workflows(
     _set_ui_widget(ui, POSITIVE_ID, settings["extra_prompt"], 7)
     _set_ui_widget(ui, NEGATIVE_ID, settings["negative_prompt"], 0)
     for node_id, value in ((23, settings["width"]), (31, settings["height"]), (35, 1), (39, settings["steps"]), (41, settings["cfg"]), (12, filename_prefix)):
-        _set_ui_widget(ui, node_id, value)
+        _set_ui_widget(ui, node_id, value, 0)
     _set_ui_widget(ui, 37, sample_seed, 0)
     return api, ui
 
@@ -886,6 +939,7 @@ def build_submission(
 
 class WorkflowTemplates:
     def __init__(self, api_template: dict[str, Any], ui_template: dict[str, Any]):
+        validate_template_nodes(api_template, ui_template)
         self.api = api_template
         self.ui = ui_template
 

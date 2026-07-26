@@ -24,3 +24,8 @@ test-results/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Corrupt-file backups and packaging artifacts
+*.corrupt.bak
+*.corrupt-*.bak
+*.egg-info/

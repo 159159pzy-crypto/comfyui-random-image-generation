@@ -13,7 +13,7 @@ class FakeCatalog:
         self.items = list(items)
 
 
-class CustomGroupDeleteTests(unittest.TestCase):
+class CustomGroupDeleteTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.catalog = FakeCatalog()
@@ -22,13 +22,13 @@ class CustomGroupDeleteTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_delete_group_can_remove_exclusive_items_and_detach_shared_items(self):
-        first = self.store.create_group("pose", {"name": "First"})["group"]
-        second = self.store.create_group("pose", {"name": "Second"})["group"]
-        exclusive = self.store.create(
+    async def test_delete_group_can_remove_exclusive_items_and_detach_shared_items(self):
+        first = (await self.store.create_group("pose", {"name": "First"}))["group"]
+        second = (await self.store.create_group("pose", {"name": "Second"}))["group"]
+        exclusive = await self.store.create(
             {"section": "pose", "title": "Exclusive", "prompt": "exclusive", "groupIds": [first["id"]]}
         )
-        shared = self.store.create(
+        shared = await self.store.create(
             {
                 "section": "pose",
                 "title": "Shared",
@@ -40,7 +40,7 @@ class CustomGroupDeleteTests(unittest.TestCase):
         self.assertEqual(counts[first["id"]]["exclusiveCount"], 1)
         self.assertEqual(counts[second["id"]]["exclusiveCount"], 0)
 
-        payload = self.store.delete_group("pose", first["id"], delete_items=True)
+        payload = await self.store.delete_group("pose", first["id"], delete_items=True)
         self.assertEqual(payload["deletedItemIds"], [exclusive["id"]])
         self.assertEqual(payload["deletedItemCount"], 1)
         self.assertEqual(payload["detachedItemCount"], 1)
@@ -49,12 +49,22 @@ class CustomGroupDeleteTests(unittest.TestCase):
         self.assertEqual(remaining[shared["id"]]["groupIds"], [second["id"]])
         self.assertEqual({item["id"] for item in self.catalog.items}, {shared["id"]})
 
-    def test_default_delete_keeps_items_and_only_detaches_membership(self):
-        group = self.store.create_group("expression", {"name": "Mood"})["group"]
-        item = self.store.create(
+    def test_corrupt_file_is_backed_up_and_store_starts_empty(self):
+        # 回归 #P2-4:坏文件不再阻断启动,改名备份后以空数据继续并给出警告。
+        path = Path(self.temp.name) / "custom.json"
+        path.write_text('{"items": [{"section": "pose"}]}', encoding="utf-8")  # 缺 title/prompt → 校验失败
+        store = CustomPromptStore(path, FakeCatalog())
+        self.assertEqual(store.items, [])
+        self.assertEqual(len(store.load_warnings), 1)
+        self.assertIn("custom.json.corrupt.bak", store.load_warnings[0])
+        self.assertTrue(path.with_name("custom.json.corrupt.bak").is_file())
+
+    async def test_default_delete_keeps_items_and_only_detaches_membership(self):
+        group = (await self.store.create_group("expression", {"name": "Mood"}))["group"]
+        item = await self.store.create(
             {"section": "expression", "title": "Calm", "prompt": "calm", "groupIds": [group["id"]]}
         )
-        payload = self.store.delete_group("expression", group["id"])
+        payload = await self.store.delete_group("expression", group["id"])
         self.assertEqual(payload["deletedItemIds"], [])
         self.assertEqual(payload["detachedItemCount"], 1)
         self.assertEqual(self.store.list("expression")[0]["id"], item["id"])

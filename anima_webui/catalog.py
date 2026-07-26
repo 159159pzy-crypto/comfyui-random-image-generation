@@ -2,11 +2,24 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import random
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
+
+logger = logging.getLogger(__name__)
+
+# 内置的热门角色/系列中文译名表(插件数据本身不含中文,详见 zh_names.json)。
+# 未收录的条目回退英文原名;文件缺失或损坏不影响启动。
+_ZH_NAMES_PATH = Path(__file__).with_name("zh_names.json")
+try:
+    _zh_names = json.loads(_ZH_NAMES_PATH.read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    _zh_names = {}
+CHARACTER_ZH = {str(key).casefold(): str(value) for key, value in (_zh_names.get("characters") or {}).items()}
+SERIES_ZH = {str(key).casefold(): str(value) for key, value in (_zh_names.get("series") or {}).items()}
 
 SECTIONS = ("character", "clothing", "pose", "background", "expression")
 DATA_FILES = {
@@ -119,13 +132,9 @@ def discover_tools_dir(app_dir: str | Path, override: str | Path | None = None) 
         if os.environ.get(key):
             candidates.append(Path(os.environ[key]))
     root = Path(app_dir)
-    candidates.extend(
-        [
-            root.parent / "comfyui" / "custom_nodes" / "Comfyui-Anima-Tools",
-            Path("F:/comfyui/custom_nodes/Comfyui-Anima-Tools"),
-            Path("F:/ComfyUI/custom_nodes/Comfyui-Anima-Tools"),
-        ]
-    )
+    # 只保留可移植的探测规则:显式参数、环境变量、项目同级的 comfyui 目录。
+    # (Windows 文件系统大小写不敏感,同级规则同样覆盖 ComfyUI 等写法。)
+    candidates.append(root.parent / "comfyui" / "custom_nodes" / "Comfyui-Anima-Tools")
     for candidate in candidates:
         if (candidate / "js").is_dir() and all(
             (candidate / "js" / name).is_file() for name in DATA_FILES.values()
@@ -154,6 +163,16 @@ def anima_category_value(value: Any) -> str:
     text = str(value or "").strip()
     if text.endswith(")") and "(" in text:
         return text.rsplit("(", 1)[1][:-1].strip()
+    return text
+
+
+def anima_category_label_zh(value: Any) -> str:
+    """从「中文 (English)」双语分类里取中文部分;纯文本(纯中文或纯英文)原样返回。"""
+    text = str(value or "").strip()
+    if text.endswith(")") and "(" in text:
+        chinese = text.rsplit("(", 1)[0].strip()
+        if chinese:
+            return chinese
     return text
 
 
@@ -198,12 +217,14 @@ class PromptCatalog:
             try:
                 payload = json.loads(official_path.read_text(encoding="utf-8"))
                 self._official = payload if isinstance(payload, dict) else {}
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as error:
+                logger.warning("角色官方数据无法解析,已忽略: %s", error)
                 self._official = {}
         for section, filename in DATA_FILES.items():
             try:
                 source = _read_js_array(js_dir / filename)
-            except (OSError, CatalogError):
+            except (OSError, CatalogError) as error:
+                logger.warning("提示词数据文件 %s 无法读取,按空池处理: %s", filename, error)
                 source = []
             entries = [self._to_entry(section, item) for item in source]
             self._items[section] = [item for item in entries if item]
@@ -223,13 +244,17 @@ class PromptCatalog:
             tags = split_prompt(official.get("tags"))
             if not tags:
                 tags = [str(item.get("gender"))] if item.get("gender") else []
+            title_zh = CHARACTER_ZH.get(raw_name.casefold(), "")
+            subtitle_zh = SERIES_ZH.get(copyright_name.casefold(), "")
             return {
                 "id": item_id,
                 "raw_id": raw_name,
                 "favorite_key": raw_name,
                 "section": section,
                 "title": name,
+                "title_zh": title_zh,
                 "subtitle": copyright_name,
+                "subtitle_zh": subtitle_zh,
                 "copyright": copyright_name,
                 "prompt": ", ".join(split_prompt(trigger) + tags),
                 "trigger": split_prompt(trigger),
@@ -344,7 +369,9 @@ class PromptCatalog:
         query_text = normalize_text(query)
         if query_text:
             entries = [item for item in entries if query_text in normalize_text(" ".join([
-                item.get("title", ""), item.get("subtitle", ""), item.get("prompt", ""),
+                item.get("title", ""), item.get("title_zh", ""),
+                item.get("subtitle", ""), item.get("subtitle_zh", ""),
+                item.get("prompt", ""),
                 " ".join(item.get("traits") or []),
             ]))]
         if section == "character":
@@ -399,21 +426,37 @@ class PromptCatalog:
 
         def counted(field: str, *, limit: int | None = None, normalize_category: bool = False) -> list[dict[str, Any]]:
             counts: Counter[str] = Counter()
+            zh_labels: dict[str, str] = {}
             for item in values:
                 raw = item.get(field)
                 items = raw if isinstance(raw, list) else [raw]
                 for value in items:
                     if value not in (None, "", "unknown"):
-                        counts[anima_category_value(value) if normalize_category else str(value)] += 1
+                        key = anima_category_value(value) if normalize_category else str(value)
+                        counts[key] += 1
+                        # 双语分类「中文 (English)」的中文半边随 facet 一起返回,
+                        # 由前端按「中文优先/英文优先」选择展示;筛选值仍用英文规范值。
+                        if normalize_category and key not in zh_labels:
+                            zh_labels[key] = anima_category_label_zh(value)
             pairs = counts.most_common(limit) if limit else sorted(counts.items(), key=lambda pair: pair[0].lower())
-            return [{"value": value, "label": value, "count": count} for value, count in pairs]
+            return [
+                {"value": value, "label": value, "label_zh": zh_labels.get(value, value), "count": count}
+                for value, count in pairs
+            ]
 
         if section == "character":
+            gender = counted("gender")
+            gender_labels = {"1girl": "女性", "1boy": "男性"}
+            for entry in gender:
+                entry["label_zh"] = gender_labels.get(entry["value"], entry["value"])
+            series = counted("copyright", limit=120)
+            for entry in series:
+                entry["label_zh"] = SERIES_ZH.get(str(entry["value"]).casefold(), entry["value"])
             return {
-                "gender": counted("gender"),
+                "gender": gender,
                 "hair": counted("hair"),
                 "eye": counted("eye"),
-                "series": counted("copyright", limit=120),
+                "series": series,
             }
         categories = counted("categories", normalize_category=True)
         order = {value: index for index, value in enumerate(ANIMA_CATEGORY_ORDER.get(section, []))}
@@ -535,7 +578,8 @@ class PromptCatalog:
     @staticmethod
     def public_item(item: dict[str, Any]) -> dict[str, Any]:
         keys = (
-            "id", "raw_id", "favorite_key", "section", "title", "subtitle", "prompt", "gender",
+            "id", "raw_id", "favorite_key", "section", "title", "title_zh", "subtitle", "subtitle_zh",
+            "prompt", "gender",
             "hair", "eye", "copyright", "post_count", "preview", "categories", "traits",
             "conflict_slots", "source", "builtin",
             "group_ids",

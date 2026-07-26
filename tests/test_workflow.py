@@ -14,6 +14,7 @@ from anima_webui.workflow import (  # noqa: E402
     DEFAULT_SETTINGS,
     MAX_SAMPLE_SEED,
     WorkflowError,
+    WorkflowTemplates,
     build_submission,
     normalize_artist_tags,
     prepare_templates,
@@ -125,6 +126,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(ui_nodes[42]["widgets_values"][7], "rain")
         self.assertEqual(ui_nodes[60]["widgets_values"][10:14], [2, 3, 1, 4])
         self.assertEqual(ui_nodes[42]["widgets_values"][2:6], ["fixed hero", "", "fixed pose", ""])
+        # 回归:标量控件节点的 widgets_values 必须保持列表结构,
+        # 否则嵌入 PNG 的 UI 工作流拖回 ComfyUI 时无法还原(#P0-1)。
+        for node_id, expected in ((23, 1024), (31, 768), (35, 1), (39, 22), (41, 3.5), (12, "AnimaRandom/test")):
+            with self.subTest(node=node_id):
+                self.assertIsInstance(ui_nodes[node_id]["widgets_values"], list)
+                self.assertEqual(ui_nodes[node_id]["widgets_values"][0], expected)
 
     def test_render_replaces_loras_in_api_and_visual_workflows(self):
         settings = {
@@ -351,6 +358,22 @@ class WorkflowTests(unittest.TestCase):
     def test_generated_json_supports_unicode(self):
         text = json.dumps(self.ui, ensure_ascii=False)
         self.assertIn("随机角色", text)
+
+
+class TemplateValidationTests(unittest.TestCase):
+    def test_templates_load_rejects_renumbered_exports(self):
+        # 回归 #P2-5:重新导出(节点重编号)的模板应在加载时给出明确错误,
+        # 而不是运行期的 KeyError/IndexError。
+        template_dir = APP_DIR / "templates"
+        api = read_json(template_dir / "workflow_api.json")
+        ui = read_json(template_dir / "workflow_ui.json")
+        WorkflowTemplates(api, ui)  # 完整模板通过校验
+        broken_api = {key: value for key, value in api.items() if key != "23"}
+        with self.assertRaisesRegex(WorkflowError, "23"):
+            WorkflowTemplates(broken_api, ui)
+        broken_ui = {**ui, "nodes": [node for node in ui["nodes"] if node["id"] != 37]}
+        with self.assertRaisesRegex(WorkflowError, "37"):
+            WorkflowTemplates(api, broken_ui)
 
 
 if __name__ == "__main__":
