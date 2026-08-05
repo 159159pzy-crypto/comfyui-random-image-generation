@@ -571,6 +571,7 @@ class FakeNaturalComfy:
         self.block = None
         self.submit_gate = None
         self.submit_started = asyncio.Event()
+        self.history_started = asyncio.Event()
         classes = set()
         for path in (APP_DIR / "anima_natural" / "upstream" / "workflow").glob("*.json"):
             try:
@@ -602,6 +603,7 @@ class FakeNaturalComfy:
         return f"prompt-{len(self.submissions)}"
 
     async def wait_for_history(self, prompt_id, should_abort=None, missing_timeout=30.0):
+        self.history_started.set()
         if self.block is not None:
             while not self.block.is_set():
                 if should_abort and should_abort():
@@ -976,10 +978,7 @@ class NaturalJobTests(unittest.IsolatedAsyncioTestCase):
                 "count": 1,
             }
         )
-        for _ in range(100):
-            if self.manager.get(job["id"]).get("prompt_id"):
-                break
-            await asyncio.sleep(0)
+        await asyncio.wait_for(self.comfy.history_started.wait(), timeout=1)
 
         cancelled = await self.manager.cancel(job["id"])
         await self.manager.tasks[job["id"]]
