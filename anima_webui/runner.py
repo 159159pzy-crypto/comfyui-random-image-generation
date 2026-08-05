@@ -254,6 +254,10 @@ class BatchManager:
         return self.snapshot()
 
     async def wait(self) -> dict[str, Any] | None:
+        # _begin_batch exposes state before its execution task is assigned. Wait
+        # for that atomic start section so callers cannot observe a false idle.
+        async with self._start_lock:
+            pass
         # 队列自动接续会替换 self.task,循环等待直到全部批次收尾。
         while self.task and not self.task.done():
             await self.task

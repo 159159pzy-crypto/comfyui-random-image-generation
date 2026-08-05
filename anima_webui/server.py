@@ -711,12 +711,21 @@ def create_app(
         task = await generation_queue.submit(intent)
         attempts = 500 if int(task.get("position") or 0) == 1 else 1
         for _ in range(attempts):
-            if task["id"] in natural_manager.jobs:
-                return web.json_response(natural_manager.get(task["id"]), status=201)
             current = await task_runtime.get(task["id"])
-            if current["status"] not in {"queued", "running"}:
+            if task["id"] in natural_manager.jobs:
+                snapshot = natural_manager.get(task["id"])
+                if task["id"] in natural_manager.tasks:
+                    return web.json_response(snapshot, status=201)
+                if (
+                    snapshot["state"] in natural_manager.TERMINAL_STATES
+                    and current["status"] in V7GenerationQueue.TERMINAL
+                ):
+                    return web.json_response(snapshot, status=201)
+            elif current["status"] not in {"queued", "running"}:
                 break
             await asyncio.sleep(0.01)
+        if task["id"] in natural_manager.jobs:
+            return web.json_response(natural_manager.get(task["id"]), status=201)
         return web.json_response(task, status=201)
 
     async def natural_job(request: web.Request) -> web.Response:

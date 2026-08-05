@@ -184,6 +184,30 @@ class BatchManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item["filename_prefix"].endswith("/image") for item in self.comfy.submissions))
         self.assertEqual((await self.history.list_images())["total"], 3)
 
+    async def test_wait_does_not_return_before_background_start_registers_task(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        create_batch = self.history.create_batch
+
+        async def delayed_create_batch(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await create_batch(*args, **kwargs)
+
+        self.history.create_batch = delayed_create_batch
+        run = asyncio.create_task(
+            self.manager.run_coordinated("coordinated", {**DEFAULT_SETTINGS, "count": 1})
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        waiting = asyncio.create_task(self.manager.wait())
+        await asyncio.sleep(0)
+        self.assertFalse(waiting.done())
+
+        release.set()
+        await run
+        result = await waiting
+        self.assertEqual(result["status"], "completed")
+
     async def test_second_start_is_queued_and_runs_after_first(self):
         # 0.2.0 起,运行中再开批次不再 409,而是进入队列自动接续。
         self.comfy.block = asyncio.Event()
