@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "profile_id": "anima_control",
+  "display_name": "Anima 底图控制生成",
+  "workflow_file": "anima_control_api.json",
+  "task_type": "control_generation",
+  "bindings": {
+    "positive_prompt": {"node_id": "11", "input": "text"},
+    "negative_prompt": {"node_id": "12", "input": "text"},
+    "unet": {"node_id": "44", "input": "unet_name"},
+    "lora": {"node_id": "462"},
+    "seed": [{"node_id": "19", "input": "seed"}, {"node_id": "100", "input": "seed"}],
+    "resolution": {"node_id": "28", "width_input": "width", "height_input": "height"},
+    "samplers": [
+      {"node_id": "19", "steps_input": "steps", "cfg_input": "cfg", "denoise_input": "denoise"},
+      {"node_id": "100", "steps_input": "steps", "cfg_input": "cfg", "denoise_input": "denoise"}
+    ],
+    "upscale": {"node_id": "552", "scale_input": "resize_type.scale", "quality_input": "quality"},
+    "input_image": {"node_id": "500", "input": "image"},
+    "control_model_target": {"node_id": "19", "input": "model"},
+    "controls": {
+      "pose": {"apply_node_id": "511", "preprocessor_node_id": "510", "default_strength": 0.9},
+      "depth": {"apply_node_id": "521", "preprocessor_node_id": "520", "default_strength": 0.82},
+      "lineart": {"apply_node_id": "531", "preprocessor_node_id": "530", "default_strength": 0.92},
+      "reference": {"apply_node_id": "540", "default_strength": 0.72, "end_percent": 0.9}
+    }
+  },
+  "output_variants": {"all": {"preferred_node_ids": ["88", "458", "103"], "prune_node_ids": []}},
+  "default_output_variant": "all",
+  "defaults": {
+    "pipeline": "control",
+    "control_image_node_id": "501",
+    "width": 832,
+    "height": 1216,
+    "steps": 8,
+    "cfg": 5.0,
+    "denoise": 1.0
+  }
+}

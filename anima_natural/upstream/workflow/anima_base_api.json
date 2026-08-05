@@ -1,0 +1,12 @@
+{
+  "8": {"inputs": {"samples": ["19", 0], "vae": ["15", 0]}, "class_type": "VAEDecode", "_meta": {"title": "Anima 原图解码"}},
+  "11": {"inputs": {"text": "1girl, masterpiece, highres", "clip": ["462", 1]}, "class_type": "CLIPTextEncode", "_meta": {"title": "内容"}},
+  "12": {"inputs": {"text": "lowres, worst quality, low quality, bad anatomy, bad hands, text, watermark, signature", "clip": ["462", 1]}, "class_type": "CLIPTextEncode", "_meta": {"title": "负面提示词"}},
+  "15": {"inputs": {"vae_name": "qwen_image_vae.safetensors"}, "class_type": "VAELoader", "_meta": {"title": "Anima VAE"}},
+  "19": {"inputs": {"seed": 0, "steps": 8, "cfg": 5.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0, "model": ["462", 0], "positive": ["11", 0], "negative": ["12", 0], "latent_image": ["28", 0]}, "class_type": "KSampler", "_meta": {"title": "Anima KSampler"}},
+  "28": {"inputs": {"width": 832, "height": 1216, "batch_size": 1}, "class_type": "EmptyLatentImage", "_meta": {"title": "Anima 分辨率"}},
+  "44": {"inputs": {"unet_name": "miaomiaoHarem_anima8Step10.safetensors", "weight_dtype": "default"}, "class_type": "UNETLoader", "_meta": {"title": "Anima UNET"}},
+  "45": {"inputs": {"clip_name": "qwen_3_06b_base.safetensors", "type": "qwen_image", "device": "default"}, "class_type": "CLIPLoader", "_meta": {"title": "Anima CLIP"}},
+  "88": {"inputs": {"images": ["8", 0], "filename_prefix": "anima_studio/anima_base"}, "class_type": "SaveImage", "_meta": {"title": "Anima 原图"}},
+  "462": {"inputs": {"text": "", "loras": {"__value__": []}, "model": ["44", 0], "clip": ["45", 0]}, "class_type": "Lora Loader (LoraManager)", "_meta": {"title": "1️⃣Lora堆（动态）"}}
+}

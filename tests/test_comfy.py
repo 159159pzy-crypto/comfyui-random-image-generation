@@ -155,6 +155,20 @@ class WaitForHistoryTests(unittest.IsolatedAsyncioTestCase):
         result = await client.wait_for_history("prompt-1", missing_timeout=0.01)
         self.assertEqual(result, entry)
 
+    async def test_interrupt_rejects_prompt_that_is_not_currently_running(self):
+        client = ComfyClient()
+
+        async def fake_json(method, path, **kwargs):
+            self.assertEqual((method, path), ("GET", "/queue"))
+            return {
+                "queue_running": [[0, "another-prompt"]],
+                "queue_pending": [[1, "prompt-1"]],
+            }
+
+        client._json = fake_json
+        with self.assertRaisesRegex(ComfyError, "not owned"):
+            await client.interrupt("prompt-1")
+
     async def test_error_status_raises_comfy_error(self):
         entry = {"status": {"status_str": "error", "messages": ["boom"]}}
         client = self.make_client([{"prompt-1": entry}])

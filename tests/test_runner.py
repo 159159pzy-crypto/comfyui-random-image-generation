@@ -1,9 +1,8 @@
 import asyncio
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-import sys
 
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
@@ -45,6 +44,7 @@ class FakeComfy:
         self.error_at = None
         self.honor_abort = False
         self.interrupted = False
+        self.interrupted_prompt_id = None
         self.available_loras = [item["filename"] for item in DEFAULT_SETTINGS["loras"]]
         self.available_models = [DEFAULT_SETTINGS["model_name"]]
         self.available_upscalers = [DEFAULT_SETTINGS["hires"]["model_name"]]
@@ -62,8 +62,11 @@ class FakeComfy:
         self.submissions.append(payload)
         return f"prompt-{len(self.submissions)}"
 
-    async def interrupt(self):
+    async def interrupt(self, prompt_id=None):
+        if prompt_id is not None and prompt_id != f"prompt-{len(self.submissions)}":
+            raise AssertionError("attempted to interrupt a prompt not owned by this batch")
         self.interrupted = True
+        self.interrupted_prompt_id = prompt_id
 
     async def wait_for_history(self, prompt_id, should_abort=None, missing_timeout=30.0):
         sequence = len(self.submissions)
@@ -77,7 +80,6 @@ class FakeComfy:
                 await self.block.wait()
         if self.error_at == sequence:
             raise RuntimeError("render failed")
-        payload = self.submissions[sequence - 1]
         return {
             "outputs": {
                 "12": {
@@ -328,6 +330,7 @@ class BatchManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "stopped")
         self.assertEqual(result["completed"], 0)
         self.assertTrue(self.comfy.interrupted)
+        self.assertEqual(self.comfy.interrupted_prompt_id, "prompt-1")
         self.assertEqual((await self.history.get_batch(state["id"]))["status"], "stopped")
 
     async def test_stop_finishes_current_image_then_stops(self):

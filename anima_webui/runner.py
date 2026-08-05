@@ -10,6 +10,7 @@ from typing import Any
 from .comfy import ComfyAborted, ComfyError, extract_images, extract_positive_prompt
 from .catalog import PromptCatalog
 from .history import HistoryStore
+from .task_runtime import StudioTaskRuntime
 from .workflow import MAX_SAMPLE_SEED, WorkflowError, WorkflowTemplates, validate_loras, validate_settings
 
 
@@ -50,6 +51,8 @@ class BatchManager:
         history: HistoryStore,
         comfy: Any,
         catalog: PromptCatalog | None = None,
+        execution_lock: asyncio.Lock | None = None,
+        task_runtime: StudioTaskRuntime | None = None,
     ):
         self.templates = templates
         self.history = history
@@ -59,6 +62,8 @@ class BatchManager:
         self.stop_requested = False
         self.client_id = str(uuid.uuid4())
         self.catalog = catalog
+        self.execution_lock = execution_lock or asyncio.Lock()
+        self.task_runtime = task_runtime
         # 排队中的批次(仅内存;WebUI 重启后队列清空,历史记录只在真正开跑时创建)。
         self.queue: list[dict[str, Any]] = []
         self.shutting_down = False
@@ -73,23 +78,37 @@ class BatchManager:
     def active(self) -> bool:
         return bool(self.task and not self.task.done())
 
+    async def _validate_request(
+        self,
+        overrides: dict[str, Any],
+        seeds: dict[str, int] | None,
+    ) -> tuple[dict[str, Any], dict[str, int] | None]:
+        settings = validate_settings(overrides)
+        seeds = validate_seeds(seeds)
+        if self.catalog:
+            self.catalog.validate_settings(settings)
+        lora_filenames = getattr(self.comfy, "lora_filenames", None)
+        if not lora_filenames:
+            raise ComfyError("ComfyUI client cannot read the LoRA inventory")
+        settings["loras"] = validate_loras(settings, await lora_filenames())
+        resource_inventory = getattr(self.comfy, "resource_inventory", None)
+        if resource_inventory:
+            resources = await resource_inventory()
+            if settings["model_name"] not in resources.get("models", []):
+                raise WorkflowError(f"主模型不存在: {settings['model_name']}")
+            if (
+                settings["hires"]["enabled"]
+                and settings["hires"]["model_name"]
+                not in resources.get("upscale_models", [])
+            ):
+                raise WorkflowError(
+                    f"高清修复模型不存在: {settings['hires']['model_name']}"
+                )
+        return settings, seeds
+
     async def start(self, overrides: dict[str, Any], seeds: dict[str, int] | None = None) -> dict[str, Any]:
         async with self._start_lock:
-            settings = validate_settings(overrides)
-            seeds = validate_seeds(seeds)
-            if self.catalog:
-                self.catalog.validate_settings(settings)
-            lora_filenames = getattr(self.comfy, "lora_filenames", None)
-            if not lora_filenames:
-                raise ComfyError("ComfyUI 客户端无法读取 LoRA 列表")
-            settings["loras"] = validate_loras(settings, await lora_filenames())
-            resource_inventory = getattr(self.comfy, "resource_inventory", None)
-            if resource_inventory:
-                resources = await resource_inventory()
-                if settings["model_name"] not in resources.get("models", []):
-                    raise WorkflowError(f"主模型不存在: {settings['model_name']}")
-                if settings["hires"]["enabled"] and settings["hires"]["model_name"] not in resources.get("upscale_models", []):
-                    raise WorkflowError(f"高清修复模型不存在: {settings['hires']['model_name']}")
+            settings, seeds = await self._validate_request(overrides, seeds)
             if self.active():
                 # 有批次在跑:进入队列,当前批次结束后自动接续。
                 if len(self.queue) >= MAX_QUEUE:
@@ -99,6 +118,19 @@ class BatchManager:
                     "settings": settings,
                     "seeds": seeds,
                 }
+                if self.task_runtime:
+                    await self.task_runtime.create(
+                        "random_batch",
+                        run_id=entry["queue_id"],
+                        mode="random",
+                        total_items=settings["count"],
+                        metadata={
+                            "workspace": "random",
+                            "model_name": settings["model_name"],
+                            "settings": settings,
+                            "seeds": seeds or {},
+                        },
+                    )
                 self.queue.append(entry)
                 return {
                     "status": "queued",
@@ -109,8 +141,52 @@ class BatchManager:
             await self._begin_batch(settings, seeds)
             return self.snapshot()
 
-    async def _begin_batch(self, settings: dict[str, Any], seeds: dict[str, int] | None) -> None:
-        batch_id = uuid.uuid4().hex[:12]
+    async def run_coordinated(
+        self,
+        batch_id: str,
+        overrides: dict[str, Any],
+        seeds: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        """Run a task already persisted by the V7 global FIFO coordinator."""
+        async with self._start_lock:
+            if self.active():
+                raise BatchConflict("random manager is already executing another task")
+            settings, seeds = await self._validate_request(overrides, seeds)
+            await self._begin_batch(
+                settings,
+                seeds,
+                batch_id=str(batch_id),
+                task_exists=True,
+            )
+            task = self.task
+        if task is not None:
+            await asyncio.shield(task)
+        return self.snapshot()
+
+    async def _begin_batch(
+        self,
+        settings: dict[str, Any],
+        seeds: dict[str, int] | None,
+        *,
+        batch_id: str = "",
+        task_exists: bool = False,
+    ) -> None:
+        batch_id = batch_id or uuid.uuid4().hex[:12]
+        if self.task_runtime:
+            if not task_exists:
+                await self.task_runtime.create(
+                    "random_batch",
+                    run_id=batch_id,
+                    mode="random",
+                    total_items=settings["count"],
+                    metadata={
+                        "workspace": "random",
+                        "model_name": settings["model_name"],
+                        "settings": settings,
+                        "seeds": seeds or {},
+                    },
+                )
+            await self.task_runtime.start(batch_id, total_items=settings["count"])
         self.stop_requested = False
         self.preview = None
         self.state = {
@@ -124,8 +200,17 @@ class BatchManager:
             "settings": settings,
         }
         await self.history.create_batch(batch_id, settings["count"], settings)
-        self.task = asyncio.create_task(self._run(batch_id, settings, seeds))
+        self.task = asyncio.create_task(self._run_serialized(batch_id, settings, seeds))
         self._ensure_monitor()
+
+    async def _run_serialized(
+        self,
+        batch_id: str,
+        settings: dict[str, Any],
+        seeds: dict[str, int] | None,
+    ) -> None:
+        async with self.execution_lock:
+            await self._run(batch_id, settings, seeds)
 
     def queue_snapshot(self) -> list[dict[str, Any]]:
         return [
@@ -142,6 +227,17 @@ class BatchManager:
         previous = len(self.queue)
         self.queue = [entry for entry in self.queue if entry["queue_id"] != queue_id]
         return len(self.queue) < previous
+
+    async def cancel_queued(self, queue_id: str) -> bool:
+        removed = self.remove_queued(queue_id)
+        if removed and self.task_runtime:
+            await self.task_runtime.finish(
+                queue_id,
+                "cancelled",
+                error_code="removed_from_queue",
+                error_summary="用户从队列中移除任务",
+            )
+        return removed
 
     def snapshot(self) -> dict[str, Any] | None:
         return dict(self.state) if self.state else None
@@ -221,12 +317,26 @@ class BatchManager:
                     )
                 self.state["completed"] = sequence
                 await self.history.update_batch(batch_id, completed=sequence)
+                if self.task_runtime:
+                    await self.task_runtime.heartbeat(
+                        batch_id,
+                        completed_items=sequence,
+                        total_items=settings["count"],
+                    )
                 if self.stop_requested:
                     break
 
             status = "stopped" if self.stop_requested else "completed"
             self.state["status"] = status
             await self.history.update_batch(batch_id, completed=self.state["completed"], status=status)
+            if self.task_runtime:
+                await self.task_runtime.finish(
+                    batch_id,
+                    "cancelled" if self.stop_requested else "succeeded",
+                    completed_items=self.state["completed"],
+                    error_code="user_stopped" if self.stop_requested else "",
+                    error_summary="用户停止任务" if self.stop_requested else "",
+                )
         except Exception as error:
             logger.warning("批次 %s 出错: %s", batch_id, error)
             self.state["status"] = "error"
@@ -237,6 +347,18 @@ class BatchManager:
                 status="error",
                 error=str(error),
             )
+            if self.task_runtime:
+                try:
+                    await self.task_runtime.finish(
+                        batch_id,
+                        "failed",
+                        completed_items=self.state["completed"],
+                        failed_items=1,
+                        error_code=type(error).__name__,
+                        error_summary=str(error),
+                    )
+                except Exception as runtime_error:
+                    logger.warning("任务运行时收尾失败: %s", runtime_error)
         finally:
             await self._advance_queue()
 
@@ -251,7 +373,12 @@ class BatchManager:
             return
         entry = self.queue.pop(0)
         try:
-            await self._begin_batch(entry["settings"], entry["seeds"])
+            await self._begin_batch(
+                entry["settings"],
+                entry["seeds"],
+                batch_id=entry["queue_id"],
+                task_exists=True,
+            )
         except Exception as error:  # 接续失败不应吞掉:记录并继续尝试下一个
             logger.warning("队列批次启动失败: %s", error)
             await self._advance_queue()
@@ -314,7 +441,10 @@ class BatchManager:
         interrupt = getattr(self.comfy, "interrupt", None)
         if interrupt is None:
             return
+        prompt_id = str((self.state or {}).get("prompt_id") or "").strip()
+        if not prompt_id:
+            return
         try:
-            await interrupt()
-        except ComfyError:
+            await interrupt(prompt_id)
+        except (ComfyError, TypeError):
             pass

@@ -1,6 +1,8 @@
 # Anima Random Studio
 
-基于 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 和 [Anima Tools](https://github.com/nregret/Comfyui-Anima-Tools) 的本地随机生图工作台。它把提示词池、批量生成、LoRA、模型与修复、收藏树、风格预设和历史记录集中在一个轻量 WebUI 中，并默认只连接本机服务。
+当前版本为 **V7 (`0.7.0`)**。随机生成与自然语言创作仍是两个独立工作区，但共享原生 Generation Intent、服务端草稿、风格预设、模型与多 LoRA 选择、全局任务中心、作品库和可恢复 SSE 事件。V7 的 M0-M5、迁移/回滚和上游能力验收分别见 [V7 里程碑](docs/V7-ROADMAP.md)、[V7 迁移说明](docs/V7-MIGRATION.md)和[上游能力矩阵](docs/V7-UPSTREAM-PARITY.md)。
+
+这是基于 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 和 [Anima Tools](https://github.com/nregret/Comfyui-Anima-Tools) 的本地创作工作台。`astrbot_plugin_comfy_anima` 仅作为授权历史快照与领域能力验收来源；V7 的 Provider、计划、工具循环、设置、任务和 Web API 均采用 WebUI 原生边界，不模拟 AstrBot Context/Event，也不提供 QQ、NapCat 或群权限运输。
 
 ![Anima Random Studio 主界面](docs/screenshots/anima-random-studio-overview.png)
 
@@ -14,6 +16,16 @@
 项目不打包任何模型、LoRA、检测器或第三方节点。首次运行前必须完成下面的 ComfyUI 和模型配置。
 
 ## 主要功能
+
+### 自然语言创作
+
+- 支持生图、图片反推、整图改图、姿势/深度/线稿/参考控制、局部重绘、独立放大和换角七种模式。
+- 自然语言先生成结构化 Prompt Plan，再由用户确认提交；确认时复用同一 `plan_id`，不会二次调用模型造成计划漂移。
+- 当前五类原生随机池可以作为锁定输入层，服务端固定抽取并写入计划，导演模型不能重分类或覆盖这些字段。
+- 支持原图与蒙版上传、浏览器 Canvas 画笔蒙版、Base/RTX/Iterative 管线、尺寸、数量、Seed、LoRA 和高级参数。
+- 本地 Provider 注册表支持多个 OpenAI-compatible Base URL，导演模型和视觉模型可分别绑定；API Key 仅通过 Windows DPAPI 加密保存。
+- 启动后按工作流 manifest 和 ComfyUI `/object_info` 展示模式依赖。缺少节点只禁用对应能力，不影响随机工作台启动。
+- URL 可恢复工作区：`/?workspace=random` 与 `/?workspace=natural`。
 
 ### 生成工作台
 
@@ -62,7 +74,7 @@
 | Python | 3.11 或更高版本 |
 | ComfyUI | 可正常运行的本机实例，默认 `http://127.0.0.1:8188` |
 | WebUI | 默认监听 `http://127.0.0.1:8190` |
-| Python 包 | `aiohttp`；开发/测试再安装 `pytest` |
+| Python 包 | `aiohttp`、`Pillow`；开发/测试再安装 `pytest` |
 | 浏览器 | Chromium、Edge 或 Chrome；移动端可使用响应式视口 |
 | GPU | 由 ComfyUI 的 Anima 工作流决定；建议使用支持该模型的 NVIDIA GPU |
 
@@ -144,7 +156,7 @@ cd comfyui-random-image-generation
 如果复用已有 ComfyUI 虚拟环境：
 
 ```powershell
-F:\comfyui\.venv\Scripts\python.exe -m pip install aiohttp
+F:\comfyui\.venv\Scripts\python.exe -m pip install aiohttp Pillow
 ```
 
 如果使用独立环境：
@@ -152,7 +164,7 @@ F:\comfyui\.venv\Scripts\python.exe -m pip install aiohttp
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install aiohttp
+.\.venv\Scripts\python.exe -m pip install aiohttp Pillow
 ```
 
 ### 4. 启动 Anima Random Studio
@@ -239,6 +251,7 @@ data/style_presets.json
 
 ```text
 anima_webui/       Python 后端、ComfyUI 客户端、工作流和持久化
+anima_natural/     自然语言引擎、本地适配层、上游服务与 manifest 工作流
 static/            WebUI HTML、CSS、JavaScript
 templates/         workflow_api.json 与 workflow_ui.json
 sources/           原始工作流副本
@@ -256,6 +269,9 @@ output/            生成图片（默认不提交）
 | `data/history.sqlite3` | 批次、图片、种子、提示词和工作流元数据 |
 | `data/custom_prompts.json` | 自定义条目和自定义分组 |
 | `data/style_presets.json` | 用户自建风格预设 |
+| `data/natural/providers.json` | Provider 普通配置和角色绑定，不含 API Key |
+| `data/natural/provider_secrets.json` | Windows DPAPI 加密后的 Provider 密钥 |
+| `data/natural/` | 上传资产、Danbooru、LoRA 语义档案和脱敏任务事件 |
 | `output/AnimaRandom/<日期>/<批次>/` | 生成图片 |
 | `templates/workflow_api.json` | 提交给 ComfyUI 的 API 模板 |
 | `templates/workflow_ui.json` | 可视化工作流模板 |
@@ -282,6 +298,12 @@ WebUI 前端使用以下本地接口：
 | `DELETE` | `/api/batches/queue/{queue_id}` | 移出排队中的批次 |
 | `POST` | `/api/batches/{batch_id}/stop?clearQueue=true` | 停止当前批次,默认同时清空队列 |
 | `GET` | `/api/history` | 分页读取历史记录 |
+| `GET/POST/PUT/DELETE` | `/api/natural/providers` | Provider 配置、绑定、模型枚举和连接测试 |
+| `GET` | `/api/natural/capabilities` | 工作流、节点、Provider 与工具能力 |
+| `POST` | `/api/natural/plans` | 生成结构化 Prompt Plan |
+| `POST` | `/api/natural/uploads` | 校验并保存短期原图或蒙版资产 |
+| `GET/POST` | `/api/natural/jobs` | 自然语言任务列表、提交和取消 |
+| `GET` | `/api/natural/jobs/{id}/events` | SSE 任务阶段、进度和错误事件 |
 
 这些接口默认只绑定本机，不是面向公网的远程服务 API。
 
@@ -316,10 +338,12 @@ WebUI 前端使用以下本地接口：
 安装开发依赖并运行：
 
 ```powershell
-python -m pip install aiohttp pytest
+python -m pip install aiohttp Pillow pytest
 python -m pytest -q
 node --check static\app.js
-python -m compileall -q anima_webui tests run.py
+node --check static\natural.js
+python -m compileall -q anima_webui anima_natural anima_studio tests tools run.py
+python tools\check_v7_native.py
 Get-Content templates\workflow_api.json | ConvertFrom-Json | Out-Null
 Get-Content templates\workflow_ui.json | ConvertFrom-Json | Out-Null
 git diff --check
@@ -331,12 +355,14 @@ git diff --check
 python generate_templates.py
 ```
 
-测试覆盖资源枚举、LoRA 子目录和路径安全、动态修复链、画师 `@` 规范化、风格预设、收藏树、分组快照导入、安全删除、自定义项、历史记录和批量导入。
+测试覆盖资源枚举、LoRA 子目录和路径安全、动态修复链、画师 `@` 规范化、风格预设、收藏树、分组快照导入、安全删除、自定义项、历史记录、自然语言计划、七类 manifest 工作流、密钥边界、图片上传和自然任务 API。
 
 ## 安全边界与许可证
 
 - 默认只监听 `127.0.0.1`、`localhost` 或 `::1`，不会直接暴露到局域网。
 - `--comfy-url` 只接受本机 HTTP 地址，不接受远程主机、凭据、查询参数或片段。
 - LoRA 路径拒绝绝对路径和 `..` 路径穿越；工作流资源使用 ComfyUI 返回的实时清单。
+- Provider Key 不进入普通设置、导出、历史或日志。Windows 生产环境使用当前用户 DPAPI；非 Windows 不自动降级到明文。
+- 自然语言工具边界只允许本地 LoRA、Danbooru、Prompt Plan 和结构化输出服务；本项目不包含 AstrBot、QQ 命令或群权限适配。
 - 运行时历史、收藏、预设和生成图片默认不进入 Git；公开仓库前请再次检查是否误提交模型、图片或本机配置。
-- 本仓库当前未附带 `LICENSE`。模型、LoRA、检测器和第三方节点遵循各自授权条款；公开分发前请根据实际资源授权补充项目许可证。
+- 本仓库根目录代码使用 `LICENSE` 中的 MIT License。历史授权快照固定为 `yenn001/astrbot_plugin_comfy_anima@9220b1cbcb3026c14554331fdbccd7d08314cb35`，保留原作者文件头并仅用于来源审计、迁移夹具和差异验证；V7 能力验收另固定在上游提交 `8202024084c6115b41c2a012bf226c0c245f2c66`。范围和来源记录见 `anima_natural/UPSTREAM.md`。模型、LoRA、检测器和第三方节点遵循各自授权条款。

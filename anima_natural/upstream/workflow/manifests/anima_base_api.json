@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "profile_id": "anima_base",
+  "display_name": "Anima 原图",
+  "workflow_file": "anima_base_api.json",
+  "task_type": "text_to_image",
+  "bindings": {
+    "positive_prompt": {"node_id": "11", "input": "text"},
+    "negative_prompt": {"node_id": "12", "input": "text"},
+    "unet": {"node_id": "44", "input": "unet_name"},
+    "lora": {"node_id": "462"},
+    "seed": [{"node_id": "19", "input": "seed"}],
+    "resolution": {"node_id": "28", "width_input": "width", "height_input": "height"},
+    "samplers": [{"node_id": "19", "steps_input": "steps", "cfg_input": "cfg", "denoise_input": "denoise"}]
+  },
+  "output_variants": {"base": {"preferred_node_ids": ["88"], "prune_node_ids": []}},
+  "default_output_variant": "base",
+  "defaults": {"pipeline": "base", "width": 832, "height": 1216, "steps": 8, "cfg": 5.0, "denoise": 1.0}
+}

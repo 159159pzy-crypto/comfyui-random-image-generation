@@ -1,0 +1,22 @@
+{
+  "1": {
+    "inputs": {"image": "example.png"},
+    "class_type": "LoadImage",
+    "_meta": {"title": "输入图片"}
+  },
+  "458": {
+    "inputs": {"images": ["552", 0], "filename_prefix": "anima_studio/rtx_upscale"},
+    "class_type": "SaveImage",
+    "_meta": {"title": "RTX 放大输出"}
+  },
+  "552": {
+    "inputs": {
+      "images": ["1", 0],
+      "resize_type": "scale by multiplier",
+      "resize_type.scale": 2.0,
+      "quality": "ULTRA"
+    },
+    "class_type": "RTXVideoSuperResolution",
+    "_meta": {"title": "RTX 独立放大"}
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "profile_id": "anima_iterative",
+  "display_name": "Anima + 迭代放大",
+  "workflow_file": "anima_iterative_api.json",
+  "task_type": "text_to_image",
+  "bindings": {
+    "positive_prompt": {"node_id": "11", "input": "text"},
+    "negative_prompt": {"node_id": "12", "input": "text"},
+    "unet": {"node_id": "44", "input": "unet_name"},
+    "lora": {"node_id": "462"},
+    "seed": [{"node_id": "19", "input": "seed"}, {"node_id": "100", "input": "seed"}],
+    "resolution": {"node_id": "28", "width_input": "width", "height_input": "height"},
+    "samplers": [
+      {"node_id": "19", "steps_input": "steps", "cfg_input": "cfg", "denoise_input": "denoise"},
+      {"node_id": "100", "steps_input": "steps", "cfg_input": "cfg", "denoise_input": "denoise"}
+    ]
+  },
+  "output_variants": {"iterative": {"preferred_node_ids": ["103"], "prune_node_ids": []}},
+  "default_output_variant": "iterative",
+  "defaults": {"pipeline": "iterative", "width": 832, "height": 1216, "steps": 8, "cfg": 5.0, "iterative_scale": 1.5, "iterative_steps": 3, "iterative_denoise": 0.35}
+}

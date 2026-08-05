@@ -1,0 +1,1966 @@
+{
+  "4": {
+    "inputs": {
+      "clip_name": "qwen_3_06b_base.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP",
+      "macro_groups": [
+        "模型加载区"
+      ],
+      "macro_group": "模型加载区"
+    }
+  },
+  "5": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE",
+      "macro_groups": [
+        "模型加载区"
+      ],
+      "macro_group": "模型加载区"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": [
+        "210",
+        0
+      ],
+      "clip": [
+        "462",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码",
+      "macro_groups": [
+        "一次采样"
+      ],
+      "macro_group": "一次采样"
+    }
+  },
+  "7": {
+    "inputs": {
+      "text": [
+        "13",
+        0
+      ],
+      "clip": [
+        "462",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码",
+      "macro_groups": [
+        "一次采样"
+      ],
+      "macro_group": "一次采样"
+    }
+  },
+  "8": {
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": 480830881837562,
+      "steps": 30,
+      "cfg": 5,
+      "sampler_name": "dpmpp_2m_sde_gpu",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "end_at_step": 4650,
+      "return_with_leftover_noise": "disable",
+      "preview_method": "latent2rgb",
+      "vae_decode": "false",
+      "model": [
+        "462",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "189",
+        0
+      ],
+      "optional_vae": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "KSampler Adv. (Efficient)",
+    "_meta": {
+      "title": "KSampler Adv. (Efficient)",
+      "macro_groups": [
+        "一次采样"
+      ],
+      "macro_group": "一次采样"
+    }
+  },
+  "13": {
+    "inputs": {
+      "positive": "SFW,lowres, bad anatomy, bad hands, error, missing finger, extra digits, fewer digits, ear tag, cropped, worst quality, low quality, low score, bad score, average score, signature, watermark, username, worst quality, normal quality, bad anatomy, low resolution, score_3, score_2, score_1, bad perspective, bad proportions, detailed teeth, censored, mosaic censoring, bar censor, ear tag\nartist:dairi, artist:kanon (kurogane knights), 0.5::artist:kou hiyoyo::, artist:tsuda nanafushi, artist:tukiwani, artist:mizuki hitoshi, shiny skin, shiny clothes, -0.5::ningen mame::, sketch, lineart, 0.4::flat color::, 2::multiple views::, -2::character study::, ai-generated,4toes, six fingers,extra fingers,",
+      "auto_random": false,
+      "temp_str": "[{\"id\":\"token_30_1770540576519\",\"text\":\"low quality\",\"translate\":\"low quality\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_1_1770540576519\",\"text\":\"worst quality\",\"translate\":\"worst quality\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_3_1770540576519\",\"text\":\"normal quality\",\"translate\":\"normal quality\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_1_1773673748878\",\"text\":\"score_1\",\"translate\":\"score_1\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_2_1773673748878\",\"text\":\"score_2\",\"translate\":\"score_2\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_3_1773673748878\",\"text\":\"score_3\",\"translate\":\"score_3\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_4_1773673748878\",\"text\":\"score_4\",\"translate\":\"score_4\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_5_1773673748878\",\"text\":\"score_5\",\"translate\":\"score_5\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_6_1773673748878\",\"text\":\"jpeg artifacts\",\"translate\":\"jpeg artifacts\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_39_1770540576519\",\"text\":\"text\",\"translate\":\"text\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_7_1770540576519\",\"text\":\"watermark\",\"translate\":\"水印\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_14_1770540576519\",\"text\":\"signature\",\"translate\":\"签名\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_7_1773673748878\",\"text\":\"banner\",\"translate\":\"横幅\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_8_1773673748878\",\"text\":\"realistic\",\"translate\":\"写实\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":\"rgba(0, 255, 255, .4)\",\"isLoraTag\":false},{\"id\":\"token_9_1773673748878\",\"text\":\"photorealistic\",\"translate\":\"photorealistic\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_4_1770540576519\",\"text\":\"bad anatomy\",\"translate\":\"bad anatomy\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_5_1770540576519\",\"text\":\"bad hands\",\"translate\":\"bad hands\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_10_1773673748878\",\"text\":\"deformed hands\",\"translate\":\"变形 hands\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_23_1770540576519\",\"text\":\"extra fingers\",\"translate\":\"extra fingers\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_11_1773673748878\",\"text\":\"mutated hands\",\"translate\":\"mutated hands\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_12_1773673748878\",\"text\":\"missing fingers\",\"translate\":\"missing fingers\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_13_1773673748878\",\"text\":\"malformed limbs\",\"translate\":\"\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":\"\",\"isLoraTag\":false},{\"id\":\"token_14_1773673748878\",\"text\":\"fused fingers\",\"translate\":\"\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":\"\",\"isLoraTag\":false},{\"id\":\"token_15_1773673748878\",\"text\":\"too many fingers\",\"translate\":\"\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":\"\",\"isLoraTag\":false}]",
+      "random_template": "",
+      "打开提示词编辑器": ""
+    },
+    "class_type": "WeiLinPromptUIWithoutLora",
+    "_meta": {
+      "title": "负面提示词",
+      "macro_groups": [
+        "提示词"
+      ],
+      "macro_group": "提示词"
+    }
+  },
+  "19": {
+    "inputs": {
+      "samples": [
+        "8",
+        3
+      ],
+      "vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码",
+      "macro_groups": [
+        "一次采样"
+      ],
+      "macro_group": "一次采样"
+    }
+  },
+  "20": {
+    "inputs": {
+      "images": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "预览图像",
+      "macro_groups": [
+        "一次采样"
+      ],
+      "macro_group": "一次采样"
+    }
+  },
+  "186": {
+    "inputs": {
+      "width": [
+        "437",
+        0
+      ],
+      "height": [
+        "437",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像",
+      "macro_groups": [
+        "模型加载区"
+      ],
+      "macro_group": "模型加载区"
+    }
+  },
+  "187": {
+    "inputs": {
+      "width": [
+        "437",
+        0
+      ],
+      "height": [
+        "437",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像",
+      "macro_groups": [
+        "模型加载区"
+      ],
+      "macro_group": "模型加载区"
+    }
+  },
+  "189": {
+    "inputs": {
+      "Input": 1,
+      "latent1": [
+        "186",
+        0
+      ],
+      "latent2": [
+        "187",
+        0
+      ]
+    },
+    "class_type": "CR Latent Input Switch",
+    "_meta": {
+      "title": "🔀 CR Latent Input Switch",
+      "macro_groups": [
+        "模型加载区"
+      ],
+      "macro_group": "模型加载区"
+    }
+  },
+  "210": {
+    "inputs": {
+      "positive": "",
+      "auto_random": false,
+      "temp_str": "",
+      "random_template": "20260415_213733",
+      "打开提示词编辑器": "",
+      "opt_text": [
+        "213",
+        0
+      ]
+    },
+    "class_type": "WeiLinPromptUIWithoutLora",
+    "_meta": {
+      "title": "内容",
+      "macro_groups": [
+        "提示词"
+      ],
+      "macro_group": "提示词"
+    }
+  },
+  "211": {
+    "inputs": {
+      "positive": [
+        "431",
+        0
+      ],
+      "auto_random": false,
+      "temp_str": "[{\"id\":\"token_1_1778778688154\",\"text\":\"masterpiece\",\"translate\":\"masterpiece\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_2_1778778688154\",\"text\":\"best quality\",\"translate\":\"best quality\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_1_1778779125659\",\"text\":\"@wanke\",\"translate\":\"@wanke\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_2_1778779125659\",\"text\":\"impressionism\",\"translate\":\"impressionism\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_3_1778779125659\",\"text\":\"@stu dts\",\"translate\":\"@stu dts\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_4_1778779125659\",\"text\":\"@infukun\",\"translate\":\"@infukun\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_5_1778779125659\",\"text\":\"@reoen\",\"translate\":\"@reoen\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_6_1778779125659\",\"text\":\"@shion \\\\(mirudakemann\\\\)\",\"translate\":\"@shion \\\\(mirudakemann\\\\)\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_7_1778779125659\",\"text\":\"@wlop\",\"translate\":\"@wlop\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_8_1778779125659\",\"text\":\"(@isshiki \\\\(ffmania7\\\\):0.9)\",\"translate\":\"(@isshiki \\\\(ffmania7\\\\)\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false}]",
+      "random_template": "",
+      "打开提示词编辑器": "",
+      "opt_text": [
+        "212",
+        0
+      ]
+    },
+    "class_type": "WeiLinPromptUIWithoutLora",
+    "_meta": {
+      "title": "画师串，lora提示词",
+      "macro_groups": [
+        "提示词"
+      ],
+      "macro_group": "提示词"
+    }
+  },
+  "212": {
+    "inputs": {
+      "positive": "NSFW,year 2025, newest, masterpiece, best quality, very aesthetic,  score_9, score_8_up,",
+      "auto_random": false,
+      "temp_str": "[{\"id\":\"token_1_1778778681361\",\"text\":\"masterpiece\",\"translate\":\"masterpiece\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_2_1778778681361\",\"text\":\"best quality\",\"translate\":\"best quality\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_1_1778778720917\",\"text\":\"official art\",\"translate\":\"official art\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_2_1778778720917\",\"text\":\"absurdres\",\"translate\":\"超高分辨率\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":\"rgba(36, 36, 107, 4)\",\"isLoraTag\":false},{\"id\":\"token_3_1778778720917\",\"text\":\"very aesthetic\",\"translate\":\"very aesthetic\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_4_1778778720917\",\"text\":\"very awa\",\"translate\":\"very https://danbooru.donmai.us/posts?tags=awa\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_5_1778778720917\",\"text\":\"newest\",\"translate\":\"newest\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_6_1778778720917\",\"text\":\"highres\",\"translate\":\"高分辨率\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":\"rgba(36, 36, 107, 4)\",\"isLoraTag\":false},{\"id\":\"token_7_1778778720917\",\"text\":\"\\n\",\"translate\":\"\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null},{\"id\":\"token_8_1778778720917\",\"text\":\"masterpiece\",\"translate\":\"masterpiece\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_9_1778778720917\",\"text\":\"best quality\",\"translate\":\"best quality\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_10_1778778720917\",\"text\":\"@wanke\",\"translate\":\"@wanke\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_4_1778778681361\",\"text\":\"impressionism\",\"translate\":\"impressionism\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_11_1778778720917\",\"text\":\"@stu dts\",\"translate\":\"@stu dts\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_12_1778778720917\",\"text\":\"@infukun\",\"translate\":\"@infukun\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_14_1778778627209\",\"text\":\"@reoen\",\"translate\":\"@reoen\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_13_1778778720917\",\"text\":\"@shion \\\\(mirudakemann\\\\)\",\"translate\":\"@shion \\\\(mirudakemann\\\\)\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_14_1778778720917\",\"text\":\"@wlop\",\"translate\":\"@wlop\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_15_1778778720917\",\"text\":\"(@isshiki \\\\(ffmania7\\\\):0.9)\",\"translate\":\"(@isshiki \\\\(ffmania7\\\\)\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false}]",
+      "random_template": "",
+      "打开提示词编辑器": ""
+    },
+    "class_type": "WeiLinPromptUIWithoutLora",
+    "_meta": {
+      "title": "画面质量词",
+      "macro_groups": [
+        "提示词"
+      ],
+      "macro_group": "提示词"
+    }
+  },
+  "213": {
+    "inputs": {
+      "positive": "",
+      "auto_random": false,
+      "temp_str": "[{\"id\":\"token_1_1778778547031\",\"text\":\"u\",\"translate\":\"u\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false}]",
+      "random_template": "20260412_223726",
+      "打开提示词编辑器": "",
+      "opt_text": [
+        "211",
+        0
+      ]
+    },
+    "class_type": "WeiLinPromptUIWithoutLora",
+    "_meta": {
+      "title": "人物",
+      "macro_groups": [
+        "提示词"
+      ],
+      "macro_group": "提示词"
+    }
+  },
+  "260": {
+    "inputs": {
+      "samples": [
+        "267",
+        3
+      ],
+      "vae": [
+        "267",
+        4
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组"
+      ],
+      "macro_group": "采样组"
+    }
+  },
+  "261": {
+    "inputs": {
+      "resize_type": "scale by multiplier",
+      "resize_type.scale": 1.3,
+      "quality": "ULTRA",
+      "images": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "RTXVideoSuperResolution",
+    "_meta": {
+      "title": "RTX Video Super Resolution",
+      "macro_groups": [
+        "二次TTP放大",
+        "TTP分块组件"
+      ],
+      "macro_group": "TTP分块组件"
+    }
+  },
+  "262": {
+    "inputs": {
+      "seed": 72480118856851
+    },
+    "class_type": "CR Seed",
+    "_meta": {
+      "title": "🌱 CR Seed",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组"
+      ],
+      "macro_group": "采样组"
+    }
+  },
+  "265": {
+    "inputs": {
+      "pixels": [
+        "287",
+        0
+      ],
+      "vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE编码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group"
+      ],
+      "macro_group": "Group"
+    }
+  },
+  "267": {
+    "inputs": {
+      "seed": [
+        "262",
+        0
+      ],
+      "steps": 18,
+      "cfg": 5,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 0.05,
+      "preview_method": "latent2rgb",
+      "vae_decode": "false",
+      "model": [
+        "8",
+        0
+      ],
+      "positive": [
+        "336",
+        0
+      ],
+      "negative": [
+        "8",
+        2
+      ],
+      "latent_image": [
+        "265",
+        0
+      ],
+      "optional_vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "KSampler (Efficient)",
+    "_meta": {
+      "title": "KSampler (Efficient)",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group"
+      ],
+      "macro_group": "Group"
+    }
+  },
+  "269": {
+    "inputs": {
+      "width_factor": 2,
+      "height_factor": 2,
+      "overlap_rate": 0.3,
+      "image": [
+        "261",
+        0
+      ]
+    },
+    "class_type": "TTP_Tile_image_size",
+    "_meta": {
+      "title": "TTP_Tile_image_size",
+      "macro_groups": [
+        "二次TTP放大",
+        "TTP分块组件"
+      ],
+      "macro_group": "TTP分块组件"
+    }
+  },
+  "270": {
+    "inputs": {
+      "tile_width": [
+        "269",
+        0
+      ],
+      "tile_height": [
+        "269",
+        1
+      ],
+      "image": [
+        "261",
+        0
+      ]
+    },
+    "class_type": "TTP_Image_Tile_Batch",
+    "_meta": {
+      "title": "TTP_Image_Tile_Batch",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组"
+      ],
+      "macro_group": "采样组"
+    }
+  },
+  "277": {
+    "inputs": {
+      "seed": [
+        "262",
+        0
+      ],
+      "steps": 18,
+      "cfg": 5,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 0.05,
+      "preview_method": "latent2rgb",
+      "vae_decode": "false",
+      "model": [
+        "8",
+        0
+      ],
+      "positive": [
+        "341",
+        0
+      ],
+      "negative": [
+        "8",
+        2
+      ],
+      "latent_image": [
+        "291",
+        0
+      ],
+      "optional_vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "KSampler (Efficient)",
+    "_meta": {
+      "title": "KSampler (Efficient)",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group1"
+      ],
+      "macro_group": "Group1"
+    }
+  },
+  "278": {
+    "inputs": {
+      "seed": [
+        "262",
+        0
+      ],
+      "steps": 18,
+      "cfg": 5,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 0.05,
+      "preview_method": "latent2rgb",
+      "vae_decode": "false",
+      "model": [
+        "8",
+        0
+      ],
+      "positive": [
+        "339",
+        0
+      ],
+      "negative": [
+        "8",
+        2
+      ],
+      "latent_image": [
+        "292",
+        0
+      ],
+      "optional_vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "KSampler (Efficient)",
+    "_meta": {
+      "title": "KSampler (Efficient)",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group2"
+      ],
+      "macro_group": "Group2"
+    }
+  },
+  "279": {
+    "inputs": {
+      "seed": [
+        "262",
+        0
+      ],
+      "steps": 18,
+      "cfg": 5,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 0.05,
+      "preview_method": "latent2rgb",
+      "vae_decode": "false",
+      "model": [
+        "8",
+        0
+      ],
+      "positive": [
+        "343",
+        0
+      ],
+      "negative": [
+        "8",
+        2
+      ],
+      "latent_image": [
+        "293",
+        0
+      ],
+      "optional_vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "KSampler (Efficient)",
+    "_meta": {
+      "title": "KSampler (Efficient)",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group3"
+      ],
+      "macro_group": "Group3"
+    }
+  },
+  "280": {
+    "inputs": {
+      "samples": [
+        "277",
+        3
+      ],
+      "vae": [
+        "277",
+        4
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组"
+      ],
+      "macro_group": "采样组"
+    }
+  },
+  "281": {
+    "inputs": {
+      "padding": 128,
+      "tiles": [
+        "282",
+        0
+      ],
+      "positions": [
+        "270",
+        1
+      ],
+      "original_size": [
+        "270",
+        2
+      ],
+      "grid_size": [
+        "270",
+        3
+      ]
+    },
+    "class_type": "TTP_Image_Assy",
+    "_meta": {
+      "title": "TTP_Image_Assy",
+      "macro_groups": [
+        "二次TTP放大"
+      ],
+      "macro_group": "二次TTP放大"
+    }
+  },
+  "282": {
+    "inputs": {
+      "inputcount": 4,
+      "Update inputs": null,
+      "image_1": [
+        "260",
+        0
+      ],
+      "image_2": [
+        "280",
+        0
+      ],
+      "image_3": [
+        "283",
+        0
+      ],
+      "image_4": [
+        "284",
+        0
+      ]
+    },
+    "class_type": "ImageBatchMulti",
+    "_meta": {
+      "title": "Image Batch Multi",
+      "macro_groups": [
+        "二次TTP放大"
+      ],
+      "macro_group": "二次TTP放大"
+    }
+  },
+  "283": {
+    "inputs": {
+      "samples": [
+        "278",
+        3
+      ],
+      "vae": [
+        "278",
+        4
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group2"
+      ],
+      "macro_group": "Group2"
+    }
+  },
+  "284": {
+    "inputs": {
+      "samples": [
+        "279",
+        3
+      ],
+      "vae": [
+        "279",
+        4
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group3"
+      ],
+      "macro_group": "Group3"
+    }
+  },
+  "285": {
+    "inputs": {
+      "images": [
+        "281",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "预览图像",
+      "macro_groups": [
+        "二次TTP放大"
+      ],
+      "macro_group": "二次TTP放大"
+    }
+  },
+  "287": {
+    "inputs": {
+      "batch_index": 0,
+      "length": 1,
+      "image": [
+        "270",
+        0
+      ]
+    },
+    "class_type": "ImageFromBatch",
+    "_meta": {
+      "title": "从批次获取图像",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group"
+      ],
+      "macro_group": "Group"
+    }
+  },
+  "288": {
+    "inputs": {
+      "batch_index": 1,
+      "length": 1,
+      "image": [
+        "270",
+        0
+      ]
+    },
+    "class_type": "ImageFromBatch",
+    "_meta": {
+      "title": "从批次获取图像",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group1"
+      ],
+      "macro_group": "Group1"
+    }
+  },
+  "289": {
+    "inputs": {
+      "batch_index": 2,
+      "length": 1,
+      "image": [
+        "270",
+        0
+      ]
+    },
+    "class_type": "ImageFromBatch",
+    "_meta": {
+      "title": "从批次获取图像",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group2"
+      ],
+      "macro_group": "Group2"
+    }
+  },
+  "290": {
+    "inputs": {
+      "batch_index": 3,
+      "length": 1,
+      "image": [
+        "270",
+        0
+      ]
+    },
+    "class_type": "ImageFromBatch",
+    "_meta": {
+      "title": "从批次获取图像",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group3"
+      ],
+      "macro_group": "Group3"
+    }
+  },
+  "291": {
+    "inputs": {
+      "pixels": [
+        "288",
+        0
+      ],
+      "vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE编码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group1"
+      ],
+      "macro_group": "Group1"
+    }
+  },
+  "292": {
+    "inputs": {
+      "pixels": [
+        "289",
+        0
+      ],
+      "vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE编码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group2"
+      ],
+      "macro_group": "Group2"
+    }
+  },
+  "293": {
+    "inputs": {
+      "pixels": [
+        "290",
+        0
+      ],
+      "vae": [
+        "8",
+        4
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE编码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group3"
+      ],
+      "macro_group": "Group3"
+    }
+  },
+  "335": {
+    "inputs": {
+      "model": "wd-v1-4-moat-tagger-v2",
+      "threshold": 0.35,
+      "character_threshold": 0.85,
+      "replace_underscore": false,
+      "trailing_comma": false,
+      "exclude_tags": "",
+      "image": [
+        "287",
+        0
+      ]
+    },
+    "class_type": "WD14Tagger|pysssss",
+    "_meta": {
+      "title": "WD14 Tagger 🐍",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group"
+      ],
+      "macro_group": "Group"
+    }
+  },
+  "336": {
+    "inputs": {
+      "text": [
+        "335",
+        0
+      ],
+      "clip": [
+        "462",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group1"
+      ],
+      "macro_group": "Group1"
+    }
+  },
+  "338": {
+    "inputs": {
+      "model": "wd-v1-4-moat-tagger-v2",
+      "threshold": 0.35,
+      "character_threshold": 0.85,
+      "replace_underscore": false,
+      "trailing_comma": false,
+      "exclude_tags": "",
+      "image": [
+        "289",
+        0
+      ]
+    },
+    "class_type": "WD14Tagger|pysssss",
+    "_meta": {
+      "title": "WD14 Tagger 🐍",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group2"
+      ],
+      "macro_group": "Group2"
+    }
+  },
+  "339": {
+    "inputs": {
+      "text": [
+        "338",
+        0
+      ],
+      "clip": [
+        "462",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group3"
+      ],
+      "macro_group": "Group3"
+    }
+  },
+  "340": {
+    "inputs": {
+      "model": "wd-v1-4-moat-tagger-v2",
+      "threshold": 0.35,
+      "character_threshold": 0.85,
+      "replace_underscore": false,
+      "trailing_comma": false,
+      "exclude_tags": "",
+      "image": [
+        "288",
+        0
+      ]
+    },
+    "class_type": "WD14Tagger|pysssss",
+    "_meta": {
+      "title": "WD14 Tagger 🐍",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group1"
+      ],
+      "macro_group": "Group1"
+    }
+  },
+  "341": {
+    "inputs": {
+      "text": [
+        "340",
+        0
+      ],
+      "clip": [
+        "462",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组"
+      ],
+      "macro_group": "采样组"
+    }
+  },
+  "343": {
+    "inputs": {
+      "text": [
+        "446",
+        0
+      ],
+      "clip": [
+        "462",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组"
+      ],
+      "macro_group": "采样组"
+    }
+  },
+  "429": {
+    "inputs": {
+      "unet_name": "miaomiaoHarem_anima12.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器",
+      "macro_groups": [
+        "模型加载区"
+      ],
+      "macro_group": "模型加载区"
+    }
+  },
+  "431": {
+    "inputs": {
+      "group_mode": false,
+      "default_active": false,
+      "allow_strength_adjustment": false,
+      "toggle_trigger_words": {
+        "__value__": []
+      },
+      "orinalMessage": "",
+      "trigger_words": ""
+    },
+    "class_type": "TriggerWord Toggle (LoraManager)",
+    "_meta": {
+      "title": "Lora触发词管理"
+    }
+  },
+  "437": {
+    "inputs": {
+      "width": 832,
+      "height": 1216
+    },
+    "class_type": "ResolutionMasterSimplify",
+    "_meta": {
+      "title": "分辨率大师简化版 (Resolution Master Simplify)",
+      "macro_groups": [
+        "模型加载区"
+      ],
+      "macro_group": "模型加载区"
+    }
+  },
+  "446": {
+    "inputs": {
+      "model": "wd-v1-4-moat-tagger-v2",
+      "threshold": 0.35,
+      "character_threshold": 0.85,
+      "replace_underscore": false,
+      "trailing_comma": false,
+      "exclude_tags": "",
+      "image": [
+        "290",
+        0
+      ]
+    },
+    "class_type": "WD14Tagger|pysssss",
+    "_meta": {
+      "title": "WD14 Tagger 🐍",
+      "macro_groups": [
+        "二次TTP放大",
+        "采样组",
+        "Group3"
+      ],
+      "macro_group": "Group3"
+    }
+  },
+  "447": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 460,
+          "end": 502,
+          "insertedText": "<lora:anima-base-1-photo-background-v4:1>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.45>, <lora:anima-base-1-masterpiece-v51:0.36>, <lora:748cm_v2_anima:0.40>, ，<lora:hanaru_epoch24:0.43>, <lora:nai_shiny_style_base1:0.12>, <lora:kukka-anima-lokrC8-2_step880:0.35>, <lora:nekoya_v1_epoch21:0.25>, <lora:kanzarin_v1_step1500:0.60>, <lora:youduki_v2_epoch55:0.66>, <lora:leafpie_v1_epoch12:0.60>, <lora:real skin.baka.v1-000010:0.45>, <lora:ReiNa style v6_step4000:0.35>, <lora:anima-base-1-photo-background-v4:1>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, <lora:748cm_v2_anima:0.30>, ，<lora:hanaru_epoch24:0.31>, <lora:nekoya_v1_epoch21:0.30>, <lora:real skin.baka.v1-000010:0.90>, <lora:(写真背景)anima3-photo-background-v3:0.30>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "748cm_v2_anima",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "hanaru_epoch24",
+            "strength": 0.31,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.31,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "real skin.baka.v1-000010",
+            "strength": 0.9,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.9,
+            "locked": false
+          },
+          {
+            "name": "(写真背景)anima3-photo-background-v3",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          }
+        ]
+      }
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "1️⃣Lora堆（默认）"
+    }
+  },
+  "448": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 460,
+          "end": 502,
+          "insertedText": "<lora:anima-base-1-photo-background-v4:1>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.45>, <lora:anima-base-1-masterpiece-v51:0.36>, <lora:748cm_v2_anima:0.40>, ，<lora:hanaru_epoch24:0.43>, <lora:nai_shiny_style_base1:0.12>, <lora:kukka-anima-lokrC8-2_step880:0.35>, <lora:nekoya_v1_epoch21:0.25>, <lora:kanzarin_v1_step1500:0.60>, <lora:youduki_v2_epoch55:0.66>, <lora:leafpie_v1_epoch12:0.60>, <lora:real skin.baka.v1-000010:0.45>, <lora:ReiNa style v6_step4000:0.35>, <lora:anima-base-1-photo-background-v4:1>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, ，<lora:hanaru_epoch24:0.31>, <lora:nai_shiny_style_base1:0.30>, <lora:nekoya_v1_epoch21:0.40>, <lora:ReiNa style v6_step4000:0.76>, <lora:(写真背景)anima3-photo-background-v3:0.30>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "hanaru_epoch24",
+            "strength": 0.31,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.31,
+            "locked": false
+          },
+          {
+            "name": "nai_shiny_style_base1",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "ReiNa style v6_step4000",
+            "strength": 0.76,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.76,
+            "locked": false
+          },
+          {
+            "name": "(写真背景)anima3-photo-background-v3",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          }
+        ]
+      }
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "1️⃣Lora堆（默认）"
+    }
+  },
+  "450": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 276,
+          "end": 304,
+          "insertedText": "<lora:BlueArchiveStyleB1:1>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, ，<lora:hanaru_epoch24:0.31>, <lora:nekoya_v1_epoch21:0.40>, <lora:(写真背景)anima3-photo-background-v3:0.30>, <lora:AI风格转储mixed_styles_anima_preview3_v4:0.50><lora:BlueArchiveStyleB1:1>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, ，<lora:hanaru_epoch24:0.31>, <lora:nekoya_v1_epoch21:0.40>, <lora:(写真背景)anima3-photo-background-v3:0.30>, <lora:AI风格转储mixed_styles_anima_preview3_v4:0.50><lora:BlueArchiveStyleB1:0.65>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "hanaru_epoch24",
+            "strength": 0.31,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.31,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "(写真背景)anima3-photo-background-v3",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "AI风格转储mixed_styles_anima_preview3_v4",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "BlueArchiveStyleB1",
+            "strength": 0.65,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.65,
+            "locked": false
+          }
+        ]
+      }
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "1️⃣Lora堆（默认）"
+    }
+  },
+  "462": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 300,
+          "end": 325,
+          "insertedText": "<lora:(写真背景)anima3-photo-background-v3:0.30>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, <lora:748cm_v2_anima:0.30>, <lora:hanaru_epoch24:0.31>, <lora:nekoya_v1_epoch21:0.30>, <lora:real skin.baka.v1-000010:0.65>, <lora:(写真背景)anima3-photo-background-v3:0.30>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, <lora:748cm_v2_anima:0.30>, <lora:hanaru_epoch24:0.31>, <lora:nekoya_v1_epoch21:0.30>, <lora:real skin.baka.v1-000010:0.65>, <lora:(写真背景)anima3-photo-background-v3:0.30>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "748cm_v2_anima",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "hanaru_epoch24",
+            "strength": 0.31,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.31,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "real skin.baka.v1-000010",
+            "strength": 0.65,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.65,
+            "locked": false
+          },
+          {
+            "name": "(写真背景)anima3-photo-background-v3",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          }
+        ]
+      },
+      "model": [
+        "429",
+        0
+      ],
+      "clip": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "1️⃣Lora堆（默认）",
+      "macro_groups": [
+        "模型加载区"
+      ],
+      "macro_group": "模型加载区"
+    }
+  },
+  "463": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 460,
+          "end": 502,
+          "insertedText": "<lora:anima-base-1-photo-background-v4:1>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.45>, <lora:anima-base-1-masterpiece-v51:0.36>, <lora:748cm_v2_anima:0.40>, ，<lora:hanaru_epoch24:0.43>, <lora:nai_shiny_style_base1:0.12>, <lora:kukka-anima-lokrC8-2_step880:0.35>, <lora:nekoya_v1_epoch21:0.25>, <lora:kanzarin_v1_step1500:0.60>, <lora:youduki_v2_epoch55:0.66>, <lora:leafpie_v1_epoch12:0.60>, <lora:real skin.baka.v1-000010:0.45>, <lora:ReiNa style v6_step4000:0.35>, <lora:anima-base-1-photo-background-v4:1>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, ，, <lora:nekoya_v1_epoch21:0.40>, <lora:(写真背景)anima3-photo-background-v3:0.30>, <lora:eonsangstyleanimav1:0.70>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "(写真背景)anima3-photo-background-v3",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "eonsangstyleanimav1",
+            "strength": 0.7,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.7,
+            "locked": false
+          }
+        ]
+      }
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "1️⃣Lora堆（默认）"
+    }
+  },
+  "464": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 460,
+          "end": 502,
+          "insertedText": "<lora:anima-base-1-photo-background-v4:1>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.45>, <lora:anima-base-1-masterpiece-v51:0.36>, <lora:748cm_v2_anima:0.40>, ，<lora:hanaru_epoch24:0.43>, <lora:nai_shiny_style_base1:0.12>, <lora:kukka-anima-lokrC8-2_step880:0.35>, <lora:nekoya_v1_epoch21:0.25>, <lora:kanzarin_v1_step1500:0.60>, <lora:youduki_v2_epoch55:0.66>, <lora:leafpie_v1_epoch12:0.60>, <lora:real skin.baka.v1-000010:0.45>, <lora:ReiNa style v6_step4000:0.35>, <lora:anima-base-1-photo-background-v4:1>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, ，, <lora:nekoya_v1_epoch21:0.40>, <lora:(写真背景)anima3-photo-background-v3:0.30>, <lora:koukouya_v2_step2500:0.75>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "(写真背景)anima3-photo-background-v3",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "koukouya_v2_step2500",
+            "strength": 0.75,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.75,
+            "locked": false
+          }
+        ]
+      }
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "涂画"
+    }
+  },
+  "465": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 460,
+          "end": 502,
+          "insertedText": "<lora:anima-base-1-photo-background-v4:1>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.45>, <lora:anima-base-1-masterpiece-v51:0.36>, <lora:748cm_v2_anima:0.40>, ，<lora:hanaru_epoch24:0.43>, <lora:nai_shiny_style_base1:0.12>, <lora:kukka-anima-lokrC8-2_step880:0.35>, <lora:nekoya_v1_epoch21:0.25>, <lora:kanzarin_v1_step1500:0.60>, <lora:youduki_v2_epoch55:0.66>, <lora:leafpie_v1_epoch12:0.60>, <lora:real skin.baka.v1-000010:0.45>, <lora:ReiNa style v6_step4000:0.35>, <lora:anima-base-1-photo-background-v4:1>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.40>, <lora:anima-base-1-masterpiece-v51:0.50>, <lora:748cm_v2_anima:0.15>, ，<lora:hanaru_epoch24:0.45>, <lora:nai_shiny_style_base1:0.30>, <lora:kukka-anima-lokrC8-2_step880:0.31>, <lora:nekoya_v1_epoch21:0.35>, <lora:kanzarin_v1_step1500:0.35>, <lora:youduki_v2_epoch55:0.62>, <lora:leafpie_v1_epoch12:0.80>, <lora:real skin.baka.v1-000010:0.75>, <lora:ReiNa style v6_step4000:0.70>, <lora:(写真背景)anima3-photo-background-v3:0.30>, <lora:eonsangstyleanimav1:0.70>, <lora:kedama_kd4m_artist32_adamw_lr2e5_te0_unetonly_bf16_acc4_rep2_ep40:0.75>, <lora:koukouya_v2_step2500:0.50>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.5,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          },
+          {
+            "name": "748cm_v2_anima",
+            "strength": 0.15,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.15,
+            "locked": false
+          },
+          {
+            "name": "hanaru_epoch24",
+            "strength": 0.45,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.45,
+            "locked": false
+          },
+          {
+            "name": "nai_shiny_style_base1",
+            "strength": 0.3,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "kukka-anima-lokrC8-2_step880",
+            "strength": 0.31,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.31,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.35,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.35,
+            "locked": false
+          },
+          {
+            "name": "kanzarin_v1_step1500",
+            "strength": 0.35,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.35,
+            "locked": false
+          },
+          {
+            "name": "youduki_v2_epoch55",
+            "strength": 0.62,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.62,
+            "locked": false
+          },
+          {
+            "name": "leafpie_v1_epoch12",
+            "strength": 0.8,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.8,
+            "locked": false
+          },
+          {
+            "name": "real skin.baka.v1-000010",
+            "strength": 0.75,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.75,
+            "locked": false
+          },
+          {
+            "name": "ReiNa style v6_step4000",
+            "strength": 0.7,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.7,
+            "locked": false
+          },
+          {
+            "name": "(写真背景)anima3-photo-background-v3",
+            "strength": 0.3,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "eonsangstyleanimav1",
+            "strength": 0.7,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.7,
+            "locked": false
+          },
+          {
+            "name": "kedama_kd4m_artist32_adamw_lr2e5_te0_unetonly_bf16_acc4_rep2_ep40",
+            "strength": 0.75,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.75,
+            "locked": false
+          },
+          {
+            "name": "koukouya_v2_step2500",
+            "strength": 0.5,
+            "active": false,
+            "expanded": false,
+            "clipStrength": 0.5,
+            "locked": false
+          }
+        ]
+      }
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "1️⃣Lora堆（默认）"
+    }
+  },
+  "466": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 460,
+          "end": 502,
+          "insertedText": "<lora:anima-base-1-photo-background-v4:1>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.45>, <lora:anima-base-1-masterpiece-v51:0.36>, <lora:748cm_v2_anima:0.40>, ，<lora:hanaru_epoch24:0.43>, <lora:nai_shiny_style_base1:0.12>, <lora:kukka-anima-lokrC8-2_step880:0.35>, <lora:nekoya_v1_epoch21:0.25>, <lora:kanzarin_v1_step1500:0.60>, <lora:youduki_v2_epoch55:0.66>, <lora:leafpie_v1_epoch12:0.60>, <lora:real skin.baka.v1-000010:0.45>, <lora:ReiNa style v6_step4000:0.35>, <lora:anima-base-1-photo-background-v4:1>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.32>, <lora:(美感细节)anima-rl-v0.1:0.24>, <lora:anima-base-1-masterpiece-v51:0.40>, <lora:748cm_v2_anima:0.30>, ，<lora:hanaru_epoch24:0.31>, <lora:nekoya_v1_epoch21:0.30>, <lora:AI风格转储mixed_styles_anima_preview3_v4:0.42>, <lora:BlueArchiveStyleB1:0.65>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.32,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.32,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.24,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.24,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "748cm_v2_anima",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "hanaru_epoch24",
+            "strength": 0.31,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.31,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "AI风格转储mixed_styles_anima_preview3_v4",
+            "strength": 0.42,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.42,
+            "locked": false
+          },
+          {
+            "name": "BlueArchiveStyleB1",
+            "strength": 0.65,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.65,
+            "locked": false
+          }
+        ]
+      }
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "BA转序"
+    }
+  },
+  "467": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text",
+        "lastAccepted": {
+          "start": 460,
+          "end": 502,
+          "insertedText": "<lora:anima-base-1-photo-background-v4:1>,",
+          "textSnapshot": "<lora:(画质)anima-highres-aesthetic-boost:0.50>, <lora:(美感细节)anima-rl-v0.1:0.45>, <lora:anima-base-1-masterpiece-v51:0.36>, <lora:748cm_v2_anima:0.40>, ，<lora:hanaru_epoch24:0.43>, <lora:nai_shiny_style_base1:0.12>, <lora:kukka-anima-lokrC8-2_step880:0.35>, <lora:nekoya_v1_epoch21:0.25>, <lora:kanzarin_v1_step1500:0.60>, <lora:youduki_v2_epoch55:0.66>, <lora:leafpie_v1_epoch12:0.60>, <lora:real skin.baka.v1-000010:0.45>, <lora:ReiNa style v6_step4000:0.35>, <lora:anima-base-1-photo-background-v4:1>,"
+        }
+      },
+      "text": "<lora:(画质)anima-highres-aesthetic-boost:0.32>, <lora:(美感细节)anima-rl-v0.1:0.24>, <lora:anima-base-1-masterpiece-v51:0.40>, <lora:748cm_v2_anima:0.30>, ，<lora:hanaru_epoch24:0.31>, <lora:nekoya_v1_epoch21:0.30>, <lora:AI风格转储mixed_styles_anima_preview3_v4:0.42>, <lora:BlueArchiveStyleB1:0.65>",
+      "loras": {
+        "__value__": [
+          {
+            "name": "(画质)anima-highres-aesthetic-boost",
+            "strength": 0.32,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.32,
+            "locked": false
+          },
+          {
+            "name": "(美感细节)anima-rl-v0.1",
+            "strength": 0.24,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.24,
+            "locked": false
+          },
+          {
+            "name": "anima-base-1-masterpiece-v51",
+            "strength": 0.4,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.4,
+            "locked": false
+          },
+          {
+            "name": "748cm_v2_anima",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "hanaru_epoch24",
+            "strength": 0.31,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.31,
+            "locked": false
+          },
+          {
+            "name": "nekoya_v1_epoch21",
+            "strength": 0.3,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.3,
+            "locked": false
+          },
+          {
+            "name": "AI风格转储mixed_styles_anima_preview3_v4",
+            "strength": 0.42,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.42,
+            "locked": false
+          },
+          {
+            "name": "BlueArchiveStyleB1",
+            "strength": 0.65,
+            "active": true,
+            "expanded": false,
+            "clipStrength": 0.65,
+            "locked": false
+          }
+        ]
+      }
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "1️⃣Lora堆（默认）",
+      "macro_groups": [
+        "二次TTP放大",
+        "TTP分块组件"
+      ],
+      "macro_group": "TTP分块组件"
+    }
+  }
+}

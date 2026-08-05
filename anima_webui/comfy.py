@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -178,6 +179,29 @@ class ComfyClient:
             raise ComfyError("ComfyUI 未返回 prompt_id")
         return str(prompt_id)
 
+    async def upload_image(
+        self,
+        path: str | Path,
+        *,
+        filename: str = "",
+        subfolder: str = "anima_natural",
+        overwrite: bool = True,
+    ) -> dict[str, Any]:
+        source = Path(path)
+        if not source.is_file():
+            raise ComfyError("待上传图片不存在")
+        form = aiohttp.FormData()
+        form.add_field(
+            "image",
+            source.read_bytes(),
+            filename=filename or source.name,
+            content_type="application/octet-stream",
+        )
+        form.add_field("subfolder", subfolder)
+        form.add_field("type", "input")
+        form.add_field("overwrite", "true" if overwrite else "false")
+        return await self._json("POST", "/upload/image", data=form)
+
     async def progress_stream(self, client_id: str) -> AsyncIterator[dict[str, Any]]:
         """连接 ComfyUI 的 websocket,产出进度事件与预览帧。
 
@@ -210,8 +234,20 @@ class ComfyClient:
                 elif message.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
                     break
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, prompt_id: str | None = None) -> None:
         """尽力中断 ComfyUI 当前正在执行的任务。"""
+        if prompt_id is not None:
+            expected = str(prompt_id).strip()
+            if not expected:
+                raise ComfyError("prompt_id must not be empty")
+            data = await self._json("GET", "/queue")
+            running_ids = {
+                str(entry[1])
+                for entry in data.get("queue_running") or []
+                if isinstance(entry, (list, tuple)) and len(entry) > 1
+            }
+            if expected not in running_ids:
+                raise ComfyError("refusing to interrupt a prompt not owned by this task")
         session = await self._get_session()
         try:
             async with session.post(f"{self.base_url}/interrupt") as response:

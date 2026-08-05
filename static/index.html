@@ -13,8 +13,19 @@
         : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       document.documentElement.dataset.theme = theme;
     })();
+    window.__animaV7Bootstrap = fetch("/api/v7/bootstrap", { headers: { Accept: "application/json" } })
+      .then(async (response) => {
+        const snapshot = await response.json();
+        if (!response.ok) throw new Error(snapshot.error || `V7 启动失败 (${response.status})`);
+        window.__animaV7State = { available: true, snapshot };
+        return window.__animaV7State;
+      })
+      .catch((error) => {
+        window.__animaV7State = { available: null, snapshot: null, error };
+        throw error;
+      });
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260726-liquidglass-2">
+  <link rel="stylesheet" href="/static/styles.css?v=20260805-v7">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -25,18 +36,23 @@
       <span class="brand-mark">A</span>
       <span class="brand-copy"><strong>Anima</strong><small>创作工作室</small></span>
     </a>
+    <nav class="workspace-switch" aria-label="创作工作区">
+      <button type="button" data-workspace="random">随机工作台</button>
+      <button type="button" data-workspace="natural">自然语言创作</button>
+    </nav>
     <div class="top-meta">
       <span id="connection" class="status-badge offline"><i></i><span>正在连接</span></span>
+      <button id="taskCenterButton" class="icon-button task-center-button" type="button" title="任务中心" aria-label="任务中心"><span aria-hidden="true">☷</span><b id="taskCenterCount" hidden>0</b></button>
       <button id="themeToggle" class="icon-button theme-toggle" type="button" title="切换深色主题" aria-label="切换深色主题"><span aria-hidden="true">◐</span></button>
     </div>
   </header>
 
-  <nav class="mobile-tabs glass" aria-label="移动端视图">
+  <nav class="mobile-tabs glass" data-random-ui aria-label="移动端视图">
     <button class="active" type="button" data-mobile-view="settings">生成设置</button>
     <button type="button" data-mobile-view="gallery">作品库</button>
   </nav>
 
-  <main class="workspace" data-mobile-view="settings">
+  <main id="randomWorkspace" class="workspace" data-random-ui data-mobile-view="settings">
     <aside class="control-panel glass">
       <form id="settingsForm">
         <div class="panel-title">
@@ -144,7 +160,135 @@
     </section>
   </main>
 
-  <div class="command-deck glass" role="group" aria-label="生成控制">
+  <nav id="naturalMobileTabs" class="natural-mobile-tabs glass" data-natural-ui role="tablist" aria-label="自然语言移动端视图" hidden>
+    <button class="active" type="button" role="tab" aria-selected="true" data-natural-view="compose">创作</button>
+    <button type="button" role="tab" aria-selected="false" data-natural-view="plan">计划</button>
+    <button type="button" role="tab" aria-selected="false" data-natural-view="gallery">作品</button>
+  </nav>
+
+  <main id="naturalWorkspace" class="natural-workspace" data-natural-ui data-natural-view="compose" hidden>
+    <section class="natural-compose-panel">
+      <header class="natural-section-header">
+        <div><span class="kicker">NATURAL CREATION</span><h1>自然语言创作</h1><small id="naturalDraftStatus" class="draft-status">正在恢复服务器草稿</small></div>
+        <button id="naturalSettingsButton" class="icon-button" type="button" title="自然语言设置" aria-label="自然语言设置">⚙</button>
+      </header>
+
+      <form id="naturalForm">
+        <div id="naturalModes" class="natural-modes" role="tablist" aria-label="自然语言任务类型">
+          <button class="active" type="button" role="tab" aria-selected="true" data-job-type="text_to_image">生图</button>
+          <button type="button" role="tab" aria-selected="false" data-job-type="reverse">反推</button>
+          <button type="button" role="tab" aria-selected="false" data-job-type="img2img">改图</button>
+          <button type="button" role="tab" aria-selected="false" data-job-type="control">底图控制</button>
+          <button type="button" role="tab" aria-selected="false" data-job-type="inpaint">局部重绘</button>
+          <button type="button" role="tab" aria-selected="false" data-job-type="upscale">放大</button>
+          <button type="button" role="tab" aria-selected="false" data-job-type="character_swap">换角</button>
+        </div>
+
+        <label class="natural-prompt-field">
+          <span>描述画面</span>
+          <textarea id="naturalPrompt" rows="7" maxlength="6000" placeholder="写下人物、动作、关系、场景和画面气氛…"></textarea>
+        </label>
+        <label id="naturalSourceSelectorField" class="field" hidden>
+          <span>来源角色选择</span>
+          <input id="naturalSourceSelector" maxlength="500" placeholder="例如：左侧金发、穿白裙的角色">
+        </label>
+
+        <div class="asset-slots">
+          <label id="sourceAssetSlot" class="asset-slot">
+            <input id="naturalSourceInput" type="file" accept="image/png,image/jpeg,image/webp">
+            <img id="naturalSourcePreview" alt="原图预览" hidden>
+            <span><strong>原图</strong><small>PNG / JPEG / WebP，最大 20MB</small></span>
+          </label>
+          <label id="maskAssetSlot" class="asset-slot" hidden>
+            <input id="naturalMaskInput" type="file" accept="image/png,image/jpeg,image/webp">
+            <img id="naturalMaskPreview" alt="蒙版预览" hidden>
+            <span><strong>蒙版</strong><small>上传或在画布中涂抹</small></span>
+          </label>
+        </div>
+
+        <section id="maskEditor" class="mask-editor" hidden>
+          <div class="mask-toolbar">
+            <label>画笔 <input id="maskBrushSize" type="range" min="4" max="120" value="36"></label>
+            <button id="maskClear" class="button ghost compact" type="button">清空蒙版</button>
+          </div>
+          <canvas id="maskCanvas" width="832" height="1216" aria-label="局部重绘蒙版画布"></canvas>
+        </section>
+
+        <div id="controlModeFields" class="control-mode-fields" hidden>
+          <span>底图控制</span>
+          <label><input type="checkbox" name="controlMode" value="pose" checked>姿势</label>
+          <label><input type="checkbox" name="controlMode" value="depth">深度</label>
+          <label><input type="checkbox" name="controlMode" value="lineart">线稿</label>
+          <label><input type="checkbox" name="controlMode" value="reference">参考</label>
+        </div>
+
+        <div class="natural-parameter-grid">
+          <label><span>管线</span><select id="naturalPipeline"><option value="base">Base</option><option value="rtx">RTX</option><option value="iterative">Iterative</option></select></label>
+          <label><span>数量</span><input id="naturalCount" type="number" min="1" max="20" value="1"></label>
+          <label><span>宽度</span><input id="naturalWidth" type="number" min="256" max="4096" step="8" value="832"></label>
+          <label><span>高度</span><input id="naturalHeight" type="number" min="256" max="4096" step="8" value="1216"></label>
+          <label><span>Seed</span><input id="naturalSeed" type="number" min="-1" value="-1"></label>
+          <label><span>步数</span><input id="naturalSteps" type="number" min="1" max="100" value="8"></label>
+          <label><span>CFG</span><input id="naturalCfg" type="number" min="0.1" max="30" step="0.1" value="5"></label>
+          <label><span>重绘强度</span><input id="naturalDenoise" type="number" min="0" max="1" step="0.05" value="0.55"></label>
+        </div>
+
+        <details class="natural-advanced">
+          <summary>约束与高级参数</summary>
+          <div class="natural-advanced-body">
+            <label class="switch-row"><span><strong>锁定随机工作台池项</strong><small>沿用五类原生池，不允许导演重分类</small></span><input id="naturalLockPools" type="checkbox" checked></label>
+            <label class="switch-row"><span><strong>使用 Provider 导演</strong><small>关闭后使用确定性本地提示词计划</small></span><input id="naturalUseLlm" type="checkbox" checked></label>
+            <label class="field"><span>额外锁定标签</span><textarea id="naturalLockedTags" rows="3" placeholder="每行或逗号分隔"></textarea></label>
+            <label class="field"><span>负面提示词</span><textarea id="naturalNegative" rows="3"></textarea></label>
+            <div class="natural-shared-assets">
+              <label class="field"><span>风格预设</span><select id="naturalPreset"><option value="">不应用预设</option></select></label>
+              <label class="field"><span>主模型</span><select id="naturalModel"><option value="">正在读取模型…</option></select></label>
+              <div class="section-heading"><h3>多 LoRA</h3><span id="naturalLoraSummary">0 启用 / 0 配置</span></div>
+              <div id="naturalLoraList" class="shared-lora-list"></div>
+              <div id="naturalLoraEmpty" class="inline-empty">未配置 LoRA。</div>
+              <button id="naturalAddLora" class="button ghost compact" type="button">+ 添加 LoRA</button>
+            </div>
+          </div>
+        </details>
+
+        <div id="naturalError" class="field-error" role="alert" hidden></div>
+        <div class="natural-actions">
+          <button id="naturalPreviewPlan" class="button ghost" type="button">仅预览计划</button>
+          <button id="naturalGenerate" class="button primary" type="submit" disabled>确认生成</button>
+          <button id="naturalCancel" class="button danger" type="button" hidden>停止任务</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="natural-plan-panel">
+      <header class="natural-section-header">
+        <div><span class="kicker">PROMPT PLAN</span><h2>生成计划</h2></div>
+        <span id="naturalPlanState" class="natural-state">等待预览</span>
+      </header>
+      <div id="naturalPlanEmpty" class="natural-empty"><strong>先把想法变成计划</strong><small>计划会展示最终提示词、锁定字段和诊断结果。</small></div>
+      <div id="naturalPlanContent" hidden>
+        <dl id="naturalPlanMeta" class="natural-plan-meta"></dl>
+        <section><h3>结构层</h3><div id="naturalPlanLayers" class="plan-layer-list"></div></section>
+        <section id="naturalSwapSection" hidden><h3>换角约束</h3><div id="naturalSwapDetails" class="natural-diagnostics"></div></section>
+        <section><h3>锁定池项</h3><div id="naturalPlanLocks" class="plan-locks"></div></section>
+        <label>最终正面提示词<textarea id="naturalPlanPositive" rows="10" spellcheck="false"></textarea></label>
+        <label>最终负面提示词<textarea id="naturalPlanNegative" rows="6" spellcheck="false"></textarea></label>
+        <section><h3>诊断</h3><div id="naturalDiagnostics" class="natural-diagnostics"></div></section>
+      </div>
+      <div id="naturalTimeline" class="natural-timeline" aria-live="polite"></div>
+    </section>
+
+    <section class="natural-gallery-panel">
+      <header class="natural-section-header">
+        <div><span class="kicker">SHARED ARCHIVE</span><h2>共享作品库</h2></div>
+        <div class="pager"><button id="naturalGalleryPrev" class="icon-button" type="button" title="上一页" aria-label="上一页">‹</button><span id="naturalGalleryPage">1 / 1</span><button id="naturalGalleryNext" class="icon-button" type="button" title="下一页" aria-label="下一页">›</button><button id="naturalRefreshGallery" class="icon-button" type="button" title="刷新作品库" aria-label="刷新作品库">↻</button></div>
+      </header>
+      <div id="naturalGallery" class="natural-gallery"></div>
+      <div id="naturalGalleryEmpty" class="natural-empty"><strong>暂无作品</strong><small>随机与自然语言生成结果都会显示在这里。</small></div>
+    </section>
+  </main>
+
+  <div class="command-deck glass" data-random-ui role="group" aria-label="生成控制">
     <img id="livePreview" class="live-preview" alt="实时预览" hidden>
     <label class="quantity-field"><span>批次数量</span><input id="count" form="settingsForm" type="number" min="1" max="1000" step="1" required></label>
     <div class="batch-summary" aria-live="polite">
@@ -333,7 +477,113 @@
     </div>
   </dialog>
 
+  <dialog id="naturalSettingsDialog" class="natural-settings-dialog">
+    <form id="naturalProviderForm">
+      <header class="dialog-heading"><div><span class="kicker">NATURAL SETTINGS</span><h2>自然语言系统</h2></div><button id="naturalSettingsClose" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></header>
+      <div class="natural-settings-layout">
+        <section>
+          <h3>Provider</h3>
+          <input id="naturalProviderId" type="hidden">
+          <label class="field"><span>名称</span><input id="naturalProviderName" required placeholder="本地 OpenAI"></label>
+          <label class="field"><span>Base URL</span><input id="naturalProviderUrl" type="url" required placeholder="http://127.0.0.1:8000/v1"></label>
+          <label class="field"><span>导演模型</span><input id="naturalDirectorModel" placeholder="model-name"></label>
+          <label class="field"><span>视觉模型</span><input id="naturalVisionModel" placeholder="vision-model"></label>
+          <label class="field"><span>Embedding 模型</span><input id="naturalEmbeddingModel" placeholder="embedding-model"></label>
+          <label class="field"><span>Rerank 模型</span><input id="naturalRerankModel" placeholder="rerank-model"></label>
+          <label class="field"><span>API Key</span><input id="naturalProviderKey" type="password" autocomplete="new-password" placeholder="留空保持现有密钥"></label>
+          <label class="field"><span>超时（秒）</span><input id="naturalProviderTimeout" type="number" min="5" max="600" value="120"></label>
+          <div class="natural-settings-actions"><button class="button primary" type="submit">保存并绑定</button><button id="naturalProviderTest" class="button ghost" type="button">连接测试</button></div>
+          <div id="naturalProviderList" class="provider-list"></div>
+        </section>
+        <section>
+          <h3>工作流依赖</h3>
+          <div id="naturalCapabilitySummary" class="capability-summary">正在检查…</div>
+          <div id="naturalWorkflowList" class="workflow-list"></div>
+          <details><summary>LoRA Schema v3 档案</summary><div id="naturalLoraStatus" class="settings-detail"></div><label class="field"><span>共享激活词（逗号分隔）</span><input id="naturalLoraActivationTerms" autocomplete="off"></label><label class="field"><span>检索标签（逗号分隔）</span><input id="naturalLoraIdentityTags" autocomplete="off"></label><button id="naturalSaveLoraProfile" class="button ghost compact" type="button">锁定当前 LoRA 档案</button><div id="naturalLoraProfiles" class="settings-detail"></div></details>
+          <details><summary>Danbooru exact 身份绑定</summary><label class="field"><span>LoRA 档案</span><select id="naturalIdentityProfile"><option value="">先保存并选择 LoRA 档案</option></select></label><label class="field"><span>身份名称</span><input id="naturalIdentityName" autocomplete="off"></label><label class="field"><span>Character canonical</span><input id="naturalIdentityCanonical" autocomplete="off" placeholder="hatsune_miku"></label><label class="field"><span>Copyright canonical（可选）</span><input id="naturalIdentityCopyright" autocomplete="off" placeholder="vocaloid"></label><label class="field"><span>该角色专属激活词（逗号分隔）</span><input id="naturalIdentityActivationTerms" autocomplete="off"></label><button id="naturalSaveIdentity" class="button ghost compact" type="button">exact 校验并保存</button><div id="naturalIdentityList" class="settings-detail"></div></details>
+          <details><summary>Danbooru</summary><div class="danbooru-search"><input id="naturalDanbooruQuery" placeholder="exact tag"><button id="naturalDanbooruSearch" class="button ghost compact" type="button">查询</button></div><div id="naturalDanbooruResult" class="settings-detail"></div></details>
+          <details><summary>Prompt Lab</summary><label class="field"><span>候选提示词</span><textarea id="naturalPromptLabText" rows="3"></textarea></label><button id="naturalSavePromptLab" class="button ghost compact" type="button">保存候选</button><div id="naturalPromptLabList" class="settings-detail"></div></details>
+          <details><summary>任务时间线与脱敏日志</summary><button id="naturalRefreshLogs" class="button ghost compact" type="button">刷新日志</button><div id="naturalLogList" class="settings-detail"></div></details>
+        </section>
+        <section id="studioAdmin" class="studio-admin" aria-labelledby="studioAdminTitle">
+          <header class="studio-admin-heading">
+            <div><span class="kicker">NATIVE STUDIO</span><h3 id="studioAdminTitle">Studio 管理</h3><small id="studioAdminStatus">等待读取原生能力</small></div>
+            <button id="studioAdminRefresh" class="button ghost compact" type="button">刷新全部</button>
+          </header>
+          <details open>
+            <summary>诊断与长操作</summary>
+            <div class="studio-toolbar"><button id="studioDiagnosticsRefresh" class="button ghost compact" type="button">刷新诊断</button></div>
+            <div id="studioDiagnostics" class="studio-output"></div><div id="studioOperations" class="studio-list"></div>
+          </details>
+          <details>
+            <summary>Prompt Asset Library</summary>
+            <div class="studio-toolbar"><input id="studioPromptAssetQuery" type="search" placeholder="搜索 Prompt Asset"><button id="studioPromptAssetSearch" class="button ghost compact" type="button">搜索</button></div>
+            <div id="studioPromptAssetList" class="studio-list"></div>
+            <label class="field"><span>原生素材 JSON 数组</span><textarea id="studioPromptAssetImportJson" rows="5" spellcheck="false" placeholder='[{"asset_type":"style","prompt":"..."}]'></textarea></label>
+            <div class="studio-toolbar"><button id="studioPromptAssetImport" class="button ghost compact" type="button">导入素材</button></div>
+            <label class="field"><span>远程更新 URL</span><input id="studioPromptAssetUpdateUrl" type="url" placeholder="https://..."></label>
+            <div class="studio-toolbar"><button id="studioPromptAssetUpdate" class="button danger compact" type="button">确认远程更新</button></div>
+          </details>
+          <details>
+            <summary>Prompt Lab 与 Prompt Plans</summary>
+            <label class="field"><span>Prompt Lab 候选</span><textarea id="studioPromptLabPrompt" rows="3"></textarea></label>
+            <div class="studio-toolbar"><button id="studioPromptLabCreate" class="button ghost compact" type="button">保存候选</button><input id="studioPromptLabCount" type="number" min="1" max="10" value="3" aria-label="候选数量"><button id="studioPromptLabGenerate" class="button ghost compact" type="button">生成候选组</button></div>
+            <div id="studioPromptLabBatch" class="studio-list"></div><div id="studioPromptLabList" class="studio-list"></div>
+            <div class="studio-subsection"><label class="field"><span>Prompt Plan 名称</span><input id="studioPromptPlanName" maxlength="100"></label><label class="field"><span>Prompt Plan JSON</span><textarea id="studioPromptPlanJson" rows="5" spellcheck="false" placeholder='{"positive_prompt":"..."}'></textarea></label><div class="studio-toolbar"><button id="studioPromptPlanSave" class="button ghost compact" type="button">新建 Plan</button><button id="studioPromptPlanRefresh" class="button ghost compact" type="button">刷新 Plans</button></div><div id="studioPromptPlanList" class="studio-list"></div></div>
+          </details>
+          <details>
+            <summary>LoRA 目录与语义工具</summary>
+            <div class="studio-toolbar"><input id="studioLoraFilter" type="search" placeholder="筛选 LoRA"><button id="studioLoraRefresh" class="button danger compact" type="button">刷新目录</button><button id="studioLoraVisuals" class="button ghost compact" type="button">视觉预览</button></div>
+            <div id="studioLoraList" class="studio-list studio-select-list"></div>
+            <div class="studio-toolbar"><button id="studioLoraDetail" class="button ghost compact" type="button">详情</button><button id="studioLoraAnalyze" class="button danger compact" type="button">语义分析</button><button id="studioLoraArchive" class="button danger compact" type="button">生成归档</button></div>
+            <label class="field"><span>LoRA 下载 URL</span><input id="studioLoraDownloadUrl" type="url" placeholder="https://..."></label><div class="studio-toolbar"><button id="studioLoraDownload" class="button danger compact" type="button">确认下载</button></div><pre id="studioLoraOutput" class="studio-output"></pre>
+          </details>
+          <details>
+            <summary>Danbooru 索引</summary>
+            <div class="studio-toolbar"><input id="studioDanbooruQuery" type="search" placeholder="exact tag"><button id="studioDanbooruSearch" class="button ghost compact" type="button">搜索</button><select id="studioDanbooruMode" aria-label="构建模式"><option value="identity">身份</option><option value="full">完整</option></select><button id="studioDanbooruBuild" class="button danger compact" type="button">构建索引</button></div>
+            <div class="studio-toolbar"><label class="toggle-label"><input id="studioDanbooruScheduleEnabled" type="checkbox">定期更新</label><input id="studioDanbooruScheduleInterval" type="number" min="1" max="8760" value="168" aria-label="更新周期（小时）"><button id="studioDanbooruScheduleSave" class="button ghost compact" type="button">保存计划</button><button id="studioDanbooruScheduleRun" class="button danger compact" type="button">执行到期更新</button></div><pre id="studioDanbooruOutput" class="studio-output"></pre>
+          </details>
+          <details>
+            <summary>模型、UNET 与可恢复隔离</summary>
+            <div class="studio-toolbar"><button id="studioModelsRefresh" class="button danger compact" type="button">刷新模型</button></div><pre id="studioModelsInventory" class="studio-output"></pre>
+            <div class="studio-toolbar"><select id="studioModelKind" aria-label="模型类型"><option value="checkpoint">Checkpoint</option><option value="unet">UNET</option><option value="lora">LoRA</option><option value="vae">VAE</option></select><input id="studioModelExactName" placeholder="精确相对路径"><input id="studioModelConfirmName" placeholder="再次输入精确路径"><button id="studioModelQuarantine" class="button danger compact" type="button">隔离</button></div><div id="studioQuarantineList" class="studio-list"></div>
+          </details>
+          <details>
+            <summary>工作流与环境档案</summary>
+            <div class="studio-toolbar"><button id="studioWorkflowsRefresh" class="button ghost compact" type="button">刷新工作流</button></div><div id="studioWorkflowList" class="studio-list"></div>
+            <label class="field"><span>档案名称</span><input id="studioProfileName" maxlength="100"></label><label class="field"><span>配置 JSON</span><textarea id="studioProfileJson" rows="5" spellcheck="false" placeholder="{}"></textarea></label>
+            <div class="studio-toolbar"><button id="studioProfileSave" class="button ghost compact" type="button">保存档案</button><button id="studioProfileImport" class="button ghost compact" type="button">导入 JSON</button></div><div id="studioProfileList" class="studio-list"></div>
+          </details>
+          <details>
+            <summary>日志控制台</summary>
+            <div class="studio-toolbar"><input id="studioLogFilter" type="search" placeholder="筛选日志"><select id="studioLogLevel" aria-label="日志级别"><option value="DEBUG">DEBUG</option><option value="INFO" selected>INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select><button id="studioLogApplyLevel" class="button ghost compact" type="button">应用级别</button><button id="studioLogsRefresh" class="button ghost compact" type="button">刷新</button><button id="studioLogsClear" class="button danger compact" type="button">清空</button></div><div id="studioLogList" class="studio-log-list"></div>
+          </details>
+        </section>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="taskCenterDialog" class="task-center-dialog">
+    <section>
+      <header class="dialog-heading">
+        <div><span class="kicker">STUDIO TASKS</span><h2>任务中心</h2><small id="taskCenterSource">正在读取任务</small></div>
+        <div class="task-center-actions">
+          <button id="taskCenterRefresh" class="icon-button dark" type="button" title="刷新任务" aria-label="刷新任务">↻</button>
+          <button id="taskCenterClose" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+      </header>
+      <div class="task-center-filters" role="group" aria-label="筛选任务">
+        <select id="taskCenterWorkspace" aria-label="来源工作台"><option value="">全部来源</option><option value="random">随机工作台</option><option value="natural">自然语言</option><option value="studio">Studio</option></select>
+        <select id="taskCenterState" aria-label="任务状态"><option value="">全部状态</option><option value="queued">等待</option><option value="running">运行中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option><option value="interrupted">已中断</option></select>
+      </div>
+      <div id="taskCenterList" class="task-center-list" aria-live="polite"></div>
+      <div id="taskCenterEmpty" class="natural-empty"><strong>暂无任务</strong><small>生成任务会统一显示在这里。</small></div>
+    </section>
+  </dialog>
+
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260726-v020lg" defer></script>
+  <script src="/static/app.js?v=20260805-v7" defer></script>
+  <script type="module" src="/static/natural.js?v=20260805-v7"></script>
+  <script type="module" src="/static/js/studio-admin.js?v=20260805-v7"></script>
 </body>
 </html>

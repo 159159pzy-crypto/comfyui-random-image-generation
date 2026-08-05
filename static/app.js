@@ -285,6 +285,7 @@ let resourceError = "";
 let resourcesLoaded = false;
 let hiresPercent = INTERNAL_HIRES_PERCENT;
 let importPreview = null;
+let historyRecords = [];
 let editingGroup = null;
 let childGroupParent = null;
 let selectedChildSource = "";
@@ -311,7 +312,14 @@ function defaultView() {
 }
 let poolViews = Object.fromEntries(SECTIONS.map((section) => [section, defaultView()]));
 
+async function ensureV7Probe() {
+  if (window.__animaV7State?.available == null && window.__animaV7Bootstrap) {
+    try { await window.__animaV7Bootstrap; } catch { /* surface the real request error below */ }
+  }
+}
+
 async function request(path, options = {}) {
+  await ensureV7Probe();
   const response = await fetch(path, {
     headers: options.body ? { "Content-Type": "application/json" } : undefined,
     ...options,
@@ -366,6 +374,29 @@ function initialTheme() {
   return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function normalizeV7Loras(items = []) {
+  const roles = new Set(["style", "character", "detail", "concept", "utility", "other"]);
+  const seen = new Set();
+  return (Array.isArray(items) ? items : [])
+    .map((item, index) => ({
+      filename: String(item?.filename || item?.name || item?.path || "")
+        .trim().replaceAll("\\", "/").replace(/^\.\/+/, ""),
+      enabled: item?.enabled !== false,
+      strength: Number.isFinite(Number(item?.strength)) ? Number(item.strength) : 0.8,
+      role: roles.has(item?.role) ? item.role : "style",
+      order: Number.isFinite(Number(item?.order)) ? Number(item.order) : index,
+    }))
+    .filter((item) => item.filename)
+    .sort((left, right) => left.order - right.order)
+    .filter((item) => {
+      const identity = item.filename.toLocaleLowerCase();
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    })
+    .map((item, order) => ({ ...item, order }));
+}
+
 function normalizeSettings(raw) {
   const merged = { ...defaults, ...raw };
   const hasPools = raw && raw.pools && typeof raw.pools === "object";
@@ -375,7 +406,7 @@ function normalizeSettings(raw) {
     if (!hasPools && raw?.[`random_${section}`]) merged.pools[section].mode = "all";
   }
   const hasLoras = raw && Object.prototype.hasOwnProperty.call(raw, "loras");
-  merged.loras = clone(hasLoras ? raw.loras || [] : defaults?.loras || []);
+  merged.loras = normalizeV7Loras(hasLoras ? raw.loras || [] : defaults?.loras || []);
   merged.hires = {
     ...(defaults?.hires || { enabled: true, model_name: "", percent: INTERNAL_HIRES_PERCENT }),
     ...(raw?.hires || {}),
@@ -436,7 +467,7 @@ function readSettings() {
     steps: Number(ui.steps.value),
     cfg: Number(ui.cfg.value),
     pools: clone(draft.pools),
-    loras: clone(draft.loras),
+    loras: normalizeV7Loras(draft.loras),
     model_name: ui.model_name.value,
     hires: {
       enabled: ui.hires_enabled.checked,
@@ -484,6 +515,7 @@ function persistNow() {
 function schedulePersist() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(persistNow, 180);
+  if (initialized) window.dispatchEvent(new CustomEvent("studio:random-draft-dirty"));
 }
 
 function loadStoredView() {
@@ -588,8 +620,9 @@ function updatePoolOverview() {
 }
 
 function normalizedPath(value) {
-  return String(value || "")
+  return String(value || "").trim()
     .replaceAll("\\", "/")
+    .replace(/^\.\/+/, "")
     .toLowerCase();
 }
 function loraItem(filename) {
@@ -608,7 +641,8 @@ function loraPresentation(inventoryItem, fallback) {
   return { path, basename, folder, label: `${folder} / ${basename}` };
 }
 function renderLoras() {
-  const loras = Array.isArray(draft.loras) ? draft.loras : [];
+  const loras = normalizeV7Loras(draft.loras);
+  draft.loras = loras;
   const enabled = loras.filter((item) => item.enabled).length;
   ui.loraSummary.textContent = `${enabled} 启用 / ${loras.length} 配置`;
   ui.loraEmpty.hidden = loras.length > 0;
@@ -620,7 +654,17 @@ function renderLoras() {
       row.className = `lora-row${available ? "" : " missing"}`;
       const inventoryItem = loraItem(item.filename);
       const display = loraPresentation(inventoryItem, item.filename);
-      row.innerHTML = `<input class="lora-toggle" type="checkbox" ${item.enabled ? "checked" : ""} title="启用 LoRA" aria-label="启用 ${escapeHtml(item.filename)}"><div class="lora-name"><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small class="${available && !high ? "" : "lora-warning"}">${available ? (high ? "高强度 · 模型 + CLIP" : "模型 + CLIP") : "文件不存在"}</small></div><input class="lora-strength" type="number" min="-100" max="100" step="0.05" value="${Number(item.strength)}" title="LoRA strength" aria-label="${escapeHtml(item.filename)} 强度"><div class="lora-actions"><button class="icon-button dark" type="button" data-lora-up title="上移" aria-label="上移">↑</button><button class="icon-button dark" type="button" data-lora-down title="下移" aria-label="下移">↓</button><button class="icon-button dark" type="button" data-lora-remove title="移除" aria-label="移除">×</button></div>`;
+      row.innerHTML = `<input class="lora-toggle" type="checkbox" ${item.enabled ? "checked" : ""} title="启用 LoRA" aria-label="启用 ${escapeHtml(item.filename)}"><div class="lora-name"><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small class="${available && !high ? "" : "lora-warning"}">${available ? (high ? "高强度 · 模型 + CLIP" : `模型 + CLIP · ${escapeHtml(item.role)}`) : "文件不存在"}</small></div><input class="lora-strength" type="number" min="-10" max="10" step="0.05" value="${Number(item.strength)}" title="LoRA strength" aria-label="${escapeHtml(item.filename)} 强度"><div class="lora-actions"><button class="icon-button dark" type="button" data-lora-up title="上移" aria-label="上移">↑</button><button class="icon-button dark" type="button" data-lora-down title="下移" aria-label="下移">↓</button><button class="icon-button dark" type="button" data-lora-remove title="移除" aria-label="移除">×</button></div>`;
+      const role = document.createElement("select");
+      role.className = "lora-role";
+      role.title = "LoRA 角色";
+      role.setAttribute("aria-label", `${item.filename} 角色`);
+      for (const [value, label] of [
+        ["style", "风格"], ["character", "角色"], ["detail", "细节"],
+        ["concept", "概念"], ["utility", "工具"], ["other", "其他"],
+      ]) role.append(new Option(label, value));
+      role.value = item.role;
+      row.querySelector(".lora-name").append(role);
       row.querySelector(".lora-toggle").addEventListener("change", (event) => {
         item.enabled = event.target.checked;
         renderLoras();
@@ -628,12 +672,17 @@ function renderLoras() {
       });
       row.querySelector(".lora-strength").addEventListener("change", (event) => {
         const value = Number(event.target.value);
-        if (!Number.isFinite(value) || value < -100 || value > 100) {
-          toast("LoRA strength 必须在 -100 到 100 之间");
+        if (!Number.isFinite(value) || value < -10 || value > 10) {
+          toast("LoRA strength 必须在 -10 到 10 之间");
           renderLoras();
           return;
         }
         item.strength = Math.round(value * 100) / 100;
+        renderLoras();
+        schedulePersist();
+      });
+      role.addEventListener("change", () => {
+        item.role = role.value;
         renderLoras();
         schedulePersist();
       });
@@ -655,12 +704,13 @@ function moveLora(index, delta) {
   const next = index + delta;
   if (next < 0 || next >= draft.loras.length) return;
   [draft.loras[index], draft.loras[next]] = [draft.loras[next], draft.loras[index]];
+  draft.loras.forEach((item, order) => { item.order = order; });
   renderLoras();
   schedulePersist();
 }
 async function loadLoraInventory() {
   try {
-    const data = await request("/api/loras");
+    const data = await request("/api/v7/assets/loras");
     loraInventory = data.items || [];
     loraInventoryLoaded = true;
     loraInventoryError = "";
@@ -696,7 +746,14 @@ function renderLoraCatalog() {
       button.disabled = configuredItem;
       button.innerHTML = `<span><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small>${escapeHtml(item.display_name || display.basename)}${configuredItem ? " · 已配置" : ""}</small></span><span aria-hidden="true">${configuredItem ? "✓" : "+"}</span>`;
       button.addEventListener("click", () => {
-        draft.loras.push({ filename: item.filename, enabled: true, strength: 1 });
+        draft.loras.push({
+          filename: String(item.filename || item.name || item.path || "")
+            .trim().replaceAll("\\", "/").replace(/^\.\/+/, ""),
+          enabled: true,
+          strength: 1,
+          role: "style",
+          order: draft.loras.length,
+        });
         renderLoras();
         renderLoraCatalog();
         schedulePersist();
@@ -742,8 +799,9 @@ function renderQueue(queue) {
       remove.textContent = "×";
       remove.addEventListener("click", async () => {
         try {
-          const payload = await request(`/api/batches/queue/${entry.queue_id}`, { method: "DELETE" });
-          renderQueue(payload.queue || []);
+          await request(`/api/v7/jobs/${encodeURIComponent(entry.queue_id || entry.id)}/cancel`, { method: "POST", body: "{}" });
+          window.dispatchEvent(new CustomEvent("studio:jobs-changed"));
+          await pollBatch(true);
         } catch (error) {
           toast(error.message);
         }
@@ -788,7 +846,7 @@ function renderBatch(batch, queue = currentQueue) {
   if (ui.livePreview) {
     if (active && batch.preview_id && batch.preview_id !== lastPreviewId) {
       lastPreviewId = batch.preview_id;
-      ui.livePreview.src = `/api/batches/current/preview?v=${batch.preview_id}`;
+      ui.livePreview.src = `/api/v7/jobs/${encodeURIComponent(batch.id)}/preview?v=${batch.preview_id}`;
       ui.livePreview.hidden = false;
     } else if (!active) {
       ui.livePreview.hidden = true;
@@ -809,7 +867,7 @@ function renderBatch(batch, queue = currentQueue) {
 async function refreshConnection() {
   if (document.hidden) return;
   try {
-    const status = await request("/api/status");
+    const status = await request("/api/v7/status");
     ui.connection.className = `status-badge ${status.online ? "online" : "offline"}`;
     ui.connection.querySelector("span").textContent = status.online ? `ComfyUI ${status.version}` : "ComfyUI 离线";
     ui.startButton.disabled = submitInFlight || !status.online;
@@ -821,13 +879,37 @@ async function refreshConnection() {
 }
 let pollErrorShown = false;
 let pollIdleTicks = 0;
-async function pollBatch() {
+function v7BatchPayload(payload) {
+  const items = (payload?.items || []).filter((item) => (item.source_workspace || item.metadata?.workspace) === "random");
+  const activeStates = new Set(["queued", "running", "cancelling"]);
+  const active = items.find((item) => activeStates.has(item.status || item.state));
+  const batch = active ? {
+    id: active.run_id || active.id,
+    status: active.status === "succeeded" ? "completed" : active.status,
+    total: Number(active.total_items || 0),
+    completed: Number(active.completed_items || 0),
+    error: active.error_summary || "",
+    progress: active.progress || null,
+  } : null;
+  const queue = items.filter((item) => (item.status || item.state) === "queued").map((item, index) => ({
+    id: item.run_id || item.id,
+    queue_id: item.run_id || item.id,
+    position: Number(item.position || index + 1),
+    count: Number(item.total_items || 1),
+    model_name: item.metadata?.intent?.model || item.metadata?.model_name || "Anima",
+  }));
+  return { batch, queue };
+}
+
+async function pollBatch(force = false) {
   // 后台标签页不轮询;空闲(无运行中批次)时降频到约 1/4,避免常开高频请求。
   if (document.hidden) return;
   const batchActive = Boolean(currentBatch && ["running", "stopping"].includes(currentBatch.status));
-  if (!batchActive && pollIdleTicks++ % 4 !== 0) return;
+  if (!force && !batchActive && pollIdleTicks++ % 4 !== 0) return;
   try {
-    renderBatchPayload(await request("/api/batches/current"));
+    await ensureV7Probe();
+    const payload = v7BatchPayload(await request("/api/v7/jobs?workspace=random&limit=100"));
+    renderBatchPayload(payload);
     pollErrorShown = false;
   } catch (error) {
     // 服务端不可达时只提示一次,恢复后自动复位,不再每 1.2 秒刷屏。
@@ -843,7 +925,7 @@ function card(record, index) {
   article.style.animationDelay = `${Math.min(index * 25, 250)}ms`;
   const button = document.createElement("button");
   button.type = "button";
-  button.innerHTML = `<img loading="lazy" src="/api/images/${record.id}" alt="Anima 生成结果"><div class="card-copy"><strong>${escapeHtml(record.filename)}</strong><span>#${record.sequence} · Seed ${record.sample_seed}</span></div>`;
+  button.innerHTML = `<img loading="lazy" src="/api/v7/images/${record.id}" alt="Anima 生成结果"><div class="card-copy"><strong>${escapeHtml(record.filename)}</strong><span>#${record.sequence} · Seed ${record.sample_seed_text ?? record.sample_seed}</span></div>`;
   button.addEventListener("click", () => openDetail(record));
   button.querySelector("img").addEventListener("error", (event) => event.target.classList.add("image-failed"));
   article.append(button);
@@ -854,12 +936,13 @@ async function loadHistory(page = historyPage) {
   // 与 loadPool 相同的竞态守卫:快速翻页时丢弃乱序到达的旧响应。
   const requestId = ++historyRequest;
   try {
-    const data = await request(`/api/history?page=${page}&limit=24`);
+    const data = await request(`/api/v7/history?page=${page}&limit=24`);
     if (requestId !== historyRequest) return;
+    historyRecords = data.items || [];
     historyPage = data.page;
     historyPages = data.pages;
-    ui.gallery.replaceChildren(...data.items.map(card));
-    ui.emptyState.hidden = data.items.length > 0;
+    ui.gallery.replaceChildren(...historyRecords.map(card));
+    ui.emptyState.hidden = historyRecords.length > 0;
     ui.pageLabel.textContent = `${historyPage} / ${historyPages}`;
     ui.prevPage.disabled = historyPage <= 1;
     ui.nextPage.disabled = historyPage >= historyPages;
@@ -870,17 +953,21 @@ async function loadHistory(page = historyPage) {
   }
 }
 function openDetail(record) {
+  if (window.animaArtworkViewer) {
+    window.animaArtworkViewer.open(record, historyRecords);
+    return;
+  }
   selectedRecord = record;
   const settings = normalizeSettings(record.settings || {});
-  ui.detailImage.src = `/api/images/${record.id}`;
+  ui.detailImage.src = `/api/v7/images/${record.id}`;
   ui.detailMeta.textContent = `${record.created_at || ""} · ${record.filename || ""}`;
   ui.detailPositive.value = record.positive_prompt || record.resolved_prompt || "";
   ui.detailNegative.value = record.negative_prompt || "";
   const stats = [
     ["尺寸", `${settings.width} × ${settings.height}`],
     ["采样", `${settings.steps} steps / CFG ${settings.cfg}`],
-    ["图像种子", record.sample_seed],
-    ["提示词种子", record.prompt_seed],
+    ["图像种子", record.sample_seed_text ?? record.sample_seed],
+    ["提示词种子", record.prompt_seed_text ?? record.prompt_seed],
     ["人物", `${settings.female_count || 0} 女 / ${settings.male_count || 0} 男`],
   ];
   ui.detailStats.innerHTML = stats
@@ -931,7 +1018,7 @@ function isFavorite(item) {
 
 async function loadFavorites(section = activeSection) {
   try {
-    favoritesData = await request(`/api/favorites/${section}`);
+    favoritesData = await request(`/api/v7/favorites/${section}`);
     favoritesAvailable = true;
   } catch (error) {
     favoritesData = { groups: [], items: [], favorite_keys: [] };
@@ -943,7 +1030,7 @@ async function loadFavorites(section = activeSection) {
 }
 async function loadCustomGroups(section = activeSection) {
   try {
-    customGroups = (await request(`/api/custom-groups/${section}`)).groups || [];
+    customGroups = (await request(`/api/v7/custom-groups/${section}`)).groups || [];
   } catch (error) {
     customGroups = [];
     toast(`自定义分组不可用：${error.message}`);
@@ -1014,7 +1101,7 @@ async function loadPool() {
     const query = poolQueryBody();
     let data;
     if (view.selectedOnly)
-      data = await request(`/api/pools/${activeSection}/query`, {
+      data = await request(`/api/v7/pools/${activeSection}/query`, {
         method: "POST",
         body: JSON.stringify({ ...query, selection: draft.pools[activeSection] }),
       });
@@ -1033,7 +1120,7 @@ async function loadPool() {
       });
       query.categories.forEach((value) => params.append("category", value));
       query.traits.forEach((value) => params.append("trait", value));
-      data = await request(`/api/pools/${activeSection}?${params}`);
+      data = await request(`/api/v7/pools/${activeSection}?${params}`);
     }
     if (requestId !== poolRequest) return;
     poolItems = data.items || [];
@@ -1434,7 +1521,7 @@ function reconcileFavoriteCollection() {
 }
 async function toggleFavorite(item, favorite) {
   try {
-    favoritesData = await request(`/api/favorites/${activeSection}/item`, {
+    favoritesData = await request(`/api/v7/favorites/${activeSection}/item`, {
       method: "PUT",
       body: JSON.stringify({ id: item.id, favorite }),
     });
@@ -1481,7 +1568,7 @@ async function saveFavorite(event) {
   if (!editingFavoriteItem) return;
   const groupIds = [...ui.favoriteGroups.querySelectorAll("input:checked")].map((input) => input.value);
   try {
-    favoritesData = await request(`/api/favorites/${activeSection}/item`, {
+    favoritesData = await request(`/api/v7/favorites/${activeSection}/item`, {
       method: "PUT",
       body: JSON.stringify({
         id: editingFavoriteItem.id,
@@ -1504,7 +1591,7 @@ async function saveFavorite(event) {
 async function removeFavorite() {
   if (!editingFavoriteItem) return;
   try {
-    favoritesData = await request(`/api/favorites/${activeSection}/item`, {
+    favoritesData = await request(`/api/v7/favorites/${activeSection}/item`, {
       method: "PUT",
       body: JSON.stringify({ id: editingFavoriteItem.id, favorite: false }),
     });
@@ -1535,8 +1622,8 @@ async function saveGroup(event) {
   try {
     favoritesData = await request(
       id
-        ? `/api/favorites/${activeSection}/groups/${encodeURIComponent(id)}`
-        : `/api/favorites/${activeSection}/groups`,
+        ? `/api/v7/favorites/${activeSection}/groups/${encodeURIComponent(id)}`
+        : `/api/v7/favorites/${activeSection}/groups`,
       { method: id ? "PUT" : "POST", body: JSON.stringify({ name: ui.groupName.value }) },
     );
     ui.groupDialog.close();
@@ -1598,7 +1685,7 @@ async function importFavoriteChild(event) {
   ui.confirmChildGroup.textContent = "导入中…";
   try {
     favoritesData = await request(
-      `/api/favorites/${activeSection}/groups/${encodeURIComponent(childGroupParent.id)}/children/import`,
+        `/api/v7/favorites/${activeSection}/groups/${encodeURIComponent(childGroupParent.id)}/children/import`,
       { method: "POST", body: JSON.stringify({ customGroupId: selectedChildSource }) },
     );
     collapsedFavoriteGroups[activeSection].delete(childGroupParent.id);
@@ -1671,7 +1758,7 @@ async function confirmGroupDelete(event) {
   try {
     if (kind === "favorite") {
       const payload = await request(
-        `/api/favorites/${activeSection}/groups/${encodeURIComponent(group.id)}?deleteItems=${deleteItems}`,
+        `/api/v7/favorites/${activeSection}/groups/${encodeURIComponent(group.id)}?deleteItems=${deleteItems}`,
         { method: "DELETE" },
       );
       favoritesData = payload;
@@ -1688,7 +1775,7 @@ async function confirmGroupDelete(event) {
       );
     } else {
       const payload = await request(
-        `/api/custom-groups/${activeSection}/${encodeURIComponent(group.id)}?deleteItems=${deleteItems}`,
+        `/api/v7/custom-groups/${activeSection}/${encodeURIComponent(group.id)}?deleteItems=${deleteItems}`,
         { method: "DELETE" },
       );
       customGroups = payload.groups || [];
@@ -1788,8 +1875,8 @@ async function saveCustom(event) {
   };
   try {
     const item = editingCustom
-      ? await request(`/api/custom-prompts/${editingCustom.id}`, { method: "PUT", body: JSON.stringify(payload) })
-      : await request("/api/custom-prompts", { method: "POST", body: JSON.stringify(payload) });
+      ? await request(`/api/v7/custom-prompts/${editingCustom.id}`, { method: "PUT", body: JSON.stringify(payload) })
+      : await request("/api/v7/custom-prompts", { method: "POST", body: JSON.stringify(payload) });
     if (!selectionHas(activeSection, item.id)) toggleSelection(activeSection, item.id, true);
     ui.customDialog.close();
     await loadCustomGroups();
@@ -1802,7 +1889,7 @@ async function saveCustom(event) {
 async function deleteCustomItem() {
   if (!editingCustom || !confirm("删除这个自定义项？")) return;
   try {
-    await request(`/api/custom-prompts/${editingCustom.id}`, { method: "DELETE" });
+    await request(`/api/v7/custom-prompts/${editingCustom.id}`, { method: "DELETE" });
     const selection = draft.pools[activeSection];
     selection.ids = selection.ids.filter((id) => id !== editingCustom.id);
     selection.excluded_ids = selection.excluded_ids.filter((id) => id !== editingCustom.id);
@@ -1830,7 +1917,7 @@ async function saveCustomGroup(event) {
   const id = ui.customGroupId.value;
   try {
     const payload = await request(
-      id ? `/api/custom-groups/${activeSection}/${encodeURIComponent(id)}` : `/api/custom-groups/${activeSection}`,
+      id ? `/api/v7/custom-groups/${activeSection}/${encodeURIComponent(id)}` : `/api/v7/custom-groups/${activeSection}`,
       { method: id ? "PUT" : "POST", body: JSON.stringify({ name: ui.customGroupName.value }) },
     );
     customGroups = payload.groups || [];
@@ -1883,9 +1970,9 @@ function openImportDialog() {
   importPreview = null;
   const label = SECTION_META[activeSection].label;
   ui.importDialogTitle.textContent = `${label}池批量导入`;
-  ui.importJsonTemplate.href = `/api/custom-prompts/templates/${activeSection}/json`;
+  ui.importJsonTemplate.href = `/api/v7/custom-prompts/templates/${activeSection}/json`;
   ui.importJsonTemplate.textContent = `${label} JSON 模板`;
-  ui.importCsvTemplate.href = `/api/custom-prompts/templates/${activeSection}/csv`;
+  ui.importCsvTemplate.href = `/api/v7/custom-prompts/templates/${activeSection}/csv`;
   ui.importCsvTemplate.textContent = `${label} CSV 模板`;
   ui.importFile.value = "";
   ui.importHint.textContent = `仅导入${label}池条目；选择文件后会先校验，不会立即写入。`;
@@ -1909,7 +1996,7 @@ async function previewImportFile() {
   }
   ui.importHint.textContent = `正在校验 ${file.name}`;
   try {
-    importPreview = await request("/api/custom-prompts/import/preview", {
+    importPreview = await request("/api/v7/custom-prompts/import/preview", {
       method: "POST",
       body: JSON.stringify({ format, content: await file.text(), section: activeSection }),
     });
@@ -1952,7 +2039,7 @@ async function commitCustomImport() {
   if (!importPreview) return;
   ui.commitImport.disabled = true;
   try {
-    const result = await request("/api/custom-prompts/import", {
+    const result = await request("/api/v7/custom-prompts/import", {
       method: "POST",
       body: JSON.stringify({
         rows: importPreview.rows,
@@ -2009,7 +2096,11 @@ async function loadResources() {
   ui.hires_model_name.replaceChildren(new Option("正在读取放大模型...", ""));
   updateRepairControls();
   try {
-    const payload = await request("/api/resources");
+    const inventory = await request("/api/v7/assets/models");
+    const payload = {
+      models: (inventory.models || inventory.items || []).map((item) => typeof item === "string" ? item : item.filename || item.name).filter(Boolean),
+      upscale_models: inventory.upscale_models || [],
+    };
     resources = {
       models: Array.isArray(payload.models) ? payload.models : [],
       upscale_models: Array.isArray(payload.upscale_models) ? payload.upscale_models : [],
@@ -2063,14 +2154,30 @@ const PRESET_SETTING_KEYS = [
   "steps",
   "cfg",
 ];
+function v7IntentSettings(intent = {}) {
+  const sampling = intent.sampling || {};
+  const repair = intent.repair || {};
+  return {
+    ...intent,
+    model_name: intent.model || intent.model_name || "",
+    manual_artist: Array.isArray(intent.artist_tags) ? intent.artist_tags.join(", ") : intent.manual_artist || "",
+    width: sampling.width ?? intent.width,
+    height: sampling.height ?? intent.height,
+    steps: sampling.steps ?? intent.steps,
+    cfg: sampling.cfg ?? intent.cfg,
+    count: sampling.count ?? intent.count,
+    hires: intent.hires || { enabled: repair.hires_enabled, model_name: repair.upscale_model, percent: repair.upscale_percent },
+    detailers: intent.detailers || Object.fromEntries((repair.detailers || []).map((name) => [name, true])),
+  };
+}
 function presetSnapshot() {
   const settings = readSettings();
   return Object.fromEntries(PRESET_SETTING_KEYS.map((key) => [key, clone(settings[key])]));
 }
 async function loadStylePresets() {
   try {
-    const data = await request("/api/style-presets");
-    stylePresets = data.items || [];
+    const data = await request("/api/v7/presets");
+    stylePresets = (data.items || []).map((item) => ({ ...item, settings: item.settings || v7IntentSettings(item.intent || {}) }));
     renderStylePresets();
   } catch (error) {
     toast(error.message);
@@ -2141,10 +2248,12 @@ async function createStylePreset() {
   ui.savePreset.textContent = "保存中…";
   setPresetFeedback("正在写入本地预设…", "pending");
   try {
-    const created = await request("/api/style-presets", {
+    const snapshot = presetSnapshot();
+    const createdRaw = await request("/api/v7/presets", {
       method: "POST",
-      body: JSON.stringify({ name, favorite: false, settings: presetSnapshot() }),
+      body: JSON.stringify({ name, favorite: false, intent: { ...snapshot, workspace: "random", mode: "text_to_image" } }),
     });
+    const created = { ...createdRaw, settings: createdRaw.settings || v7IntentSettings(createdRaw.intent || snapshot) };
     const favoriteCount = stylePresets.findIndex((item) => !item.favorite);
     stylePresets.splice(favoriteCount < 0 ? stylePresets.length : favoriteCount, 0, created);
     ui.presetName.value = "";
@@ -2161,9 +2270,15 @@ async function createStylePreset() {
 }
 async function updateStylePreset(item, changes) {
   try {
-    await request(`/api/style-presets/${encodeURIComponent(item.id)}`, {
+    const body = { ...changes };
+    body.intent = { ...(body.settings || item.intent || item.settings || {}), workspace: "random", mode: "text_to_image" };
+    body.name = body.name ?? item.name;
+    body.favorite = body.favorite ?? item.favorite;
+    body.revision = item.revision;
+    delete body.settings;
+    await request(`/api/v7/presets/${encodeURIComponent(item.id)}`, {
       method: "PUT",
-      body: JSON.stringify(changes),
+      body: JSON.stringify(body),
     });
     await loadStylePresets();
   } catch (error) {
@@ -2173,7 +2288,7 @@ async function updateStylePreset(item, changes) {
 async function deleteStylePreset(item) {
   if (!confirm(`删除预设“${item.name}”？`)) return;
   try {
-    await request(`/api/style-presets/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+    await request(`/api/v7/presets/${encodeURIComponent(item.id)}`, { method: "DELETE" });
     await loadStylePresets();
     toast("风格预设已删除");
   } catch (error) {
@@ -2245,7 +2360,7 @@ function normalizeArtistField(finalize = false) {
 }
 async function loadArtistFavorites() {
   try {
-    artistFavoritesData = await request("/api/favorites/artist");
+    artistFavoritesData = await request("/api/v7/favorites/artist");
   } catch {
     artistFavoritesData = { groups: [], items: [] };
   }
@@ -2296,7 +2411,7 @@ async function saveCurrentArtistFavorites() {
   }
   try {
     for (const name of values)
-      artistFavoritesData = await request("/api/favorites/artist/item", {
+      artistFavoritesData = await request("/api/v7/favorites/artist/item", {
         method: "PUT",
         body: JSON.stringify({ name, favorite: true }),
       });
@@ -2308,7 +2423,7 @@ async function saveCurrentArtistFavorites() {
 }
 async function removeArtistFavorite(name) {
   try {
-    artistFavoritesData = await request("/api/favorites/artist/item", {
+    artistFavoritesData = await request("/api/v7/favorites/artist/item", {
       method: "PUT",
       body: JSON.stringify({ name, favorite: false }),
     });
@@ -2325,8 +2440,9 @@ async function submitBatch(settings, seeds = null) {
   submitInFlight = true;
   ui.startButton.disabled = true;
   try {
-    const body = seeds ? { ...settings, seeds } : settings;
-    const state = await request("/api/batches", { method: "POST", body: JSON.stringify(body) });
+    await ensureV7Probe();
+    const body = seeds ? { ...settings, ...seeds } : settings;
+    const state = await request("/api/v7/jobs", { method: "POST", body: JSON.stringify({ ...body, workspace: "random", mode: "text_to_image" }) });
     if (state.status === "queued") toast(`已加入队列,第 ${state.position} 位`);
     else toast("批次已开始");
     return true;
@@ -2337,7 +2453,7 @@ async function submitBatch(settings, seeds = null) {
   } finally {
     submitInFlight = false;
     try {
-      renderBatchPayload(await request("/api/batches/current"));
+      window.dispatchEvent(new CustomEvent("studio:jobs-changed"));
     } catch {
       ui.startButton.disabled = !ui.connection.classList.contains("online");
     }
@@ -2355,8 +2471,10 @@ ui.settingsForm.addEventListener("change", schedulePersist);
 ui.stopButton.addEventListener("click", async () => {
   if (!currentBatch) return;
   try {
+    await ensureV7Probe();
     // 停止 = 中断当前批次并清空队列(队列条目可单独用 × 移除)
-    renderBatchPayload(await request(`/api/batches/${currentBatch.id}/stop`, { method: "POST" }));
+    await request(`/api/v7/jobs/${currentBatch.id}/cancel`, { method: "POST", body: "{}" });
+    window.dispatchEvent(new CustomEvent("studio:jobs-changed"));
   } catch (error) {
     toast(error.message);
   }
@@ -2371,7 +2489,10 @@ ui.reproduceImage?.addEventListener("click", async () => {
   const settings = normalizeSettings(selectedRecord.settings || {});
   const ok = await submitBatch(
     { ...settings, count: 1 },
-    { sample_seed: selectedRecord.sample_seed, prompt_seed: selectedRecord.prompt_seed },
+    {
+      sample_seed: selectedRecord.sample_seed_text ?? selectedRecord.sample_seed,
+      prompt_seed: selectedRecord.prompt_seed_text ?? selectedRecord.prompt_seed,
+    },
   );
   if (ok) ui.detailDialog.close();
 });
@@ -2398,7 +2519,7 @@ ui.restoreSettings.addEventListener("click", () => {
 ui.deleteRecord.addEventListener("click", async () => {
   if (!selectedRecord || !confirm("只删除 WebUI 历史记录，图片文件会保留。继续吗？")) return;
   try {
-    await request(`/api/history/${selectedRecord.id}`, { method: "DELETE" });
+    await request(`/api/v7/history/${selectedRecord.id}`, { method: "DELETE" });
     ui.detailDialog.close();
     selectedRecord = null;
     await loadHistory(historyPage);
@@ -2566,7 +2687,7 @@ ui.closeDeleteGroup.addEventListener("click", () => ui.deleteGroupDialog.close()
 ui.cancelDeleteGroup.addEventListener("click", () => ui.deleteGroupDialog.close());
 ui.addLora.addEventListener("click", openLoraDialog);
 ui.resetLoras.addEventListener("click", () => {
-  draft.loras = clone(defaults?.loras || []);
+  draft.loras = normalizeV7Loras(defaults?.loras || []);
   renderLoras();
   schedulePersist();
   toast("已恢复模板默认 LoRA");
@@ -2585,15 +2706,25 @@ ui.resetSettings.addEventListener("click", () => {
   schedulePersist();
   toast("已恢复默认设置");
 });
-ui.clearDraft.addEventListener("click", () => {
+ui.clearDraft.addEventListener("click", async () => {
   if (!confirm("清除本地草稿并恢复默认设置？收藏不会被删除。")) return;
-  localStorage.removeItem(DRAFT_KEY);
-  localStorage.removeItem(LEGACY_DRAFT_KEY);
-  localStorage.removeItem(VIEW_KEY);
-  poolViews = Object.fromEntries(SECTIONS.map((section) => [section, defaultView()]));
+  const previous = readSettings();
   applySettings(defaults);
-  ui.draftStatus.textContent = "本地草稿已清除";
-  toast("已清除本地草稿");
+  ui.draftStatus.textContent = "正在清除服务器草稿…";
+  try {
+    if (typeof window.clearRandomServerDraft !== "function") throw new Error("V7 草稿服务尚未就绪");
+    const saved = await window.clearRandomServerDraft(readSettings());
+    localStorage.removeItem(DRAFT_KEY);
+    localStorage.removeItem(LEGACY_DRAFT_KEY);
+    localStorage.removeItem(VIEW_KEY);
+    poolViews = Object.fromEntries(SECTIONS.map((section) => [section, defaultView()]));
+    ui.draftStatus.textContent = `服务器草稿已清除 · r${saved.revision}`;
+    toast("已清除共享草稿");
+  } catch (error) {
+    applySettings(previous);
+    ui.draftStatus.textContent = error.message;
+    toast(error.message);
+  }
 });
 document.querySelectorAll("[data-mobile-view]").forEach((button) =>
   button.addEventListener("click", () => {
@@ -2609,9 +2740,18 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function initialize() {
+  try {
+    await window.__animaV7Bootstrap;
+  } catch (error) {
+    const message = `V7 启动检查失败：${error.message}`;
+    ui.appError.textContent = message;
+    ui.appError.hidden = false;
+    toast(message);
+    return;
+  }
   applyTheme(initialTheme());
   try {
-    const payload = await request("/api/config");
+    const payload = await request("/api/v7/config");
     config = payload;
     defaults = payload.defaults;
     // 启动期数据文件恢复等服务端警告(如坏文件已备份重建)逐条提示。
@@ -2633,20 +2773,35 @@ async function initialize() {
   await Promise.allSettled([
     loadResources(),
     refreshConnection(),
-    pollBatch(),
+    pollBatch(true),
     loadHistory(1),
     loadLoraInventory(),
     loadArtistFavorites(),
     loadStylePresets(),
   ]);
-  setInterval(pollBatch, 1200);
+  setInterval(pollBatch, 2500);
+  window.addEventListener("studio:jobs-changed", () => pollBatch(true));
+  window.addEventListener("studio:history-changed", () => loadHistory(historyPage));
+  window.addEventListener("studio:assets-changed", () => {
+    Promise.allSettled([loadResources(), loadLoraInventory()]);
+  });
+  window.addEventListener("studio:presets-changed", () => loadStylePresets());
   setInterval(refreshConnection, 5000);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       pollIdleTicks = 0;
-      pollBatch();
+      pollBatch(true);
       refreshConnection();
     }
   });
+  window.__animaRandomReady = true;
+  window.dispatchEvent(new CustomEvent("studio:random-ready"));
 }
+window.readSettings = readSettings;
+window.applySettings = applySettings;
+window.schedulePersist = schedulePersist;
+window.loadHistory = loadHistory;
+window.loadStylePresets = loadStylePresets;
+window.submitBatch = submitBatch;
+window.toast = toast;
 initialize();

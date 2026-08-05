@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "profile_id": "rtx_upscale",
+  "display_name": "RTX 图片放大",
+  "workflow_file": "rtx_upscale_api.json",
+  "task_type": "upscale",
+  "bindings": {
+    "input_image": {"node_id": "1", "input": "image"},
+    "upscale": {
+      "node_id": "552",
+      "scale_input": "resize_type.scale",
+      "quality_input": "quality"
+    }
+  },
+  "output_variants": {
+    "rtx": {"preferred_node_ids": ["458"], "prune_node_ids": []}
+  },
+  "default_output_variant": "rtx",
+  "defaults": {"rtx_scale": 2.0, "rtx_quality": "ULTRA"}
+}

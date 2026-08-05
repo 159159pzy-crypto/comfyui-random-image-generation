@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "profile_id": "anima_rtx",
+  "display_name": "Anima + RTX",
+  "workflow_file": "anima_rtx_api.json",
+  "task_type": "text_to_image",
+  "bindings": {
+    "positive_prompt": {"node_id": "11", "input": "text"},
+    "negative_prompt": {"node_id": "12", "input": "text"},
+    "unet": {"node_id": "44", "input": "unet_name"},
+    "lora": {"node_id": "462"},
+    "seed": [{"node_id": "19", "input": "seed"}],
+    "resolution": {"node_id": "28", "width_input": "width", "height_input": "height"},
+    "samplers": [{"node_id": "19", "steps_input": "steps", "cfg_input": "cfg", "denoise_input": "denoise"}],
+    "upscale": {"node_id": "552", "scale_input": "resize_type.scale", "quality_input": "quality"}
+  },
+  "output_variants": {"rtx": {"preferred_node_ids": ["458"], "prune_node_ids": []}},
+  "default_output_variant": "rtx",
+  "defaults": {"pipeline": "rtx", "width": 832, "height": 1216, "steps": 8, "cfg": 5.0, "denoise": 1.0, "rtx_scale": 2.0, "rtx_quality": "ULTRA"}
+}

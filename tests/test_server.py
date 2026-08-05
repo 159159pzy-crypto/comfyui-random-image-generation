@@ -1,20 +1,23 @@
 import copy
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-import sys
 
 from aiohttp.test_utils import TestClient, TestServer
-
 
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
-from anima_webui.server import COMFY_KEY, MANAGER_KEY, create_app  # noqa: E402
+from anima_webui.server import (  # noqa: E402
+    COMFY_KEY,
+    MANAGER_KEY,
+    _v7_random_hires_settings,
+    create_app,
+)
 from anima_webui.workflow import DEFAULT_SETTINGS  # noqa: E402
-
 
 # 测试必须密闭:池数据来自 tempdir 里的假 Anima Tools 目录,
 # 不依赖本机 ComfyUI 安装,也不吸入真实词库(回归 #P1-5)。
@@ -33,6 +36,28 @@ FAKE_TOOLS_DATASETS = {
         {"id": "room", "name": "Room", "name_zh": "房间", "tags": "indoors", "categories": ["都市与日常 (Urban & Daily)"], "traits": ["indoor"]},
     ],
 }
+
+
+class V7ExecutionAdapterTests(unittest.TestCase):
+    def test_disabled_hires_preserves_valid_legacy_percent(self) -> None:
+        defaults = {"enabled": False, "model_name": "upscale.pth", "percent": 45}
+
+        disabled = _v7_random_hires_settings(
+            {"hires_enabled": False, "upscale_model": "", "upscale_percent": 0},
+            defaults,
+        )
+        enabled = _v7_random_hires_settings(
+            {
+                "hires_enabled": True,
+                "upscale_model": "other.pth",
+                "upscale_percent": 60,
+            },
+            defaults,
+        )
+
+        self.assertEqual(disabled["percent"], 45)
+        self.assertFalse(disabled["enabled"])
+        self.assertEqual(enabled, {"enabled": True, "model_name": "other.pth", "percent": 60})
 
 
 def _write_fake_tools(root: Path) -> Path:
@@ -114,6 +139,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             app_dir=APP_DIR,
             comfy=FakeComfy(),
             history_path=Path(self.temp.name) / "history.sqlite3",
+            studio_path=Path(self.temp.name) / "studio.sqlite3",
             custom_prompts_path=Path(self.temp.name) / "custom_prompts.json",
             style_presets_path=Path(self.temp.name) / "style_presets.json",
             anima_tools_dir=_write_fake_tools(Path(self.temp.name)),
@@ -143,6 +169,17 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         status = await (await self.client.get("/api/status")).json()
         self.assertTrue(status["online"])
         self.assertEqual(status["device"], "GPU")
+
+    async def test_v7_native_aliases_cover_random_workspace_dependencies(self):
+        status = await self.client.get("/api/v7/status")
+        config = await self.client.get("/api/v7/config")
+        pool = await self.client.get("/api/v7/pools/pose?page=1&limit=1")
+        groups = await self.client.get("/api/v7/custom-groups/pose")
+
+        self.assertEqual(status.status, 200)
+        self.assertEqual(config.status, 200)
+        self.assertEqual(pool.status, 200)
+        self.assertEqual(groups.status, 200)
 
     async def test_lora_inventory(self):
         response = await self.client.get("/api/loras")
