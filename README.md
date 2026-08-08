@@ -29,8 +29,9 @@
 
 - 主模型从 ComfyUI `UNETLoader` 实时读取，不可用时不会静默替换。
 - LoRA 支持 `models/loras` 下的任意安全子目录；界面优先显示 `文件夹 / 文件名`，搜索支持完整相对路径。
-- LoRA 默认列表为空，用户可以按顺序添加并调整强度。
-- 高清修复只暴露开关和放大模型；内部兼容原工作流的 45% 默认比例。
+- LoRA 选择器读取 ComfyUI-Lora-Manager 已缓存的名称、预览图和触发词，并以响应式缩略图卡片展示；不会自动联网抓取 Civitai。
+- LoRA 默认列表为空，用户可以按顺序添加并调整强度。启用带触发词的 LoRA 时会追加到“额外提示词”，关闭或移除时只清理 WebUI 自动加入的词。
+- 高清修复支持开关、放大模型和高清输出比例（1–1000%，默认 45%）；该比例控制放大模型输出的最终缩放。
 - 手部、NSFW、面部、眼睛四个 Detailer 独立开关；关闭的模块不会进入提交到 ComfyUI 的 API 工作流。
 - 批次启动前校验主模型、高清模型和 LoRA。缺失资源会显示具体文件名和原因。
 
@@ -270,6 +271,8 @@ WebUI 前端使用以下本地接口：
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `GET` | `/api/resources` | ComfyUI 当前主模型和放大模型 |
+| `GET` | `/api/loras` | LoRA 清单、同源预览地址及触发词元数据 |
+| `GET` | `/api/loras/preview?filename=...` | 代理已入库 LoRA 的本地预览资源 |
 | `GET/POST` | `/api/style-presets` | 列出或创建风格预设 |
 | `PUT/DELETE` | `/api/style-presets/{id}` | 更新或删除预设 |
 | `GET` | `/api/favorites/{section}` | 收藏条目、树分组及聚合计数 |
@@ -297,7 +300,7 @@ WebUI 前端使用以下本地接口：
 
 ### LoRA 看不到或数量不对
 
-确认文件位于 `models/loras`，并检查 `/object_info` 的 `LoraLoader` 列表。子目录使用 `/` 作为规范化分隔符；同名 LoRA 不会按 basename 猜测，旧配置需要重新选择明确路径。
+确认文件位于 `models/loras`，并检查 `/object_info` 的 `LoraLoader` 列表。预览图和触发词来自 ComfyUI-Lora-Manager 已扫描的本地缓存；没有元数据时仍可选择和生成，只显示占位图且不会自动填写触发词。子目录使用 `/` 作为规范化分隔符；同名 LoRA 不会按 basename 猜测，旧配置需要重新选择明确路径。
 
 ### Detailer 执行失败
 

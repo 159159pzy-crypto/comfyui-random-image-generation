@@ -111,6 +111,7 @@
             </div>
             <div id="hiresFields" class="repair-parameters">
               <label class="field"><span>放大模型</span><select id="hires_model_name"><option value="">正在读取放大模型...</option></select></label>
+              <label class="field"><span>高清输出比例 (%)</span><input id="hires_percent" type="number" min="1" max="1000" step="1" value="45" required><small class="field-hint">控制放大模型输出的最终缩放比例，不是相对原图的直接放大比例。</small></label>
             </div>
             <div class="detailer-heading"><span>独立细节修复</span></div>
             <div class="switch-list detailer-switches">
@@ -303,7 +304,7 @@
   <dialog id="loraDialog" class="compact-dialog lora-dialog">
     <form method="dialog">
       <div class="dialog-heading"><div><span class="kicker">LOCAL LORA</span><h2>添加本地 LoRA</h2></div><button id="closeLora" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
-      <label class="search-field lora-search"><span aria-hidden="true">⌕</span><input id="loraSearch" type="search" placeholder="搜索本地 LoRA 文件"></label>
+      <label class="search-field lora-search"><span aria-hidden="true">⌕</span><input id="loraSearch" type="search" placeholder="搜索 LoRA、目录或触发词"></label>
       <div id="loraCatalog" class="lora-catalog"></div>
       <div id="loraCatalogEmpty" class="inline-empty" hidden>没有匹配的本地 LoRA。</div>
       <div class="dialog-actions"><span id="loraCatalogMeta">正在读取本地列表</span><span></span><button id="cancelLora" class="button ghost" type="button">完成</button></div>

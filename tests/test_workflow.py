@@ -202,6 +202,10 @@ class WorkflowTests(unittest.TestCase):
             ["one.safetensors"],
         )
         self.assertEqual(normalized[0]["strength"], 2.0)
+        managed = validate_settings(
+            {**DEFAULT_SETTINGS, "lora_managed_triggers": [" @one ", "@ONE", "second"]}
+        )
+        self.assertEqual(managed["lora_managed_triggers"], ["@one", "second"])
 
         invalid_loras = (
             [{"filename": "one.safetensors", "enabled": True, "strength": 1}] * 2,
@@ -214,6 +218,9 @@ class WorkflowTests(unittest.TestCase):
         for loras in invalid_loras:
             with self.subTest(loras=loras), self.assertRaises(WorkflowError):
                 validate_settings({**DEFAULT_SETTINGS, "loras": loras})
+
+        with self.assertRaisesRegex(WorkflowError, "lora_managed_triggers"):
+            validate_settings({**DEFAULT_SETTINGS, "lora_managed_triggers": "@one"})
 
         nested = validate_loras(
             {"loras": [{"filename": "风格/one.safetensors", "enabled": True, "strength": 1}]},
@@ -287,6 +294,20 @@ class WorkflowTests(unittest.TestCase):
         nodes = {node["id"]: node for node in ui["nodes"]}
         self.assertEqual(nodes[61]["widgets_values"][0], "upscale.pth")
         self.assertEqual(nodes[51]["widgets_values"][1], 0.6)
+
+    def test_hires_percent_accepts_declared_bounds(self):
+        for percent in (1, 1000):
+            with self.subTest(percent=percent):
+                settings = validate_settings(
+                    {
+                        **DEFAULT_SETTINGS,
+                        "hires": {**DEFAULT_SETTINGS["hires"], "percent": percent},
+                    }
+                )
+                self.assertEqual(settings["hires"]["percent"], percent)
+
+                api, _ = render_workflows(self.api, self.ui, settings, 11, 12, "test")
+                self.assertEqual(api["51"]["inputs"]["scale_by"], percent / 100)
 
     def test_each_detailer_and_full_chain_keep_declared_order(self):
         node_for = {"hand": "27", "nsfw": "28", "face": "29", "eyes": "30"}

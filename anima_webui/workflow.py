@@ -34,6 +34,7 @@ DETAILER_NODES = {
     "eyes": {"detector": 11, "editor": 16, "detailer": 30, "detector_input": "bbox_detector"},
 }
 MAX_LORAS = 64
+MAX_LORA_MANAGED_TRIGGERS = 256
 MIN_LORA_STRENGTH = -100.0
 MAX_LORA_STRENGTH = 100.0
 PROMPT_SECTIONS = ("character", "clothing", "pose", "background", "expression")
@@ -58,6 +59,7 @@ DEFAULT_SETTINGS = {
     "male_count": 0,
     "model_name": DEFAULT_MODEL,
     "loras": DEFAULT_LORAS,
+    "lora_managed_triggers": [],
     "hires": DEFAULT_HIRES,
     "detailers": DEFAULT_DETAILERS,
     "pools": {
@@ -271,6 +273,26 @@ def validate_loras(settings: dict[str, Any], available_filenames: Any | None = N
     return loras
 
 
+def _normalize_managed_triggers(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        raise WorkflowError("lora_managed_triggers 必须是数组")
+    if len(value) > MAX_LORA_MANAGED_TRIGGERS:
+        raise WorkflowError(
+            f"lora_managed_triggers 不能超过 {MAX_LORA_MANAGED_TRIGGERS} 项"
+        )
+    result: list[str] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        word = _text(f"lora_managed_triggers[{index}]", raw)
+        if len(word) > 500:
+            raise WorkflowError(f"lora_managed_triggers[{index}] 过长")
+        identity = word.casefold()
+        if word and identity not in seen:
+            result.append(word)
+            seen.add(identity)
+    return result
+
+
 def _validate_hires(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise WorkflowError("hires 必须是对象")
@@ -351,6 +373,9 @@ def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]
     if not settings["model_name"]:
         raise WorkflowError("model_name 不能为空")
     settings["loras"] = validate_loras(settings)
+    settings["lora_managed_triggers"] = _normalize_managed_triggers(
+        settings["lora_managed_triggers"]
+    )
     settings["hires"] = _validate_hires(settings["hires"])
     settings["detailers"] = _validate_detailers(settings["detailers"])
 

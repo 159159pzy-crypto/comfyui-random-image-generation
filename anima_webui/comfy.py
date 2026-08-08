@@ -34,6 +34,7 @@ class ComfyClient:
         self.poll_interval = poll_interval
         self.session: aiohttp.ClientSession | None = None
         self._object_info_cache: tuple[float, dict[str, Any] | None] = (0.0, None)
+        self._lora_inventory_cache: tuple[float, dict[str, Any] | None] = (0.0, None)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
@@ -80,9 +81,15 @@ class ComfyClient:
         return data
 
     async def lora_inventory(self) -> dict[str, Any]:
-        """Return the local LoRA names exposed by ComfyUI plus optional manifest metadata."""
+        """Return ComfyUI LoRAs enriched by LoRA Manager and Anima Tools metadata."""
+        loop = asyncio.get_running_loop()
+        timestamp, cached = self._lora_inventory_cache
+        if cached is not None and loop.time() - timestamp < 5.0:
+            return cached
+
         names: list[str] = []
         source_available = False
+        object_info_available = False
         try:
             object_info = await self.object_info()
             node = object_info.get("LoraLoader") or {}
@@ -91,8 +98,33 @@ class ComfyClient:
             if isinstance(choices, list) and choices and isinstance(choices[0], list):
                 names = [str(value) for value in choices[0]]
                 source_available = True
+                object_info_available = True
         except ComfyError:
             names = []
+
+        manager_items: list[dict[str, Any]] = []
+        manager_available = False
+        try:
+            page = 1
+            while True:
+                payload = await self._json(
+                    "GET",
+                    f"/api/lm/loras/list?{urlencode({'page': page, 'page_size': 100})}",
+                )
+                values = payload.get("items") or []
+                if not isinstance(values, list):
+                    raise ComfyError("LoRA Manager 返回了无效清单")
+                manager_items.extend(item for item in values if isinstance(item, dict))
+                manager_available = True
+                total_pages = payload.get("total_pages", 1)
+                if isinstance(total_pages, bool) or not isinstance(total_pages, int):
+                    total_pages = 1
+                if page >= max(1, total_pages):
+                    break
+                page += 1
+        except ComfyError:
+            manager_items = []
+            manager_available = False
 
         manifest_items: dict[str, dict[str, Any]] = {}
         try:
@@ -103,13 +135,57 @@ class ComfyClient:
                     filename = str(item["filename"])
                     identity = normalize_lora_path(filename).casefold()
                     manifest_items[identity] = item
-                    if not any(normalize_lora_path(name).casefold() == identity for name in names):
+                    if not object_info_available and not any(
+                        normalize_lora_path(name).casefold() == identity for name in names
+                    ):
                         names.append(filename)
         except ComfyError:
             pass
 
+        if not source_available and manager_available:
+            for item in manager_items:
+                file_path = str(item.get("file_path") or "").replace("\\", "/")
+                basename = file_path.rsplit("/", 1)[-1]
+                folder = str(item.get("folder") or "").strip("/\\")
+                if basename:
+                    names.append(f"{folder}/{basename}" if folder else basename)
+            source_available = True
+
         if not source_available:
             raise ComfyError("无法读取 ComfyUI 本地 LoRA 列表")
+
+        def manager_item_for(normalized: str) -> dict[str, Any]:
+            identity = normalized.casefold()
+            matches = []
+            for item in manager_items:
+                file_path = str(item.get("file_path") or "").replace("\\", "/")
+                path_identity = file_path.casefold()
+                if path_identity == identity or path_identity.endswith(f"/{identity}"):
+                    matches.append(item)
+                    continue
+                basename = file_path.rsplit("/", 1)[-1]
+                folder = str(item.get("folder") or "").strip("/\\")
+                relative = f"{folder}/{basename}" if folder else basename
+                if relative.casefold() == identity:
+                    matches.append(item)
+            return matches[0] if len(matches) == 1 else {}
+
+        def trigger_words(metadata: dict[str, Any]) -> list[str]:
+            civitai = metadata.get("civitai") or {}
+            values = civitai.get("trainedWords") if isinstance(civitai, dict) else []
+            if not isinstance(values, list):
+                return []
+            result: list[str] = []
+            seen_words: set[str] = set()
+            for value in values:
+                if not isinstance(value, str):
+                    continue
+                word = value.strip()
+                identity = word.casefold()
+                if word and identity not in seen_words:
+                    result.append(word)
+                    seen_words.add(identity)
+            return result
 
         items = []
         seen: set[str] = set()
@@ -119,7 +195,20 @@ class ComfyClient:
             if identity in seen:
                 continue
             seen.add(identity)
-            metadata = manifest_items.get(identity) or {}
+            manager_metadata = manager_item_for(normalized)
+            manifest_metadata = manifest_items.get(identity) or {}
+            preview = str(
+                manager_metadata.get("preview_url")
+                or manifest_metadata.get("thumb_url")
+                or ""
+            )
+            metadata_source = (
+                "lora-manager"
+                if manager_metadata
+                else "anima-tools"
+                if manifest_metadata
+                else "comfyui"
+            )
             items.append(
                 {
                     "filename": filename,
@@ -127,15 +216,52 @@ class ComfyClient:
                     "folder": normalized.rsplit("/", 1)[0] if "/" in normalized else "",
                     "basename": normalized.rsplit("/", 1)[-1],
                     "display_name": str(
-                        metadata.get("display_name")
+                        manager_metadata.get("model_name")
+                        or manifest_metadata.get("display_name")
                         or normalized.rsplit("/", 1)[-1].rsplit(".", 1)[0]
                     ),
-                    "preview": str(metadata.get("thumb_url") or ""),
-                    "has_preview": bool(metadata.get("has_preview")),
-                    "size": metadata.get("size"),
+                    "preview": preview,
+                    "has_preview": bool(preview),
+                    "preview_nsfw_level": manager_metadata.get("preview_nsfw_level", 0),
+                    "trigger_words": trigger_words(manager_metadata),
+                    "trigger_metadata_available": bool(manager_metadata),
+                    "metadata_source": metadata_source,
+                    "size": manager_metadata.get("file_size") or manifest_metadata.get("size"),
                 }
             )
-        return {"items": items, "count": len(items)}
+        result = {"items": items, "count": len(items)}
+        self._lora_inventory_cache = (loop.time(), result)
+        return result
+
+    async def lora_preview(self, filename: str) -> tuple[bytes, str, str]:
+        normalized = normalize_lora_path(filename)
+        inventory = await self.lora_inventory()
+        item = next(
+            (
+                value
+                for value in inventory.get("items") or []
+                if normalize_lora_path(value.get("filename")).casefold() == normalized.casefold()
+            ),
+            None,
+        )
+        if not item or not item.get("preview"):
+            raise KeyError(filename)
+        preview = str(item["preview"])
+        parsed = urlparse(preview)
+        if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
+            raise ComfyError("LoRA 预览地址无效")
+        session = await self._get_session()
+        try:
+            async with session.get(f"{self.base_url}{preview}") as response:
+                if response.status == 404:
+                    raise KeyError(filename)
+                if response.status >= 400:
+                    raise ComfyError(f"ComfyUI 返回 {response.status}: 无法读取 LoRA 预览")
+                content_type = response.headers.get("Content-Type", "application/octet-stream")
+                cache_control = response.headers.get("Cache-Control", "private, max-age=300")
+                return await response.read(), content_type, cache_control
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            raise ComfyError(f"无法连接 ComfyUI: {error}") from error
 
     async def lora_filenames(self) -> list[str]:
         inventory = await self.lora_inventory()

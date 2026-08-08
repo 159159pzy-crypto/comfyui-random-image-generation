@@ -8,7 +8,7 @@ import threading
 import webbrowser
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from aiohttp import web
 
@@ -372,7 +372,31 @@ def create_app(
 
     async def loras(_: web.Request) -> web.Response:
         inventory = await client.lora_inventory()
-        return web.json_response(inventory)
+        public = {
+            "items": [],
+            "count": inventory.get("count", 0),
+        }
+        for item in inventory.get("items") or []:
+            value = dict(item)
+            preview = str(value.get("preview") or "")
+            value["preview"] = (
+                f"/api/loras/preview?{urlencode({'filename': value['filename']})}"
+                if preview
+                else ""
+            )
+            public["items"].append(value)
+        return web.json_response(public)
+
+    async def lora_preview(request: web.Request) -> web.Response:
+        filename = request.query.get("filename")
+        if not filename:
+            raise WorkflowError("filename 不能为空")
+        body, content_type, cache_control = await client.lora_preview(filename)
+        return web.Response(
+            body=body,
+            content_type=content_type.split(";", 1)[0],
+            headers={"Cache-Control": cache_control},
+        )
 
     async def resources(_: web.Request) -> web.Response:
         return web.json_response(await client.resource_inventory())
@@ -450,6 +474,7 @@ def create_app(
     app.router.add_get("/api/config", config)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/loras", loras)
+    app.router.add_get("/api/loras/preview", lora_preview)
     app.router.add_get("/api/resources", resources)
     app.router.add_get("/api/style-presets", list_style_presets)
     app.router.add_post("/api/style-presets", create_style_preset)

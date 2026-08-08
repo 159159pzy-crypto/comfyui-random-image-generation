@@ -10,6 +10,7 @@ APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
 from anima_webui.comfy import ComfyAborted, ComfyClient, ComfyError, extract_positive_prompt, validate_comfy_url  # noqa: E402
+from anima_webui.workflow import WorkflowError  # noqa: E402
 
 
 class ValidateComfyUrlTests(unittest.TestCase):
@@ -77,6 +78,62 @@ class PlainTextResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["filename"] for item in inventory["items"]], ["one.safetensors"])
 
 
+class LoraPreviewTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        app = web.Application()
+
+        async def object_info(request):
+            return web.json_response(
+                {"LoraLoader": {"input": {"required": {"lora_name": [["风格\\one.safetensors"]]}}}}
+            )
+
+        async def manager_list(request):
+            return web.json_response(
+                {
+                    "items": [
+                        {
+                            "file_path": "F:/comfyui/models/loras/风格/one.safetensors",
+                            "folder": "风格",
+                            "preview_url": "/api/lm/previews?path=one",
+                            "civitai": {"trainedWords": ["@one"]},
+                        }
+                    ],
+                    "total_pages": 1,
+                }
+            )
+
+        async def preview(request):
+            return web.Response(
+                body=b"webp",
+                content_type="image/webp",
+                headers={"Cache-Control": "private, max-age=90"},
+            )
+
+        app.router.add_get("/object_info", object_info)
+        app.router.add_get("/api/lm/loras/list", manager_list)
+        app.router.add_get("/api/lm/previews", preview)
+        self.server = TestServer(app)
+        await self.server.start_server()
+        self.client = ComfyClient(f"http://127.0.0.1:{self.server.port}")
+
+    async def asyncTearDown(self):
+        await self.client.close()
+        await self.server.close()
+
+    async def test_preview_is_loaded_only_for_inventory_filename(self):
+        body, content_type, cache_control = await self.client.lora_preview(
+            "风格/one.safetensors"
+        )
+        self.assertEqual(body, b"webp")
+        self.assertEqual(content_type, "image/webp")
+        self.assertEqual(cache_control, "private, max-age=90")
+
+        with self.assertRaises(WorkflowError):
+            await self.client.lora_preview("../one.safetensors")
+        with self.assertRaises(KeyError):
+            await self.client.lora_preview("missing.safetensors")
+
+
 class FakeInventoryClient(ComfyClient):
     def __init__(self):
         super().__init__()
@@ -105,6 +162,54 @@ class InventoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inventory["items"][0]["filename"], "风格\\one.safetensors")
         self.assertEqual(inventory["items"][0]["normalized_path"], "风格/one.safetensors")
         self.assertEqual(inventory["items"][0]["folder"], "风格")
+        self.assertEqual(inventory["items"][0]["metadata_source"], "anima-tools")
+        self.assertFalse(inventory["items"][0]["trigger_metadata_available"])
+
+    async def test_lora_manager_metadata_is_paginated_matched_and_normalized(self):
+        class ManagerClient(FakeInventoryClient):
+            async def _json(self, method, path, **kwargs):
+                if path.startswith("/api/lm/loras/list"):
+                    page = 2 if "page=2" in path else 1
+                    return {
+                        "items": []
+                        if page == 2
+                        else [
+                            {
+                                "model_name": "One Model",
+                                "file_path": "F:/comfyui/models/loras/风格/one.safetensors",
+                                "folder": "风格",
+                                "file_size": 123,
+                                "preview_url": "/api/lm/previews?path=one",
+                                "preview_nsfw_level": 2,
+                                "civitai": {
+                                    "trainedWords": [" @One ", "@one", "", None, "second"]
+                                },
+                            }
+                        ],
+                        "total_pages": 2,
+                    }
+                if path == "/anima-tools/lora/manifest":
+                    return {
+                        "items": [
+                            {
+                                "filename": "风格/one.safetensors",
+                                "display_name": "Manifest One",
+                                "thumb_url": "/anima-tools/preview",
+                            },
+                            {"filename": "stale.safetensors"},
+                        ]
+                    }
+                raise ComfyError("unexpected")
+
+        inventory = await ManagerClient().lora_inventory()
+        self.assertEqual(inventory["count"], 1)
+        item = inventory["items"][0]
+        self.assertEqual(item["display_name"], "One Model")
+        self.assertEqual(item["preview"], "/api/lm/previews?path=one")
+        self.assertEqual(item["trigger_words"], ["@One", "second"])
+        self.assertEqual(item["metadata_source"], "lora-manager")
+        self.assertTrue(item["trigger_metadata_available"])
+        self.assertEqual(item["size"], 123)
 
     async def test_resource_inventory_reads_live_choices(self):
         resources = await FakeInventoryClient().resource_inventory()

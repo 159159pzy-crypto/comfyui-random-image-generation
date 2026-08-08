@@ -33,6 +33,7 @@ def _locked(method: Any) -> Any:
 PRESET_SETTING_KEYS = (
     "model_name",
     "loras",
+    "lora_managed_triggers",
     "hires",
     "detailers",
     "manual_artist",

@@ -12,8 +12,8 @@ const NATIVE_FACET_LABELS = {
   expression: { categories: "表情分类", traits: "表情特征" },
 };
 const SECTIONS = Object.keys(SECTION_META);
-const DRAFT_KEY = "anima-random-studio:draft:v2";
-const LEGACY_DRAFT_KEY = "anima-random-studio:draft:v1";
+const DRAFT_KEY = "anima-random-studio:draft:v3";
+const LEGACY_DRAFT_KEYS = ["anima-random-studio:draft:v2", "anima-random-studio:draft:v1"];
 const VIEW_KEY = "anima-random-studio:pool-view:v1";
 const THEME_KEY = "anima-random-studio:theme:v1";
 const GROUP_TREE_KEY = "anima-random-studio:favorite-tree:v1";
@@ -216,6 +216,7 @@ const ui = Object.fromEntries(
     "model_name",
     "hires_enabled",
     "hires_model_name",
+    "hires_percent",
     "hiresFields",
     "repairSummary",
     "resourceWarning",
@@ -262,7 +263,7 @@ let lastTerminalBatch = "";
 let toastTimer = null;
 let persistTimer = null;
 let initialized = false;
-let draft = { modes: {}, counts: {}, fixed: {}, pools: {}, loras: [] };
+let draft = { modes: {}, counts: {}, fixed: {}, pools: {}, loras: [], managedTriggers: [] };
 let activeSection = "character";
 let poolPage = 1;
 let poolPages = 1;
@@ -283,7 +284,6 @@ let stylePresets = [];
 let resources = { models: [], upscale_models: [] };
 let resourceError = "";
 let resourcesLoaded = false;
-let hiresPercent = INTERNAL_HIRES_PERCENT;
 let importPreview = null;
 let editingGroup = null;
 let childGroupParent = null;
@@ -376,6 +376,9 @@ function normalizeSettings(raw) {
   }
   const hasLoras = raw && Object.prototype.hasOwnProperty.call(raw, "loras");
   merged.loras = clone(hasLoras ? raw.loras || [] : defaults?.loras || []);
+  merged.lora_managed_triggers = normalizeTriggerWords(
+    raw?.lora_managed_triggers || defaults?.lora_managed_triggers || [],
+  );
   merged.hires = {
     ...(defaults?.hires || { enabled: true, model_name: "", percent: INTERNAL_HIRES_PERCENT }),
     ...(raw?.hires || {}),
@@ -397,7 +400,7 @@ function applySettings(raw) {
   ensureSelectValue(ui.model_name, settings.model_name);
   ensureSelectValue(ui.hires_model_name, settings.hires.model_name);
   ui.hires_enabled.checked = Boolean(settings.hires.enabled);
-  hiresPercent = Number(settings.hires.percent) || INTERNAL_HIRES_PERCENT;
+  ui.hires_percent.value = Number(settings.hires.percent) || INTERNAL_HIRES_PERCENT;
   for (const name of ["hand", "nsfw", "face", "eyes"])
     ui[`detailer_${name}`].checked = Boolean(settings.detailers[name]);
   draft = {
@@ -411,7 +414,9 @@ function applySettings(raw) {
     fixed: Object.fromEntries(SECTIONS.map((section) => [section, settings[`fixed_${section}`] || ""])),
     pools: clone(settings.pools || defaultPools()),
     loras: clone(settings.loras || []),
+    managedTriggers: clone(settings.lora_managed_triggers || []),
   };
+  if (loraInventoryLoaded) reconcileLoraTriggers(draft.loras.filter((item) => item.enabled));
   renderDimensions();
   renderLoras();
   updatePeopleTotal();
@@ -437,11 +442,12 @@ function readSettings() {
     cfg: Number(ui.cfg.value),
     pools: clone(draft.pools),
     loras: clone(draft.loras),
+    lora_managed_triggers: clone(draft.managedTriggers || []),
     model_name: ui.model_name.value,
     hires: {
       enabled: ui.hires_enabled.checked,
       model_name: ui.hires_model_name.value,
-      percent: hiresPercent || INTERNAL_HIRES_PERCENT,
+      percent: Number(ui.hires_percent.value) || INTERNAL_HIRES_PERCENT,
     },
     detailers: {
       hand: ui.detailer_hand.checked,
@@ -472,8 +478,8 @@ function persistNow() {
   if (!initialized) return;
   const savedAt = new Date().toISOString();
   try {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 2, savedAt, settings: readSettings() }));
-    localStorage.removeItem(LEGACY_DRAFT_KEY);
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 3, savedAt, settings: readSettings() }));
+    for (const key of LEGACY_DRAFT_KEYS) localStorage.removeItem(key);
     localStorage.setItem(VIEW_KEY, JSON.stringify({ version: 1, activeSection, views: poolViews }));
     ui.draftStatus.textContent = `本地草稿已保存 ${formatSavedTime(savedAt)}`;
   } catch {
@@ -505,21 +511,23 @@ function loadStoredView() {
 function loadStoredDraft() {
   try {
     const current = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
-    const legacy = current ? null : JSON.parse(localStorage.getItem(LEGACY_DRAFT_KEY) || "null");
+    const legacy = current
+      ? null
+      : LEGACY_DRAFT_KEYS.map((key) => JSON.parse(localStorage.getItem(key) || "null")).find(Boolean);
     const payload = current || legacy;
-    if (![1, 2].includes(payload?.version) || !payload.settings || typeof payload.settings !== "object") return false;
+    if (![1, 2, 3].includes(payload?.version) || !payload.settings || typeof payload.settings !== "object") return false;
     const settings = clone(payload.settings);
     if (payload.version === 1 && isLegacyDefaultLoras(settings.loras)) settings.loras = [];
     applySettings(settings);
-    if (payload.version === 1) {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 2, savedAt: payload.savedAt, settings }));
-      localStorage.removeItem(LEGACY_DRAFT_KEY);
+    if (payload.version !== 3) {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 3, savedAt: payload.savedAt, settings }));
+      for (const key of LEGACY_DRAFT_KEYS) localStorage.removeItem(key);
     }
     ui.draftStatus.textContent = `已恢复草稿 ${formatSavedTime(payload.savedAt)}`;
     return true;
   } catch {
     localStorage.removeItem(DRAFT_KEY);
-    localStorage.removeItem(LEGACY_DRAFT_KEY);
+    for (const key of LEGACY_DRAFT_KEYS) localStorage.removeItem(key);
     return false;
   }
 }
@@ -592,6 +600,82 @@ function normalizedPath(value) {
     .replaceAll("\\", "/")
     .toLowerCase();
 }
+function normalizeTriggerWords(values) {
+  const result = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const word = String(value || "").trim();
+    const identity = word.toLocaleLowerCase();
+    if (word && !seen.has(identity)) {
+      result.push(word);
+      seen.add(identity);
+    }
+  }
+  return result;
+}
+function promptTokens(value) {
+  return String(value || "")
+    .replaceAll("\r", ",")
+    .replaceAll("\n", ",")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+function triggerIdentity(value) {
+  return String(value || "").trim().toLocaleLowerCase();
+}
+function forgetRemovedManagedTriggers() {
+  const present = new Set(promptTokens(ui.extra_prompt.value).map(triggerIdentity));
+  draft.managedTriggers = normalizeTriggerWords(
+    (draft.managedTriggers || []).filter((word) => present.has(triggerIdentity(word))),
+  );
+}
+function reconcileLoraTriggers(addFor = []) {
+  if (!loraInventoryLoaded) return;
+  const enabledItems = draft.loras.filter((item) => item.enabled);
+  const metadataUnknown = enabledItems.some((item) => {
+    const inventoryItem = loraItem(item.filename);
+    return !inventoryItem || inventoryItem.trigger_metadata_available === false;
+  });
+  const current = promptTokens(ui.extra_prompt.value);
+  const currentIds = new Set(current.map(triggerIdentity));
+  const managed = new Map((draft.managedTriggers || []).map((word) => [triggerIdentity(word), word]));
+  const required = new Set();
+  for (const item of enabledItems) {
+    const inventoryItem = loraItem(item.filename);
+    for (const word of normalizeTriggerWords(inventoryItem?.trigger_words || [])) required.add(triggerIdentity(word));
+  }
+  for (const item of addFor) {
+    if (!item.enabled) continue;
+    const inventoryItem = loraItem(item.filename);
+    for (const word of normalizeTriggerWords(inventoryItem?.trigger_words || [])) {
+      const identity = triggerIdentity(word);
+      required.add(identity);
+      if (!currentIds.has(identity)) {
+        current.push(word);
+        currentIds.add(identity);
+        managed.set(identity, word);
+      }
+    }
+  }
+  const keptManaged = [];
+  for (const [identity, word] of managed) {
+    if (required.has(identity) || metadataUnknown) keptManaged.push(word);
+  }
+  if (!metadataUnknown) {
+    const removed = new Set(
+      [...managed.keys()].filter((identity) => !required.has(identity)),
+    );
+    if (removed.size) {
+      for (let index = current.length - 1; index >= 0; index--) {
+        if (removed.has(triggerIdentity(current[index]))) current.splice(index, 1);
+      }
+    }
+  }
+  draft.managedTriggers = normalizeTriggerWords(keptManaged);
+  const nextPrompt = current.join(", ");
+  if (ui.extra_prompt.value !== nextPrompt) ui.extra_prompt.value = nextPrompt;
+}
 function loraItem(filename) {
   const identity = normalizedPath(filename);
   const exact = loraInventory.find((item) => normalizedPath(item.filename) === identity);
@@ -620,9 +704,11 @@ function renderLoras() {
       row.className = `lora-row${available ? "" : " missing"}`;
       const inventoryItem = loraItem(item.filename);
       const display = loraPresentation(inventoryItem, item.filename);
-      row.innerHTML = `<input class="lora-toggle" type="checkbox" ${item.enabled ? "checked" : ""} title="启用 LoRA" aria-label="启用 ${escapeHtml(item.filename)}"><div class="lora-name"><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small class="${available && !high ? "" : "lora-warning"}">${available ? (high ? "高强度 · 模型 + CLIP" : "模型 + CLIP") : "文件不存在"}</small></div><input class="lora-strength" type="number" min="-100" max="100" step="0.05" value="${Number(item.strength)}" title="LoRA strength" aria-label="${escapeHtml(item.filename)} 强度"><div class="lora-actions"><button class="icon-button dark" type="button" data-lora-up title="上移" aria-label="上移">↑</button><button class="icon-button dark" type="button" data-lora-down title="下移" aria-label="下移">↓</button><button class="icon-button dark" type="button" data-lora-remove title="移除" aria-label="移除">×</button></div>`;
+      const triggers = normalizeTriggerWords(inventoryItem?.trigger_words || []);
+      row.innerHTML = `<input class="lora-toggle" type="checkbox" ${item.enabled ? "checked" : ""} title="启用 LoRA" aria-label="启用 ${escapeHtml(item.filename)}"><div class="lora-name"><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small class="${available && !high ? "" : "lora-warning"}">${available ? (high ? "高强度 · 模型 + CLIP" : "模型 + CLIP") : "文件不存在"}</small>${triggers.length ? `<small class="lora-trigger-line" title="自动触发词">触发词：${escapeHtml(triggers.join(", "))}</small>` : ""}</div><input class="lora-strength" type="number" min="-100" max="100" step="0.05" value="${Number(item.strength)}" title="LoRA strength" aria-label="${escapeHtml(item.filename)} 强度"><div class="lora-actions"><button class="icon-button dark" type="button" data-lora-up title="上移" aria-label="上移">↑</button><button class="icon-button dark" type="button" data-lora-down title="下移" aria-label="下移">↓</button><button class="icon-button dark" type="button" data-lora-remove title="移除" aria-label="移除">×</button></div>`;
       row.querySelector(".lora-toggle").addEventListener("change", (event) => {
         item.enabled = event.target.checked;
+        reconcileLoraTriggers(item.enabled ? [item] : []);
         renderLoras();
         schedulePersist();
       });
@@ -643,6 +729,7 @@ function renderLoras() {
       row.querySelector("[data-lora-down]").addEventListener("click", () => moveLora(index, 1));
       row.querySelector("[data-lora-remove]").addEventListener("click", () => {
         draft.loras.splice(index, 1);
+        reconcileLoraTriggers();
         renderLoras();
         renderLoraCatalog();
         schedulePersist();
@@ -664,6 +751,7 @@ async function loadLoraInventory() {
     loraInventory = data.items || [];
     loraInventoryLoaded = true;
     loraInventoryError = "";
+    reconcileLoraTriggers(draft.loras.filter((item) => item.enabled));
     renderLoras();
     renderLoraCatalog();
   } catch (error) {
@@ -683,7 +771,7 @@ function renderLoraCatalog() {
   );
   const items = loraInventory.filter(
     (item) =>
-      !query || `${item.normalized_path || item.filename} ${item.display_name || ""}`.toLowerCase().includes(query),
+      !query || `${item.normalized_path || item.filename} ${item.display_name || ""} ${(item.trigger_words || []).join(" ")}`.toLowerCase().includes(query),
   );
   ui.loraCatalogEmpty.hidden = Boolean(loraInventoryError) || items.length > 0;
   ui.loraCatalog.replaceChildren(
@@ -694,9 +782,18 @@ function renderLoraCatalog() {
       button.type = "button";
       button.className = "lora-catalog-item";
       button.disabled = configuredItem;
-      button.innerHTML = `<span><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small>${escapeHtml(item.display_name || display.basename)}${configuredItem ? " · 已配置" : ""}</small></span><span aria-hidden="true">${configuredItem ? "✓" : "+"}</span>`;
+      const triggers = normalizeTriggerWords(item.trigger_words || []);
+      const preview = item.preview
+        ? `<img loading="lazy" decoding="async" src="${escapeHtml(item.preview)}" alt="" data-lora-preview>`
+        : "";
+      button.innerHTML = `<span class="lora-catalog-preview">${preview}<span class="lora-preview-placeholder" aria-hidden="true">LoRA</span></span><span class="lora-catalog-copy"><strong title="${escapeHtml(item.display_name || display.path)}">${escapeHtml(item.display_name || display.basename)}</strong><small title="${escapeHtml(display.path)}">${escapeHtml(display.folder)} / ${escapeHtml(display.basename)}${configuredItem ? " · 已配置" : ""}</small><span class="lora-catalog-triggers">${triggers.length ? `触发词：${escapeHtml(triggers.join(", "))}` : "无触发词"}</span></span><span class="lora-catalog-add" aria-hidden="true">${configuredItem ? "✓" : "+"}</span>`;
+      button.querySelector("[data-lora-preview]")?.addEventListener("error", (event) => {
+        event.currentTarget.remove();
+      });
       button.addEventListener("click", () => {
-        draft.loras.push({ filename: item.filename, enabled: true, strength: 1 });
+        const lora = { filename: item.filename, enabled: true, strength: 1 };
+        draft.loras.push(lora);
+        reconcileLoraTriggers([lora]);
         renderLoras();
         renderLoraCatalog();
         schedulePersist();
@@ -709,7 +806,7 @@ function renderLoraCatalog() {
 async function openLoraDialog() {
   ui.loraSearch.value = "";
   ui.loraDialog.showModal();
-  if (!loraInventoryLoaded) await loadLoraInventory();
+  await loadLoraInventory();
   renderLoraCatalog();
 }
 
@@ -2034,6 +2131,7 @@ function updateRepairControls() {
   ui.repairSummary.textContent = `${modelLabel(ui.model_name.value || defaults?.model_name)} · ${ui.hires_enabled.checked ? "高清开启" : "高清关闭"} · ${detailerCount} 项细修`;
   ui.hiresFields.classList.toggle("disabled", !ui.hires_enabled.checked);
   ui.hires_model_name.disabled = !ui.hires_enabled.checked || !resourcesLoaded;
+  ui.hires_percent.disabled = !ui.hires_enabled.checked;
   const settings = readSettings();
   const warnings = [];
   if (resourceError) warnings.push(resourceError);
@@ -2567,6 +2665,7 @@ ui.cancelDeleteGroup.addEventListener("click", () => ui.deleteGroupDialog.close(
 ui.addLora.addEventListener("click", openLoraDialog);
 ui.resetLoras.addEventListener("click", () => {
   draft.loras = clone(defaults?.loras || []);
+  reconcileLoraTriggers(draft.loras.filter((item) => item.enabled));
   renderLoras();
   schedulePersist();
   toast("已恢复模板默认 LoRA");
@@ -2577,6 +2676,7 @@ ui.loraSearch.addEventListener("input", () => {
   clearTimeout(ui.loraSearch._timer);
   ui.loraSearch._timer = setTimeout(renderLoraCatalog, 220);
 });
+ui.extra_prompt.addEventListener("input", forgetRemovedManagedTriggers);
 ui.female_count.addEventListener("input", updatePeopleTotal);
 ui.male_count.addEventListener("input", updatePeopleTotal);
 ui.resetSettings.addEventListener("click", () => {
@@ -2588,7 +2688,7 @@ ui.resetSettings.addEventListener("click", () => {
 ui.clearDraft.addEventListener("click", () => {
   if (!confirm("清除本地草稿并恢复默认设置？收藏不会被删除。")) return;
   localStorage.removeItem(DRAFT_KEY);
-  localStorage.removeItem(LEGACY_DRAFT_KEY);
+  for (const key of LEGACY_DRAFT_KEYS) localStorage.removeItem(key);
   localStorage.removeItem(VIEW_KEY);
   poolViews = Object.fromEntries(SECTIONS.map((section) => [section, defaultView()]));
   applySettings(defaults);

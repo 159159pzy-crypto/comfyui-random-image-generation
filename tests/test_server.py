@@ -49,6 +49,7 @@ class FakeComfy:
     base_url = "http://127.0.0.1:8188"
 
     def __init__(self):
+        self.preview_items = []
         self.favorites_data = {
             section: {"groups": [{"id": "default", "name": "Default Favorites", "isSystem": True}], "items": []}
             for section in ("artist", "character", "lora", "clothing", "background", "pose", "expression")
@@ -58,6 +59,8 @@ class FakeComfy:
         return {"system": {"comfyui_version": "test"}, "devices": [{"name": "GPU"}]}
 
     async def lora_inventory(self):
+        if self.preview_items:
+            return {"items": copy.deepcopy(self.preview_items), "count": len(self.preview_items)}
         items = [
             {
                 "filename": item["filename"],
@@ -69,6 +72,12 @@ class FakeComfy:
             for item in DEFAULT_SETTINGS["loras"]
         ]
         return {"items": items, "count": len(items)}
+
+    async def lora_preview(self, filename):
+        item = next((value for value in self.preview_items if value["filename"] == filename), None)
+        if not item:
+            raise KeyError(filename)
+        return b"preview", "image/webp", "private, max-age=60"
 
     async def lora_filenames(self):
         return [item["filename"] for item in DEFAULT_SETTINGS["loras"]]
@@ -110,9 +119,10 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             name: os.environ.pop(name, None)
             for name in ("ANIMA_TOOLS_DIR", "COMFYUI_ANIMA_TOOLS")
         }
+        self.comfy = FakeComfy()
         app = create_app(
             app_dir=APP_DIR,
-            comfy=FakeComfy(),
+            comfy=self.comfy,
             history_path=Path(self.temp.name) / "history.sqlite3",
             custom_prompts_path=Path(self.temp.name) / "custom_prompts.json",
             style_presets_path=Path(self.temp.name) / "style_presets.json",
@@ -131,11 +141,23 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_index_and_status(self):
         response = await self.client.get("/")
         self.assertEqual(response.status, 200)
-        self.assertIn("Anima", await response.text())
+        index_html = await response.text()
+        self.assertIn("Anima", index_html)
+        self.assertIn(
+            'id="hires_percent" type="number" min="1" max="1000" step="1" value="45" required',
+            index_html,
+        )
+        self.assertIn("控制放大模型输出的最终缩放比例", index_html)
         self.assertEqual(
             response.headers["Cache-Control"], "no-cache, max-age=0, must-revalidate"
         )
         static_response = await self.client.get("/static/app.js")
+        app_js = await static_response.text()
+        self.assertIn('"hires_percent"', app_js)
+        self.assertIn("percent: Number(ui.hires_percent.value)", app_js)
+        self.assertIn("function reconcileLoraTriggers", app_js)
+        self.assertIn("lora_managed_triggers", app_js)
+        self.assertIn("lora-catalog-preview", index_html + app_js)
         self.assertEqual(
             static_response.headers["Cache-Control"],
             "no-cache, max-age=0, must-revalidate",
@@ -154,6 +176,37 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             [item["filename"] for item in DEFAULT_SETTINGS["loras"]],
         )
 
+    async def test_lora_inventory_uses_same_origin_preview_proxy(self):
+        self.comfy.preview_items = [
+            {
+                "filename": "风格\\one.safetensors",
+                "normalized_path": "风格/one.safetensors",
+                "folder": "风格",
+                "basename": "one.safetensors",
+                "display_name": "One",
+                "preview": "/api/lm/previews?path=secret",
+                "has_preview": True,
+                "trigger_words": ["@one"],
+                "trigger_metadata_available": True,
+                "metadata_source": "lora-manager",
+                "size": 123,
+            }
+        ]
+        payload = await (await self.client.get("/api/loras")).json()
+        item = payload["items"][0]
+        self.assertEqual(item["trigger_words"], ["@one"])
+        self.assertNotIn("secret", item["preview"])
+        self.assertTrue(item["preview"].startswith("/api/loras/preview?filename="))
+
+        preview = await self.client.get(item["preview"])
+        self.assertEqual(preview.status, 200)
+        self.assertEqual(await preview.read(), b"preview")
+        self.assertEqual(preview.headers["Content-Type"], "image/webp")
+        self.assertEqual(preview.headers["Cache-Control"], "private, max-age=60")
+
+        invalid = await self.client.get("/api/loras/preview?filename=../one.safetensors")
+        self.assertEqual(invalid.status, 404)
+
     async def test_config_has_empty_default_loras(self):
         payload = await (await self.client.get("/api/config")).json()
         self.assertEqual(payload["defaults"]["loras"], [])
@@ -163,7 +216,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resources["models"], [DEFAULT_SETTINGS["model_name"]])
         snapshot = {
             key: copy.deepcopy(DEFAULT_SETTINGS[key])
-            for key in ("model_name", "loras", "hires", "detailers", "manual_artist", "quality_prompt", "extra_prompt", "negative_prompt", "width", "height", "steps", "cfg")
+            for key in ("model_name", "loras", "lora_managed_triggers", "hires", "detailers", "manual_artist", "quality_prompt", "extra_prompt", "negative_prompt", "width", "height", "steps", "cfg")
         }
         created = await self.client.post(
             "/api/style-presets",
@@ -338,6 +391,15 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/api/batches", json={**DEFAULT_SETTINGS, "count": 0})
         self.assertEqual(response.status, 400)
         self.assertIn("生成数量", (await response.json())["error"])
+
+        for percent in (0, 1001, "", 60.5):
+            with self.subTest(percent=percent):
+                invalid_hires = {**DEFAULT_SETTINGS["hires"], "percent": percent}
+                response = await self.client.post(
+                    "/api/batches", json={**DEFAULT_SETTINGS, "hires": invalid_hires}
+                )
+                self.assertEqual(response.status, 400)
+                self.assertIn("hires.percent", (await response.json())["error"])
 
     async def test_new_dimension_settings_are_returned_and_persisted(self):
         settings = {
