@@ -86,6 +86,11 @@
             <label class="field"><span>质量词</span><textarea id="quality_prompt" rows="3"></textarea></label>
             <label class="field"><span>额外提示词</span><textarea id="extra_prompt" rows="4"></textarea></label>
             <label class="field"><span>负面词</span><textarea id="negative_prompt" rows="4"></textarea></label>
+            <div class="prompt-rule-toolbar">
+              <button id="managePromptRules" class="button ghost compact" type="button">管理规范与替换</button>
+              <button id="undoPromptNormalization" class="button ghost compact" type="button" hidden>撤销上次规范</button>
+            </div>
+            <p id="promptNormalizationStatus" class="field-hint" role="status">编辑结束后自动按 Anima Tag 规范整理。</p>
           </div>
         </details>
 
@@ -130,6 +135,8 @@
             <label class="field"><span>高度</span><input id="height" type="number" min="64" max="4096" step="8"></label>
             <label class="field"><span>步数</span><input id="steps" type="number" min="1" max="150" step="1"></label>
             <label class="field"><span>CFG</span><input id="cfg" type="number" min="0.1" max="30" step="0.1"></label>
+            <label class="field"><span>Sampler</span><select id="sampler_name"><option value="">正在读取 Sampler...</option></select></label>
+            <label class="field"><span>Scheduler</span><select id="scheduler"><option value="">正在读取 Scheduler...</option></select></label>
           </div>
         </details>
       </form>
@@ -179,6 +186,7 @@
       <button id="selectPage" class="button ghost" type="button">选中本页</button>
       <button id="selectAllPool" class="button ghost" type="button">全选词库</button>
       <button id="clearPool" class="button ghost" type="button">清空</button>
+      <button id="favoriteSelection" class="button ghost" type="button" disabled>收藏本次选择</button>
       <button id="importCustom" class="button ghost compact" type="button">批量导入</button>
       <button id="addCustom" class="button primary compact" type="button"><span aria-hidden="true">+</span> 自定义</button>
     </div>
@@ -237,6 +245,7 @@
         <a id="importJsonTemplate" class="button ghost compact" href="/api/custom-prompts/templates/character/json" download>角色 JSON 模板</a>
         <a id="importCsvTemplate" class="button ghost compact" href="/api/custom-prompts/templates/character/csv" download>角色 CSV 模板</a>
       </div>
+      <label class="field import-bundle-field"><span>导入大项名称</span><input id="importBundleName" type="text" maxlength="100" placeholder="选择文件后自动使用文件名" required></label>
       <fieldset class="import-group-fieldset"><legend>加入已有分组（可多选）</legend><div id="importTargetGroups" class="import-target-groups"></div></fieldset>
       <p id="importHint" class="import-hint">选择文件后会先校验，不会立即写入。</p>
       <div id="importSummary" class="import-summary" hidden></div>
@@ -294,7 +303,8 @@
       <fieldset class="delete-choice-list">
         <legend>删除方式</legend>
         <label class="delete-choice"><input id="deleteGroupKeep" type="radio" name="deleteGroupMode" value="keep" checked><span><strong>仅删除分组</strong><small id="deleteGroupKeepHint">条目保留；失去最后收藏分组的条目会移入“我的收藏”。</small></span></label>
-        <label id="deleteGroupItemsOption" class="delete-choice"><input id="deleteGroupItems" type="radio" name="deleteGroupMode" value="items"><span><strong id="deleteGroupItemsTitle">同时删除独占条目</strong><small id="deleteGroupItemsHint"></small></span></label>
+        <label id="deleteGroupItemsOption" class="delete-choice"><input id="deleteGroupItems" type="radio" name="deleteGroupMode" value="exclusive"><span><strong id="deleteGroupItemsTitle">同时删除独占条目</strong><small id="deleteGroupItemsHint"></small></span></label>
+        <label id="deleteGroupAllOption" class="delete-choice destructive"><input id="deleteGroupAll" type="radio" name="deleteGroupMode" value="all"><span><strong>彻底删除全部关联内容</strong><small id="deleteGroupAllHint">不可撤销：共享内容也会从其他分组中永久删除。</small></span></label>
       </fieldset>
       <div id="deleteGroupError" class="field-error" role="alert" hidden></div>
       <div class="dialog-actions"><span></span><span></span><button id="cancelDeleteGroup" class="button ghost" type="button">取消</button><button id="confirmDeleteGroup" class="button danger" type="submit">删除</button></div>
@@ -308,6 +318,49 @@
       <div id="loraCatalog" class="lora-catalog"></div>
       <div id="loraCatalogEmpty" class="inline-empty" hidden>没有匹配的本地 LoRA。</div>
       <div class="dialog-actions"><span id="loraCatalogMeta">正在读取本地列表</span><span></span><button id="cancelLora" class="button ghost" type="button">完成</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="favoriteSelectionDialog" class="compact-dialog favorite-selection-dialog">
+    <form id="favoriteSelectionForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">SAVE SELECTION</span><h2 id="favoriteSelectionTitle">收藏本次选择</h2></div><button id="closeFavoriteSelection" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <p id="favoriteSelectionSummary" class="import-hint"></p>
+      <fieldset class="field group-fieldset"><legend>收藏分组（可多选）</legend><div id="favoriteSelectionGroups" class="favorite-groups"></div></fieldset>
+      <div class="favorite-selection-create">
+        <label class="field"><span>新建顶层收藏分组</span><input id="favoriteSelectionGroupName" type="text" maxlength="100" placeholder="分组名称"></label>
+        <button id="createFavoriteSelectionGroup" class="button ghost compact" type="button">新建并选中</button>
+      </div>
+      <div id="favoriteSelectionError" class="field-error" role="alert" hidden></div>
+      <div class="dialog-actions"><span></span><span></span><button id="cancelFavoriteSelection" class="button ghost" type="button">取消</button><button id="confirmFavoriteSelection" class="button primary" type="submit">收藏</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="loraTriggerDialog" class="compact-dialog lora-trigger-dialog">
+    <form id="loraTriggerForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">LORA TRIGGERS</span><h2 id="loraTriggerTitle">编辑触发词</h2></div><button id="closeLoraTriggers" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <input id="loraTriggerFilename" type="hidden">
+      <label class="field"><span>有效触发词</span><textarea id="loraTriggerWords" rows="6" maxlength="20000" placeholder="每行或逗号分隔；留空表示禁用自动触发词"></textarea></label>
+      <div class="lora-source-triggers"><span>LoRA Manager 原始值</span><p id="loraSourceTriggerWords">无</p></div>
+      <p class="import-hint">触发词保持原始大小写和下划线；保存后会立即更新当前额外提示词。</p>
+      <div class="dialog-actions"><button id="resetLoraTriggers" class="button ghost" type="button">恢复原始值</button><span></span><button id="cancelLoraTriggers" class="button ghost" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="promptRuleDialog" class="prompt-rule-dialog">
+    <form id="promptRuleForm" method="dialog">
+      <div class="dialog-heading"><div><span class="kicker">ANIMA TAG RULES</span><h2>规范与替换规则</h2></div><button id="closePromptRules" class="icon-button dark" type="button" title="关闭" aria-label="关闭">×</button></div>
+      <div id="promptRuleList" class="prompt-rule-list"></div>
+      <div class="prompt-rule-editor">
+        <input id="promptRuleId" type="hidden">
+        <div class="prompt-rule-fields">
+          <label class="field"><span>原词</span><input id="promptRuleFrom" type="text" maxlength="500" placeholder="例如 bad_tag"></label>
+          <label class="field"><span>规范词</span><input id="promptRuleTo" type="text" maxlength="500" placeholder="例如 good tag"></label>
+        </div>
+        <fieldset class="prompt-rule-scopes"><legend>应用范围</legend><label><input id="promptRulePositive" type="checkbox" checked>正向</label><label><input id="promptRuleNegative" type="checkbox" checked>负向</label><label><input id="promptRuleLora" type="checkbox">LoRA</label></fieldset>
+        <div id="promptRuleError" class="field-error" role="alert" hidden></div>
+        <div class="dialog-actions"><button id="deletePromptRule" class="button danger" type="button" hidden>删除规则</button><span></span><button id="clearPromptRule" class="button ghost" type="button">新建规则</button><button class="button primary" type="submit">保存规则</button></div>
+      </div>
+      <div class="dialog-actions"><span></span><span></span><button id="cancelPromptRules" class="button ghost" type="button">完成</button></div>
     </form>
   </dialog>
 
@@ -335,6 +388,6 @@
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260726-v020lg" defer></script>
+  <script src="/static/app.js?v=20260810-tag-rules" defer></script>
 </body>
 </html>

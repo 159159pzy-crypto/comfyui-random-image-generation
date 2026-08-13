@@ -10,7 +10,7 @@ APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
 from anima_webui.catalog import CatalogError, PromptCatalog, compose_people_tags  # noqa: E402
-from anima_webui.custom_prompts import CustomPromptStore  # noqa: E402
+from anima_webui.custom_prompts import MAX_GROUPS_PER_SECTION, CustomPromptStore  # noqa: E402
 from anima_webui.workflow import DEFAULT_SETTINGS, validate_settings  # noqa: E402
 
 
@@ -229,27 +229,108 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
             "items": [{"id": "custom:legacy", "section": "pose", "title": "Wave", "prompt": "waving"}],
         }), encoding="utf-8")
         store = CustomPromptStore(path, self.catalog)
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["version"], 4)
+        self.assertTrue(path.with_name("custom.json.pre-v4.bak").is_file())
+        history = next(group for group in store.list_groups("pose")["groups"] if group["kind"] == "legacy")
+        history_children = [
+            group for group in store.list_groups("pose")["groups"] if group.get("parentId") == history["id"]
+        ]
+        self.assertEqual([group["name"] for group in history_children], ["未分组"])
+        self.assertEqual(history["count"], 1)
         legacy_group = (await store.create_group("pose", {"name": "Legacy"}))["group"]
         target_group = (await store.create_group("pose", {"name": "Batch"}))["group"]
         await store.update("custom:legacy", {"groupIds": [legacy_group["id"]]})
-        self.assertEqual(
-            {value["name"]: value["count"] for value in store.list_groups("pose")["groups"]},
-            {"Legacy": 1, "Batch": 0},
-        )
+        counts = {value["id"]: value["count"] for value in store.list_groups("pose")["groups"]}
+        self.assertEqual(counts[legacy_group["id"]], 1)
+        self.assertEqual(counts[target_group["id"]], 0)
         preview = store.preview_import("json", json.dumps({"items": [
             {"section": "pose", "title": "Wave", "prompt": "waving hand", "groups": ["Hands", "Daily"]},
-        ]}), "pose")
+        ]}), "pose", "Pose Pack")
         self.assertEqual(preview["summary"], {"new": 0, "conflict": 1, "error": 0})
         preview["rows"][0]["action"] = "overwrite"
-        result = await store.commit_import(preview["rows"], "pose", [target_group["id"]])
+        result = await store.commit_import(preview["rows"], "pose", [target_group["id"]], "Pose Pack")
         self.assertEqual(result["updated"], 1)
         self.assertEqual(store.list("pose")[0]["id"], "custom:legacy")
         self.assertEqual(store.list("pose")[0]["prompt"], "waving hand")
         groups = store.list_groups("pose")["groups"]
-        self.assertEqual({value["name"] for value in groups}, {"Legacy", "Hands", "Batch", "Daily"})
+        bundle = next(value for value in groups if value["kind"] == "import" and value["name"] == "Pose Pack")
+        children = [value for value in groups if value.get("parentId") == bundle["id"]]
+        self.assertEqual({value["name"] for value in children}, {"Hands", "Daily"})
+        self.assertEqual(bundle["count"], 1)
         group_names = {value["id"]: value["name"] for value in groups}
         self.assertEqual({group_names[value] for value in store.list("pose")[0]["groupIds"]}, {"Hands", "Batch", "Daily"})
         self.assertEqual(next(value for value in groups if value["name"] == "Legacy")["count"], 0)
+
+        second = store.preview_import("json", json.dumps({"items": [
+            {"section": "pose", "title": "Step", "prompt": "one step", "groups": ["Hands"]},
+            {"section": "pose", "title": "Plain", "prompt": "plain pose"},
+        ]}), "pose", " pose pack ")
+        committed = await store.commit_import(second["rows"], "pose", [], " pose pack ")
+        self.assertEqual(committed["bundleId"], bundle["id"])
+        groups = store.list_groups("pose")["groups"]
+        children = [value for value in groups if value.get("parentId") == bundle["id"]]
+        self.assertEqual({value["name"] for value in children}, {"Hands", "Daily", "未分组"})
+        self.assertEqual(next(value for value in groups if value["id"] == bundle["id"])["count"], 3)
+        self.assertEqual(len(store.list("pose", bundle["id"])), 3)
+
+    async def test_import_bundle_subtree_delete_preserves_shared_items(self):
+        store = CustomPromptStore(self.root / "custom.json", self.catalog)
+        manual = (await store.create_group("expression", {"name": "Keep"}))["group"]
+        preview = store.preview_import("json", json.dumps({"items": [
+            {"section": "expression", "title": "Exclusive", "prompt": "exclusive face", "groups": ["Mood"]},
+            {"section": "expression", "title": "Shared", "prompt": "shared face"},
+        ]}), "expression", "Faces")
+        committed = await store.commit_import(preview["rows"], "expression", [manual["id"]], "Faces")
+        bundle_id = committed["bundleId"]
+        bundle = next(group for group in store.list_groups("expression")["groups"] if group["id"] == bundle_id)
+        self.assertEqual(bundle["count"], 2)
+        self.assertEqual(bundle["exclusiveCount"], 0)
+
+        # 让 Exclusive 只属于导入子树,Shared 同时属于手动分组。
+        values = {item["title"]: item for item in store.list("expression")}
+        await store.update(
+            values["Exclusive"]["id"],
+            {"groupIds": [value for value in values["Exclusive"]["groupIds"] if value != manual["id"]]},
+        )
+        deleted = await store.delete_group("expression", bundle_id, delete_items=True)
+        self.assertEqual(deleted["deletedGroupCount"], 3)
+        self.assertEqual(deleted["deletedItemCount"], 1)
+        self.assertEqual([item["title"] for item in store.list("expression")], ["Shared"])
+        self.assertEqual(store.list("expression")[0]["groupIds"], [manual["id"]])
+
+    async def test_import_bundle_subtree_delete_all_removes_shared_items(self):
+        store = CustomPromptStore(self.root / "custom-all.json", self.catalog)
+        manual = (await store.create_group("expression", {"name": "Keep"}))["group"]
+        preview = store.preview_import("json", json.dumps({"items": [
+            {"section": "expression", "title": "Exclusive", "prompt": "exclusive face", "groups": ["Mood"]},
+            {"section": "expression", "title": "Shared", "prompt": "shared face"},
+        ]}), "expression", "Faces")
+        committed = await store.commit_import(preview["rows"], "expression", [manual["id"]], "Faces")
+        bundle_id = committed["bundleId"]
+
+        deleted = await store.delete_group("expression", bundle_id, delete_mode="all")
+
+        self.assertEqual(deleted["deleteMode"], "all")
+        self.assertEqual(deleted["deletedGroupCount"], 3)
+        self.assertEqual(deleted["deletedItemCount"], 2)
+        self.assertEqual(store.list("expression"), [])
+        self.assertEqual(
+            [group["name"] for group in store.list_groups("expression")["groups"]],
+            ["Keep"],
+        )
+
+    def test_import_preview_rejects_group_tree_overflow(self):
+        store = CustomPromptStore(self.root / "custom.json", self.catalog)
+        store.groups["expression"] = [
+            {"id": f"custom_group_{index}", "name": f"Group {index}", "parentId": None, "kind": "group"}
+            for index in range(MAX_GROUPS_PER_SECTION)
+        ]
+        with self.assertRaisesRegex(CatalogError, "数量已达到上限"):
+            store.preview_import("json", json.dumps({"items": [
+                {"section": "expression", "title": "Overflow", "prompt": "overflow"},
+            ]}), "expression", "Overflow Pack")
+        self.assertFalse((self.root / "custom.json").exists())
 
     def test_templates_are_specific_to_each_section_and_format(self):
         store = CustomPromptStore(self.root / "custom.json", self.catalog)
@@ -280,13 +361,13 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         preview = store.preview_import("json", json.dumps({"items": [
             {"section": "expression", "title": "My Mood", "prompt": "soft smile"},
             {"section": "expression", "title": "My Mood", "prompt": "angry face"},
-        ]}), "expression")
+        ]}), "expression", "Mood Pack")
         self.assertEqual(preview["summary"], {"new": 1, "conflict": 0, "error": 1})
         self.assertIn("重名", preview["rows"][1]["error"])
 
         cross_section = store.preview_import("json", json.dumps({"items": [
             {"section": "background", "title": "Wrong Pool", "prompt": "street"},
-        ]}), "expression")
+        ]}), "expression", "Mood Pack")
         self.assertEqual(cross_section["summary"], {"new": 0, "conflict": 0, "error": 1})
         self.assertIn("当前池", cross_section["rows"][0]["error"])
 
@@ -294,7 +375,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
             await store.commit_import([{
                 "action": "create",
                 "item": {"section": "expression", "title": "New Mood", "prompt": "soft face"},
-            }], "expression", ["custom_group_missing"])
+            }], "expression", ["custom_group_missing"], "Mood Pack")
         self.assertEqual(store.list("expression"), [])
 
         pose_group = (await store.create_group("pose", {"name": "Pose Only"}))["group"]
@@ -302,24 +383,35 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
             await store.commit_import([{
                 "action": "create",
                 "item": {"section": "expression", "title": "Cross Group", "prompt": "soft face"},
-            }], "expression", [pose_group["id"]])
+            }], "expression", [pose_group["id"]], "Mood Pack")
         with self.assertRaisesRegex(CatalogError, "当前池"):
             await store.commit_import([{
                 "action": "create",
                 "item": {"section": "pose", "title": "Tampered", "prompt": "waving"},
-            }], "expression")
+            }], "expression", [], "Mood Pack")
         self.assertEqual(store.list("expression"), [])
 
         with self.assertRaisesRegex(CatalogError, "内置条目不可覆盖"):
             await store.commit_import([{
                 "action": "create",
                 "item": {"section": "expression", "title": "温柔微笑", "prompt": "tampered"},
-            }], "expression")
+            }], "expression", [], "Mood Pack")
         with self.assertRaisesRegex(CatalogError, "没有可覆盖"):
             await store.commit_import([{
                 "action": "overwrite",
                 "item": {"section": "expression", "title": "Missing", "prompt": "missing"},
-            }], "expression")
+            }], "expression", [], "Mood Pack")
+
+        valid = store.preview_import("json", json.dumps({"items": [
+            {"section": "expression", "title": "Valid", "prompt": "valid face"},
+        ]}), "expression", "Valid Pack")
+        created = await store.commit_import(valid["rows"], "expression", [], "Valid Pack")
+        with self.assertRaisesRegex(CatalogError, "叶子分组"):
+            await store.commit_import([{
+                "action": "create",
+                "item": {"section": "expression", "title": "Folder Target", "prompt": "invalid target"},
+            }], "expression", [created["bundleId"]], "Other Pack")
+        self.assertEqual(self.catalog.search("expression", "Folder Target")["total"], 0)
 
     def test_empty_pool_and_excess_count_are_rejected(self):
         settings = validate_settings({**DEFAULT_SETTINGS, "random_pose": True})

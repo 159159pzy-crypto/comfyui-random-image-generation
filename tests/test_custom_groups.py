@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from anima_webui.catalog import CatalogError
 from anima_webui.custom_prompts import CustomPromptStore
 
 
@@ -69,6 +70,41 @@ class CustomGroupDeleteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["detachedItemCount"], 1)
         self.assertEqual(self.store.list("expression")[0]["id"], item["id"])
         self.assertEqual(self.store.list("expression")[0]["groupIds"], [])
+
+    async def test_delete_all_removes_exclusive_and_shared_items(self):
+        first = (await self.store.create_group("pose", {"name": "First"}))["group"]
+        second = (await self.store.create_group("pose", {"name": "Second"}))["group"]
+        exclusive = await self.store.create(
+            {"section": "pose", "title": "Exclusive", "prompt": "exclusive", "groupIds": [first["id"]]}
+        )
+        shared = await self.store.create(
+            {
+                "section": "pose",
+                "title": "Shared",
+                "prompt": "shared",
+                "groupIds": [first["id"], second["id"]],
+            }
+        )
+
+        payload = await self.store.delete_group("pose", first["id"], delete_mode="all")
+
+        self.assertEqual(payload["deleteMode"], "all")
+        self.assertEqual(set(payload["deletedItemIds"]), {exclusive["id"], shared["id"]})
+        self.assertEqual(payload["deletedItemCount"], 2)
+        self.assertEqual(payload["detachedItemCount"], 0)
+        self.assertEqual(self.store.list("pose"), [])
+        self.assertEqual(self.catalog.items, [])
+
+    async def test_delete_all_on_empty_group_and_invalid_mode(self):
+        empty = (await self.store.create_group("background", {"name": "Empty"}))["group"]
+        payload = await self.store.delete_group("background", empty["id"], delete_mode="all")
+        self.assertEqual(payload["deletedGroupCount"], 1)
+        self.assertEqual(payload["deletedItemCount"], 0)
+        self.assertEqual(payload["deleteMode"], "all")
+
+        other = (await self.store.create_group("background", {"name": "Other"}))["group"]
+        with self.assertRaisesRegex(CatalogError, "deleteMode"):
+            await self.store.delete_group("background", other["id"], delete_mode="invalid")
 
 
 if __name__ == "__main__":

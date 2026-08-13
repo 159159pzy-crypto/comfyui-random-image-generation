@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -31,8 +32,11 @@ def _locked(method: Any) -> Any:
     return wrapper
 
 
-MAX_GROUPS_PER_SECTION = 128
+CUSTOM_DATA_VERSION = 4
+MAX_GROUPS_PER_SECTION = 512
 MAX_IMPORT_ROWS = 2000
+LEGACY_FOLDER_NAME = "历史自定义分组"
+UNGROUPED_NAME = "未分组"
 IMPORT_FIELDS = (
     "section", "title", "prompt", "subtitle", "gender", "hair", "eye",
     "copyright", "groups", "categories", "traits",
@@ -99,17 +103,27 @@ class CustomPromptStore:
             raw_items = payload.get("items") or []
             if not isinstance(raw_groups, dict) or not isinstance(raw_items, list):
                 raise CatalogError("自定义提示词文件的 groups/items 结构无效")
+            version = int(payload.get("version") or 0)
             groups = {
                 section: self._normalize_groups(raw_groups.get(section, []))
                 for section in SECTIONS
             }
             items = [self._normalize(item) for item in raw_items if isinstance(item, dict)]
+            if version < CUSTOM_DATA_VERSION:
+                groups, items = self._migrate_legacy_tree(groups, items)
             self.groups = groups
             self.items = items
             self._remove_unknown_group_ids()
             # set_custom_items 也在保护范围内:_normalize 不校验 id 格式(create 会在
             # 之后覆盖 id),老格式/手改的 id 在这里才被拒绝,不能因此炸掉启动。
             self.catalog.set_custom_items(self.items)
+            if version < CUSTOM_DATA_VERSION:
+                try:
+                    self._backup_before_v4_migration()
+                    self._write_text(self._serialize(self.groups, self.items))
+                except OSError as error:
+                    logger.warning("自定义提示词 v4 迁移暂未写回: %s", error)
+                    self.load_warnings.append("自定义提示词已在内存迁移，但 v4 文件暂未写回")
         except (OSError, json.JSONDecodeError, CatalogError) as error:
             # 坏文件不再阻断启动:改名备份后以空数据继续,并向界面报告警告。
             backup = backup_corrupt_file(self.path)
@@ -125,8 +139,15 @@ class CustomPromptStore:
             raise CatalogError(f"不支持的随机池: {section}")
         values = self.items if not section else [item for item in self.items if item["section"] == section]
         if group_id:
-            values = [item for item in values if group_id in item.get("groupIds", [])]
+            group_ids = self.group_filter_ids(section or "", group_id)
+            values = [item for item in values if group_ids.intersection(item.get("groupIds", []))]
         return [copy.deepcopy(item) for item in values]
+
+    def group_filter_ids(self, section: str, group_id: str) -> set[str]:
+        """把父项展开为叶子分组；未知旧筛选值保持返回零结果的兼容行为。"""
+        self._check_section(section)
+        group = self._group(section, group_id)
+        return self._descendant_leaf_ids(section, group_id) if group else {group_id}
 
     @_locked
     async def create(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -162,16 +183,23 @@ class CustomPromptStore:
     def list_groups(self, section: str) -> dict[str, Any]:
         self._check_section(section)
         groups = copy.deepcopy(self.groups[section])
+        section_items = [item for item in self.items if item["section"] == section]
+        leaf_sets = {
+            group["id"]: self._descendant_leaf_ids(section, group["id"])
+            for group in groups
+        }
         counts = {
-            group["id"]: sum(group["id"] in item.get("groupIds", []) for item in self.items if item["section"] == section)
+            group["id"]: sum(
+                bool(leaf_sets[group["id"]].intersection(item.get("groupIds", [])))
+                for item in section_items
+            )
             for group in groups
         }
         exclusive_counts = {
             group["id"]: sum(
-                item["section"] == section
-                and group["id"] in item.get("groupIds", [])
-                and len(item.get("groupIds", [])) == 1
-                for item in self.items
+                bool(leaf_sets[group["id"]].intersection(item.get("groupIds", [])))
+                and not (set(item.get("groupIds", [])) - leaf_sets[group["id"]])
+                for item in section_items
             )
             for group in groups
         }
@@ -180,7 +208,11 @@ class CustomPromptStore:
                 {
                     **group,
                     "count": counts[group["id"]],
+                    "directCount": sum(group["id"] in item.get("groupIds", []) for item in section_items)
+                    if group["kind"] == "group"
+                    else 0,
                     "exclusiveCount": exclusive_counts[group["id"]],
+                    "childCount": sum(item.get("parentId") == group["id"] for item in groups),
                 }
                 for group in groups
             ]
@@ -192,8 +224,13 @@ class CustomPromptStore:
         name = self._group_name(payload.get("name"))
         if len(self.groups[section]) >= MAX_GROUPS_PER_SECTION:
             raise CatalogError("自定义分组数量已达到上限")
-        self._ensure_unique_group_name(section, name)
-        group = {"id": f"custom_group_{uuid.uuid4().hex[:12]}", "name": name}
+        self._ensure_unique_group_name(section, name, parent_id=None)
+        group = {
+            "id": f"custom_group_{uuid.uuid4().hex[:12]}",
+            "name": name,
+            "parentId": None,
+            "kind": "group",
+        }
         self.groups[section].append(group)
         await self._save()
         return {"group": copy.deepcopy(group), **self.list_groups(section)}
@@ -205,29 +242,44 @@ class CustomPromptStore:
         if group is None:
             raise KeyError(group_id)
         name = self._group_name(payload.get("name"))
-        self._ensure_unique_group_name(section, name, except_id=group_id)
+        self._ensure_unique_group_name(
+            section, name, parent_id=group.get("parentId"), except_id=group_id
+        )
         group["name"] = name
         await self._save()
         return self.list_groups(section)
 
     @_locked
     async def delete_group(
-        self, section: str, group_id: str, delete_items: bool = False
+        self,
+        section: str,
+        group_id: str,
+        delete_items: bool = False,
+        delete_mode: str | None = None,
     ) -> dict[str, Any]:
         self._check_section(section)
+        mode = delete_mode or ("exclusive" if delete_items else "keep")
+        if mode not in {"keep", "exclusive", "all"}:
+            raise CatalogError("deleteMode 必须是 keep、exclusive 或 all")
         if not any(item["id"] == group_id for item in self.groups[section]):
             raise KeyError(group_id)
-        self.groups[section] = [item for item in self.groups[section] if item["id"] != group_id]
+        subtree_ids = self._descendant_group_ids(section, group_id)
+        leaf_ids = {
+            item["id"]
+            for item in self.groups[section]
+            if item["id"] in subtree_ids and item["kind"] == "group"
+        }
+        self.groups[section] = [item for item in self.groups[section] if item["id"] not in subtree_ids]
         deleted_item_ids: list[str] = []
         detached_item_count = 0
         next_items: list[dict[str, Any]] = []
         for item in self.items:
             group_ids = list(item.get("groupIds", []))
-            if item["section"] != section or group_id not in group_ids:
+            if item["section"] != section or not leaf_ids.intersection(group_ids):
                 next_items.append(item)
                 continue
-            remaining = [value for value in group_ids if value != group_id]
-            if delete_items and not remaining:
+            remaining = [value for value in group_ids if value not in leaf_ids]
+            if mode == "all" or (mode == "exclusive" and not remaining):
                 deleted_item_ids.append(item["id"])
                 continue
             item["groupIds"] = remaining
@@ -241,6 +293,9 @@ class CustomPromptStore:
             "deletedItemIds": deleted_item_ids,
             "deletedItemCount": len(deleted_item_ids),
             "detachedItemCount": detached_item_count,
+            "deletedGroupIds": sorted(subtree_ids),
+            "deletedGroupCount": len(subtree_ids),
+            "deleteMode": mode,
         }
 
     def template(self, section: str, file_format: str) -> tuple[str, str, bytes]:
@@ -263,13 +318,16 @@ class CustomPromptStore:
             return f"{filename}.csv", "text/csv", ("\ufeff" + buffer.getvalue()).encode("utf-8")
         raise CatalogError("导入模板只支持 json 或 csv")
 
-    def preview_import(self, file_format: str, content: str, section: str) -> dict[str, Any]:
+    def preview_import(
+        self, file_format: str, content: str, section: str, bundle_name: str = ""
+    ) -> dict[str, Any]:
         self._check_section(section)
+        bundle_name = self._group_name(bundle_name)
         raw_items = self._parse_import(file_format, content)
         if len(raw_items) > MAX_IMPORT_ROWS:
             raise CatalogError(f"单次最多导入 {MAX_IMPORT_ROWS} 项")
         rows: list[dict[str, Any]] = []
-        pending_names: dict[str, set[str]] = {section: set() for section in SECTIONS}
+        pending_names: set[str] = set()
         import_keys: set[tuple[str, str]] = set()
         existing_custom = {(item["section"], normalize_text(item["title"])): item for item in self.items}
         builtin_names = {
@@ -289,24 +347,45 @@ class CustomPromptStore:
                 import_keys.add(key)
                 conflict = existing_custom.get(key)
                 status = "conflict" if conflict else "new"
-                for name in group_names:
-                    if not self._group_by_name(prepared["section"], name):
-                        pending_names[prepared["section"]].add(name)
+                for name in group_names or [UNGROUPED_NAME]:
+                    pending_names.add(self._group_name(name))
                 rows.append({
                     "row": row_number, "status": status, "action": "skip" if conflict else "create",
                     "existingId": conflict["id"] if conflict else "", "item": prepared, "groups": group_names, "error": "",
                 })
             except (CatalogError, ValueError) as error:
                 rows.append({"row": row_number, "status": "error", "action": "skip", "item": raw, "groups": [], "error": str(error)})
+        bundle = self._import_bundle(section, bundle_name)
+        if bundle is None:
+            self._ensure_unique_group_name(section, bundle_name, parent_id=None)
+        existing_children = {
+            normalize_text(group["name"])
+            for group in self.groups[section]
+            if bundle and group.get("parentId") == bundle["id"] and group["kind"] == "group"
+        }
+        new_child_names = sorted(
+            name for name in pending_names if normalize_text(name) not in existing_children
+        )
+        pending_nodes = (0 if bundle else 1) + len(new_child_names)
+        if len(self.groups[section]) + pending_nodes > MAX_GROUPS_PER_SECTION:
+            raise CatalogError(f"{section} 自定义分组数量已达到上限")
         return {
             "rows": rows,
             "summary": {name: sum(row["status"] == name for row in rows) for name in ("new", "conflict", "error")},
-            "newGroups": {section: sorted(values) for section, values in pending_names.items() if values},
+            "newGroups": {section: new_child_names} if new_child_names else {},
+            "bundle": {"name": bundle_name, "exists": bool(bundle), "newChildCount": len(new_child_names)},
         }
 
     @_locked
-    async def commit_import(self, rows: Any, section: str, target_group_ids: Any = None) -> dict[str, Any]:
+    async def commit_import(
+        self,
+        rows: Any,
+        section: str,
+        target_group_ids: Any = None,
+        bundle_name: str = "",
+    ) -> dict[str, Any]:
         self._check_section(section)
+        bundle_name = self._group_name(bundle_name)
         if not isinstance(rows, list) or len(rows) > MAX_IMPORT_ROWS:
             raise CatalogError("导入确认数据无效")
         if target_group_ids is None:
@@ -318,6 +397,22 @@ class CustomPromptStore:
         next_items = copy.deepcopy(self.items)
         next_groups = copy.deepcopy(self.groups)
         imported = updated = skipped = 0
+        actionable_rows = [
+            row for row in rows if isinstance(row, dict) and str(row.get("action") or "skip") != "skip"
+        ]
+        bundle = self._import_bundle(section, bundle_name, next_groups)
+        if actionable_rows and bundle is None:
+            self._ensure_unique_group_name(
+                section, bundle_name, parent_id=None, groups=next_groups
+            )
+            self._ensure_group_capacity(section, next_groups, 1)
+            bundle = {
+                "id": f"custom_folder_{uuid.uuid4().hex[:12]}",
+                "name": bundle_name,
+                "parentId": None,
+                "kind": "import",
+            }
+            next_groups[section].append(bundle)
         builtin_names = {
             (section, normalize_text(item["title"]))
             for section in SECTIONS for item in self.catalog.all_items(section) if item.get("builtin")
@@ -335,14 +430,26 @@ class CustomPromptStore:
             if prepared["section"] != section:
                 raise CatalogError("导入文件包含其他随机池条目，只能导入当前池")
             group_names = self._list_value(raw_row.get("groups")) or embedded_group_names
-            group_names = [self._group_name(value) for value in group_names]
+            group_names = [self._group_name(value) for value in group_names] or [UNGROUPED_NAME]
             group_ids: list[str] = list(target_group_ids)
             for name in group_names:
-                group = next((item for item in next_groups[section] if normalize_text(item["name"]) == normalize_text(name)), None)
+                if bundle is None:
+                    raise CatalogError("导入大项无效")
+                group = self._group_by_name(
+                    section,
+                    name,
+                    parent_id=bundle["id"],
+                    kind="group",
+                    groups=next_groups,
+                )
                 if group is None:
-                    if len(next_groups[section]) >= MAX_GROUPS_PER_SECTION:
-                        raise CatalogError(f"{section} 自定义分组数量已达到上限")
-                    group = {"id": f"custom_group_{uuid.uuid4().hex[:12]}", "name": name}
+                    self._ensure_group_capacity(section, next_groups, 1)
+                    group = {
+                        "id": f"custom_group_{uuid.uuid4().hex[:12]}",
+                        "name": name,
+                        "parentId": bundle["id"],
+                        "kind": "group",
+                    }
                     next_groups[section].append(group)
                 if group["id"] not in group_ids:
                     group_ids.append(group["id"])
@@ -366,7 +473,14 @@ class CustomPromptStore:
         self.groups = next_groups
         self.items = next_items
         self.catalog.set_custom_items(self.items)
-        return {"imported": imported, "updated": updated, "skipped": skipped, "total": len(self.items)}
+        return {
+            "imported": imported,
+            "updated": updated,
+            "skipped": skipped,
+            "total": len(self.items),
+            "bundleId": bundle["id"] if bundle else "",
+            "bundleName": bundle["name"] if bundle else bundle_name,
+        }
 
     def _normalize(self, payload: dict[str, Any]) -> dict[str, Any]:
         section = str(payload.get("section") or "")
@@ -433,12 +547,89 @@ class CustomPromptStore:
             group_id = str(raw.get("id") or "").strip()
             name = str(raw.get("name") or "").strip()
             if group_id and name and group_id not in seen:
-                result.append({"id": group_id, "name": name[:100]})
+                kind = str(raw.get("kind") or "group")
+                if kind not in {"group", "import", "legacy"}:
+                    kind = "group"
+                parent_id = str(raw.get("parentId") or "").strip() or None
+                result.append(
+                    {
+                        "id": group_id,
+                        "name": name[:100],
+                        "parentId": parent_id if kind == "group" else None,
+                        "kind": kind,
+                    }
+                )
                 seen.add(group_id)
-        return result[:MAX_GROUPS_PER_SECTION]
+        result = result[:MAX_GROUPS_PER_SECTION]
+        by_id = {group["id"]: group for group in result}
+        for group in result:
+            parent = by_id.get(group.get("parentId"))
+            if group["kind"] == "group" and (
+                parent is None or parent["kind"] not in {"import", "legacy"}
+            ):
+                group["parentId"] = None
+        return result
+
+    def _migrate_legacy_tree(
+        self,
+        groups: dict[str, list[dict[str, Any]]],
+        items: list[dict[str, Any]],
+    ) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+        """把 v1-v3 扁平分组无损归入每池的历史父项。"""
+        for section in SECTIONS:
+            section_items = [item for item in items if item["section"] == section]
+            existing_groups = groups[section]
+            valid_existing = {group["id"] for group in existing_groups}
+            ungrouped = [
+                item
+                for item in section_items
+                if not valid_existing.intersection(item.get("groupIds", []))
+            ]
+            if not existing_groups and not ungrouped:
+                continue
+            legacy_id = f"custom_folder_legacy_{section}"
+            legacy = {
+                "id": legacy_id,
+                "name": LEGACY_FOLDER_NAME,
+                "parentId": None,
+                "kind": "legacy",
+            }
+            migrated_groups = [legacy]
+            for group in existing_groups:
+                migrated_groups.append(
+                    {
+                        **group,
+                        "parentId": legacy_id,
+                        "kind": "group",
+                    }
+                )
+            if ungrouped:
+                ungrouped_id = f"custom_group_legacy_ungrouped_{section}"
+                migrated_groups.append(
+                    {
+                        "id": ungrouped_id,
+                        "name": UNGROUPED_NAME,
+                        "parentId": legacy_id,
+                        "kind": "group",
+                    }
+                )
+                for item in ungrouped:
+                    item["groupIds"] = [ungrouped_id]
+            if len(migrated_groups) > MAX_GROUPS_PER_SECTION:
+                raise CatalogError(f"{section} 自定义分组数量已达到上限")
+            groups[section] = migrated_groups
+        return groups, items
+
+    def _backup_before_v4_migration(self) -> None:
+        backup = self.path.with_name(self.path.name + ".pre-v4.bak")
+        if not backup.exists():
+            shutil.copy2(self.path, backup)
 
     def _remove_unknown_group_ids(self) -> None:
-        valid = {section: {group["id"] for group in groups} for section, groups in self.groups.items()}
+        valid = {
+            section: {group["id"] for group in groups if group["kind"] == "group"}
+            for section, groups in self.groups.items()
+        }
         for item in self.items:
             item["groupIds"] = [value for value in item.get("groupIds", []) if value in valid[item["section"]]]
 
@@ -455,17 +646,94 @@ class CustomPromptStore:
         return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
 
     def _validate_group_ids(self, section: str, group_ids: list[str]) -> None:
-        valid = {group["id"] for group in self.groups[section]}
-        if any(group_id not in valid for group_id in group_ids):
+        by_id = {group["id"]: group for group in self.groups[section]}
+        if any(group_id not in by_id for group_id in group_ids):
             raise CatalogError("自定义项包含不存在的分组")
+        if any(by_id[group_id]["kind"] != "group" for group_id in group_ids):
+            raise CatalogError("目标分组只能选择叶子分组")
 
-    def _group_by_name(self, section: str, name: str) -> dict[str, Any] | None:
+    def _group_by_name(
+        self,
+        section: str,
+        name: str,
+        parent_id: str | None = None,
+        kind: str | None = None,
+        groups: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any] | None:
         key = normalize_text(name)
-        return next((group for group in self.groups[section] if normalize_text(group["name"]) == key), None)
+        values = (groups or self.groups)[section]
+        return next(
+            (
+                group
+                for group in values
+                if normalize_text(group["name"]) == key
+                and group.get("parentId") == parent_id
+                and (kind is None or group["kind"] == kind)
+            ),
+            None,
+        )
 
-    def _ensure_unique_group_name(self, section: str, name: str, except_id: str = "") -> None:
-        if any(group["id"] != except_id and normalize_text(group["name"]) == normalize_text(name) for group in self.groups[section]):
-            raise CatalogError("同一随机池内不能有重名的自定义分组")
+    def _ensure_unique_group_name(
+        self,
+        section: str,
+        name: str,
+        parent_id: str | None,
+        except_id: str = "",
+        groups: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
+        values = (groups or self.groups)[section]
+        if any(
+            group["id"] != except_id
+            and group.get("parentId") == parent_id
+            and normalize_text(group["name"]) == normalize_text(name)
+            for group in values
+        ):
+            raise CatalogError("同一层级内不能有重名的自定义分组")
+
+    def _group(self, section: str, group_id: str) -> dict[str, Any] | None:
+        return next((group for group in self.groups[section] if group["id"] == group_id), None)
+
+    def _descendant_group_ids(self, section: str, group_id: str) -> set[str]:
+        ids: set[str] = set()
+        pending = [group_id]
+        while pending:
+            current = pending.pop()
+            if current in ids:
+                continue
+            ids.add(current)
+            pending.extend(
+                group["id"]
+                for group in self.groups[section]
+                if group.get("parentId") == current
+            )
+        return ids
+
+    def _descendant_leaf_ids(self, section: str, group_id: str) -> set[str]:
+        descendants = self._descendant_group_ids(section, group_id)
+        return {
+            group["id"]
+            for group in self.groups[section]
+            if group["id"] in descendants and group["kind"] == "group"
+        }
+
+    def _import_bundle(
+        self,
+        section: str,
+        name: str,
+        groups: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any] | None:
+        return self._group_by_name(
+            section, name, parent_id=None, kind="import", groups=groups
+        )
+
+    @staticmethod
+    def _ensure_group_capacity(
+        section: str,
+        groups: dict[str, list[dict[str, Any]]],
+        additional: int,
+    ) -> None:
+        if len(groups[section]) + additional > MAX_GROUPS_PER_SECTION:
+            raise CatalogError(f"{section} 自定义分组数量已达到上限")
 
     @staticmethod
     def _group_name(value: Any) -> str:
@@ -484,8 +752,16 @@ class CustomPromptStore:
 
     async def _write(self, groups: dict[str, list[dict[str, Any]]], items: list[dict[str, Any]]) -> None:
         # 快照序列化在事件循环线程完成(状态一致),fsync 等慢速 I/O 移入工作线程。
-        payload = json.dumps({"version": 3, "groups": groups, "items": items}, ensure_ascii=False, indent=2) + "\n"
+        payload = self._serialize(groups, items)
         await asyncio.to_thread(self._write_text, payload)
+
+    @staticmethod
+    def _serialize(groups: dict[str, list[dict[str, Any]]], items: list[dict[str, Any]]) -> str:
+        return json.dumps(
+            {"version": CUSTOM_DATA_VERSION, "groups": groups, "items": items},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
 
     def _write_text(self, text: str) -> None:
         fd, temp_name = tempfile.mkstemp(prefix="custom-prompts-", suffix=".json", dir=self.path.parent)

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .persistence import backup_corrupt_file
+from .prompt_rules import PromptRuleStore
 from .workflow import DEFAULT_SETTINGS, WorkflowError, validate_settings
 
 
@@ -44,11 +45,15 @@ PRESET_SETTING_KEYS = (
     "height",
     "steps",
     "cfg",
+    "sampler_name",
+    "scheduler",
 )
 MAX_PRESETS = 256
 
 
-def preset_settings(value: Any) -> dict[str, Any]:
+def preset_settings(
+    value: Any, prompt_rules: PromptRuleStore | None = None
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise WorkflowError("风格预设 settings 必须是对象")
     unknown = set(value) - set(PRESET_SETTING_KEYS)
@@ -56,13 +61,16 @@ def preset_settings(value: Any) -> dict[str, Any]:
         raise WorkflowError(f"风格预设包含未知参数: {', '.join(sorted(unknown))}")
     candidate = copy.deepcopy(DEFAULT_SETTINGS)
     candidate.update(value)
+    if prompt_rules is not None:
+        candidate, _ = prompt_rules.normalize_settings(candidate)
     normalized = validate_settings(candidate)
     return {key: copy.deepcopy(normalized[key]) for key in PRESET_SETTING_KEYS}
 
 
 class StylePresetStore:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, prompt_rules: PromptRuleStore | None = None):
         self.path = Path(path)
+        self.prompt_rules = prompt_rules
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.items: list[dict[str, Any]] = []
         self.load_warnings: list[str] = []
@@ -160,8 +168,7 @@ class StylePresetStore:
         ):
             raise WorkflowError("已有同名风格预设")
 
-    @staticmethod
-    def _normalize(payload: dict[str, Any], existing: bool = False) -> dict[str, Any]:
+    def _normalize(self, payload: dict[str, Any], existing: bool = False) -> dict[str, Any]:
         preset_id = str(payload.get("id") or "").strip()
         name = str(payload.get("name") or "").strip()
         favorite = payload.get("favorite", False)
@@ -177,7 +184,7 @@ class StylePresetStore:
             "id": preset_id,
             "name": name,
             "favorite": favorite,
-            "settings": preset_settings(payload.get("settings")),
+            "settings": preset_settings(payload.get("settings"), self.prompt_rules),
             "created_at": created_at,
             "updated_at": updated_at,
         }

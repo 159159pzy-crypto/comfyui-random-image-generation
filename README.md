@@ -2,8 +2,6 @@
 
 基于 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 和 [Anima Tools](https://github.com/nregret/Comfyui-Anima-Tools) 的本地随机生图工作台。它把提示词池、批量生成、LoRA、模型与修复、收藏树、风格预设和历史记录集中在一个轻量 WebUI 中，并默认只连接本机服务。
 
-![Anima Random Studio 主界面](docs/screenshots/anima-random-studio-overview.png)
-
 ## 项目适合谁
 
 - 已经在本机运行 ComfyUI，希望批量抽取 Anima 提示词并生成图片。
@@ -22,7 +20,9 @@
 - 历史详情支持一键复现(相同设置与种子)与再抽变体(相同设置、随机种子)。
 - 角色、服装、姿势、背景、表情五类提示词池。
 - 每个池支持随机、固定、关闭、搜索、分类/特征筛选、手动选择和排除项。
-- 女性人数、男性人数、每类抽取数量、宽高、步数、CFG、正负提示词和画师均可独立设置。
+- 女性人数、男性人数、每类抽取数量、宽高、步数、CFG、Sampler、Scheduler、正负提示词和画师均可独立设置。
+- 全部提示词字段支持安全的 Anima Tag 自动规范：整理分隔符、大小写、下划线、`score_*`、年份、画师前缀与重复项，同时保留自然语言、权重语法和原有顺序。
+- 支持本地维护精确的“原词 → 规范词”替换规则，并按正向、负向、LoRA 三种范围启停；字段失焦时自动应用并可撤销。
 - 生成链保持现有模型、LoRA、采样器、CLIP、VAE、Detailer 和 SaveImage 结构。
 
 ### 模型、LoRA 与修复
@@ -31,19 +31,23 @@
 - LoRA 支持 `models/loras` 下的任意安全子目录；界面优先显示 `文件夹 / 文件名`，搜索支持完整相对路径。
 - LoRA 选择器读取 ComfyUI-Lora-Manager 已缓存的名称、预览图和触发词，并以响应式缩略图卡片展示；不会自动联网抓取 Civitai。
 - LoRA 默认列表为空，用户可以按顺序添加并调整强度。启用带触发词的 LoRA 时会追加到“额外提示词”，关闭或移除时只清理 WebUI 自动加入的词。
+- 每个 LoRA 的触发词可以在 WebUI 中新增、修改、清空或恢复管理器原值；覆盖按完整相对路径全局保存在本机，不会修改 LoRA Manager 缓存。
 - 高清修复支持开关、放大模型和高清输出比例（1–1000%，默认 45%）；该比例控制放大模型输出的最终缩放。
 - 手部、NSFW、面部、眼睛四个 Detailer 独立开关；关闭的模块不会进入提交到 ComfyUI 的 API 工作流。
 - 批次启动前校验主模型、高清模型和 LoRA。缺失资源会显示具体文件名和原因。
+- 主 Sampler 与 Scheduler 从当前 ComfyUI 的 KSampler 动态读取，默认保持工作流原值 `er_sde` 与 `simple`；它们只控制主生成链，不覆盖 Detailer 的独立采样参数。
 
 ### 收藏与提示词分组
 
 - 内置条目和自定义条目可以分别收藏；画师以每个 `@name` 为独立收藏项。
-- 自定义提示词分组保持扁平结构，可以把一个条目放入多个分组。
+- 自定义提示词分组使用可折叠树：每个导入文件成为顶层大项，文件内 `groups` 成为子分组；手动分组保持顶层叶子。
+- 点击导入大项会聚合筛选全部后代条目并去重；同名文件再次导入时复用原大项，无 `groups` 的条目进入“未分组”。
 - 收藏分组是 Finder 式任意层级树。顶层分组可手动创建，子分组只能从当前分类的非空自定义分组一次性快照导入。
 - 父收藏组会聚合所有后代条目并自动去重；同一个自定义分组可以导入到不同父组，但不会持续同步。
 - 删除收藏组默认只删除分组结构并保留条目；被删分组失去最后归属的条目会转入“我的收藏”。
 - 只有非顶层、非系统、非空叶子收藏组可以选择“同时删除条目”；共享条目只解除当前分组关系。
-- 删除自定义分组时默认只解绑；选择“同时删除条目”才会永久删除只属于该分组的自定义提示词，共享条目会保留。
+- 删除自定义分组提供三种方式：默认仅解绑；“同时删除独占内容”保留共享条目；“彻底删除全部关联内容”会连同完整子树及共享内容永久删除。
+- 每个词条池可将“本次选择”批量收藏到一个或多个收藏分组；跨页选择和“全选词库”状态都会完整保存，已有收藏只追加分组并保留备注。
 - 所有破坏性操作使用专用确认面板，不使用浏览器原生 `confirm()`。
 
 ### 风格预设与界面
@@ -207,16 +211,18 @@ python run.py --comfy-url http://127.0.0.1:8188 --port 8193 --no-browser
 
 五个池的内部名称为 `character`、`clothing`、`pose`、`background`、`expression`。自定义条目至少需要名称和提示词；角色池还支持性别、头发、眼睛和作品字段。
 
-JSON/CSV 批量导入只写入当前池。导入前会校验格式、跨池数据、重名和目标自定义分组，不会留下半成功数据。
+JSON/CSV 批量导入只写入当前池。选择文件后，“导入大项名称”默认取文件名且可修改；导入前会校验格式、跨池数据、重名、目标叶子分组和树节点上限，不会留下半成功数据。
+
+首次读取旧版 `data/custom_prompts.json` 时会升级为 v4：原有平铺分组进入各池的“历史自定义分组”，原有未分组条目进入其中的“未分组”。升级前会保留一次 `.pre-v4.bak` 备份。
 
 ### 收藏树
 
 收藏树和自定义分组是两套不同数据：
 
-- 自定义分组：当前分类内的扁平来源数据，可被多个条目共享。
+- 自定义分组：导入大项与叶子分组组成的树；父项聚合后代，条目只保存叶子分组 ID，并可同时属于多个叶子。
 - 收藏分组：用于收藏视图的任意层级树；“导入子分组”只复制当前条目快照，之后两边互不自动同步。
 
-删除时请看确认面板统计：分组数、保留/转移条目数、独占条目数和共享条目数。系统默认分组“我的收藏”不能删除或重命名。收藏树支持展开箭头、层级计数、路径提示以及键盘方向键导航。
+删除时请看确认面板统计：分组数、保留/转移条目数、独占条目数和共享条目数。删除任意自定义分组都会处理完整子树：`keep` 仅解绑，`exclusive` 删除子树独占内容，`all` 会永久删除子树关联的全部内容，即使内容同时属于其他分组。系统默认分组“我的收藏”不能删除或重命名。两棵树都支持展开箭头、层级计数、路径提示以及键盘方向键导航。
 
 ### 画师
 
@@ -227,6 +233,12 @@ JSON/CSV 批量导入只写入当前池。导入前会校验格式、跨池数�
 ```
 
 每位画师单独收藏、取消收藏和追加到提示词；昵称只作为辅助说明，不会替代最终提示词中的 `@name`。
+
+### Anima Tag 规范与替换
+
+质量词、固定画师、五类固定提示词、额外提示词、负面词和自定义提示词会在编辑失焦时调用同源规范接口。内置规则遵循 Anima 的安全 Tag 约定：普通 tag 使用小写和空格，`score_*` 保留下划线，独立年份写为 `year YYYY`，画师使用 `@artist`。自然语言句子、未知词、`;d` 和括号权重不会被强制拆改，也不会重新排列提示词区段。
+
+“高级提示词”中的“管理规范与替换”可以停用内置规则或创建本地精确替换规则。自定义规则不支持正则、空替换或级联执行；LoRA 范围默认不改变触发词大小写和下划线，只有显式的 LoRA 自定义规则才会替换精确触发词。生成前浏览器会统一检查一次，服务端在批次校验前再次兜底，因此直接调用 API 也会得到相同结果。
 
 ### 风格预设
 
@@ -244,7 +256,6 @@ static/            WebUI HTML、CSS、JavaScript
 templates/         workflow_api.json 与 workflow_ui.json
 sources/           原始工作流副本
 tests/             Python 测试
-docs/screenshots/  README 与 QA 截图
 run.py             启动入口
 data/              本地运行时数据（默认不提交）
 output/            生成图片（默认不提交）
@@ -255,8 +266,10 @@ output/            生成图片（默认不提交）
 | 路径 | 内容 |
 | --- | --- |
 | `data/history.sqlite3` | 批次、图片、种子、提示词和工作流元数据 |
-| `data/custom_prompts.json` | 自定义条目和自定义分组 |
+| `data/custom_prompts.json` | v4 自定义条目、导入大项和树形分组 |
 | `data/style_presets.json` | 用户自建风格预设 |
+| `data/lora_trigger_overrides.json` | 按 LoRA 文件保存的全局有效触发词覆盖，空列表表示禁用自动触发词 |
+| `data/prompt_replacements.json` | 内置规范规则停用状态和用户自定义精确替换规则 |
 | `output/AnimaRandom/<日期>/<批次>/` | 生成图片 |
 | `templates/workflow_api.json` | 提交给 ComfyUI 的 API 模板 |
 | `templates/workflow_ui.json` | 可视化工作流模板 |
@@ -270,16 +283,22 @@ WebUI 前端使用以下本地接口：
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| `GET` | `/api/resources` | ComfyUI 当前主模型和放大模型 |
+| `GET` | `/api/resources` | ComfyUI 当前主模型、放大模型、Sampler 和 Scheduler |
 | `GET` | `/api/loras` | LoRA 清单、同源预览地址及触发词元数据 |
 | `GET` | `/api/loras/preview?filename=...` | 代理已入库 LoRA 的本地预览资源 |
+| `PUT/DELETE` | `/api/loras/triggers` | 保存全局有效触发词覆盖，或按 `filename` 查询参数恢复管理器原值 |
+| `GET/POST` | `/api/prompt-rules` | 列出规则或创建自定义精确替换规则 |
+| `PUT/DELETE` | `/api/prompt-rules/{id}` | 启停内置规则，或更新/删除自定义规则 |
+| `POST` | `/api/prompts/normalize` | 按字段和托管 LoRA 词返回规范结果及变更摘要 |
 | `GET/POST` | `/api/style-presets` | 列出或创建风格预设 |
 | `PUT/DELETE` | `/api/style-presets/{id}` | 更新或删除预设 |
 | `GET` | `/api/favorites/{section}` | 收藏条目、树分组及聚合计数 |
+| `POST` | `/api/favorites/{section}/selection` | 将当前池的完整选择原子追加到一个或多个收藏分组 |
 | `POST` | `/api/favorites/{section}/groups/{parent_id}/children/import` | 从自定义分组导入收藏子分组快照 |
 | `DELETE` | `/api/favorites/{section}/groups/{group_id}?deleteItems=false` | 删除收藏分组；默认保留条目 |
-| `GET` | `/api/custom-groups/{section}` | 自定义分组及独占条目统计 |
-| `DELETE` | `/api/custom-groups/{section}/{group_id}?deleteItems=false` | 删除自定义分组或删除独占自定义条目 |
+| `GET` | `/api/custom-groups/{section}` | 自定义分组树、聚合计数及独占条目统计 |
+| `POST` | `/api/custom-prompts/import` | 按 `bundleName` 原子导入或复用导入大项 |
+| `DELETE` | `/api/custom-groups/{section}/{group_id}?deleteMode=keep` | 删除自定义分组子树；支持 `keep`、`exclusive`、`all`，并兼容旧 `deleteItems` 参数 |
 | `POST` | `/api/batches` | 校验资源并启动批次;运行中则加入队列;可携带 `seeds` 固定种子复现 |
 | `GET` | `/api/batches/current/preview` | 当前生成的实时预览帧(无帧时 204) |
 | `DELETE` | `/api/batches/queue/{queue_id}` | 移出排队中的批次 |

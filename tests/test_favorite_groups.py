@@ -26,6 +26,9 @@ class FakeCatalog:
         item = self.items.get(item_id)
         return copy.deepcopy(item) if item else None
 
+    def all_items(self, section):
+        return [copy.deepcopy(item) for item in self.items.values() if item.get("section") == section]
+
 
 def custom_item(item_id, title):
     return {
@@ -91,6 +94,98 @@ class FavoriteNormalizationTests(unittest.TestCase):
 
 
 class FavoriteServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_favorite_selection_creates_and_appends_groups(self):
+        first = custom_item("custom:first", "First")
+        second = custom_item("custom:second", "Second")
+        comfy = FakeComfy(
+            {
+                "pose": {
+                    "groups": [
+                        {"id": "default", "name": "Default"},
+                        {"id": "g1", "name": "G1"},
+                        {"id": "g2", "name": "G2"},
+                    ],
+                    "items": [
+                        {
+                            "id": "custom:first",
+                            "name": "custom:first",
+                            "nickname": "keep me",
+                            "customContent": "first",
+                            "groupIds": ["g1"],
+                            "isCustom": True,
+                        }
+                    ],
+                }
+            }
+        )
+        service = FavoritesService(comfy, FakeCatalog([first, second]))
+
+        payload = await service.update_selection(
+            "pose",
+            {"mode": "include", "ids": ["custom:first", "custom:second", "custom:first"]},
+            ["g2", "default", "g2"],
+        )
+
+        self.assertEqual(payload["selectedCount"], 2)
+        self.assertEqual(payload["createdCount"], 1)
+        self.assertEqual(payload["updatedCount"], 1)
+        self.assertEqual(payload["groupIds"], ["g2", "default"])
+        items = {item["id"]: item for item in payload["items"]}
+        self.assertEqual(items["custom:first"]["groupIds"], ["g1", "g2", "default"])
+        self.assertEqual(items["custom:first"]["nickname"], "keep me")
+        self.assertEqual(items["custom:second"]["groupIds"], ["g2", "default"])
+
+    async def test_batch_favorite_all_excludes_items_and_skips_unchanged(self):
+        items = [custom_item(f"custom:{name}", name.title()) for name in ("one", "two", "three")]
+        comfy = FakeComfy(
+            {
+                "pose": {
+                    "groups": [{"id": "default", "name": "Default"}, {"id": "g1", "name": "G1"}],
+                    "items": [
+                        {
+                            "id": "custom:one",
+                            "name": "custom:one",
+                            "nickname": "One",
+                            "customContent": "one",
+                            "groupIds": ["g1"],
+                            "isCustom": True,
+                        }
+                    ],
+                }
+            }
+        )
+        payload = await FavoritesService(comfy, FakeCatalog(items)).update_selection(
+            "pose", {"mode": "all", "excluded_ids": ["custom:three"]}, ["g1"]
+        )
+        self.assertEqual(payload["selectedCount"], 2)
+        self.assertEqual(payload["createdCount"], 1)
+        self.assertEqual(payload["updatedCount"], 0)
+        self.assertEqual({item["id"] for item in payload["items"]}, {"custom:one", "custom:two"})
+
+    async def test_batch_favorite_rejects_invalid_payload_without_saving(self):
+        item = custom_item("custom:first", "First")
+        original = {
+            "pose": {
+                "groups": [{"id": "default", "name": "Default"}],
+                "items": [],
+            }
+        }
+        invalid_cases = [
+            (None, ["default"]),
+            ({"mode": "invalid", "ids": [item["id"]]}, ["default"]),
+            ({"mode": "include", "ids": []}, ["default"]),
+            ({"mode": "include", "ids": ["missing"]}, ["default"]),
+            ({"mode": "include", "ids": [item["id"]]}, []),
+            ({"mode": "include", "ids": [item["id"]]}, ["missing"]),
+        ]
+        for selection, group_ids in invalid_cases:
+            with self.subTest(selection=selection, group_ids=group_ids):
+                comfy = FakeComfy(original)
+                with self.assertRaises(CatalogError):
+                    await FavoritesService(comfy, FakeCatalog([item])).update_selection(
+                        "pose", selection, group_ids
+                    )
+                self.assertEqual(comfy.payload, original)
     async def test_snapshot_import_supports_depth_and_rejects_duplicate_siblings(self):
         first = custom_item("custom:first", "First")
         second = custom_item("custom:second", "Second")

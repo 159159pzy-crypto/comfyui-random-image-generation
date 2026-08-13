@@ -17,6 +17,8 @@ from .catalog import CatalogError, PromptCatalog, SECTIONS
 from .custom_prompts import CustomPromptStore
 from .favorites import FavoritesService, favorite_key
 from .history import HistoryStore
+from .lora_triggers import LoraTriggerOverrideStore
+from .prompt_rules import PromptRuleStore
 from .runner import BatchConflict, BatchManager
 from .style_presets import StylePresetStore
 from .workflow import DEFAULT_SETTINGS, WorkflowError, WorkflowTemplates
@@ -34,6 +36,11 @@ CATALOG_KEY: web.AppKey[Any] = web.AppKey("catalog", object)
 CUSTOM_PROMPTS_KEY: web.AppKey[Any] = web.AppKey("custom_prompts", object)
 FAVORITES_KEY: web.AppKey[Any] = web.AppKey("favorites", object)
 STYLE_PRESETS_KEY: web.AppKey[Any] = web.AppKey("style_presets", object)
+LORA_TRIGGER_OVERRIDES_KEY: web.AppKey[Any] = web.AppKey("lora_trigger_overrides", object)
+PROMPT_RULES_KEY: web.AppKey[Any] = web.AppKey("prompt_rules", object)
+ALLOWED_HOSTNAMES_KEY: web.AppKey[frozenset[str]] = web.AppKey(
+    "allowed_hostnames", frozenset
+)
 
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
 
@@ -50,10 +57,11 @@ def _hostname(value: str) -> str:
 @web.middleware
 async def local_only_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
     # 只信任本机来源:防御恶意网页发起的 CSRF 与 DNS 重绑定。
-    if _hostname(request.host or "") not in LOCAL_HOSTNAMES:
+    allowed_hostnames = request.app[ALLOWED_HOSTNAMES_KEY]
+    if _hostname(request.host or "") not in allowed_hostnames:
         return web.json_response({"error": "仅允许本机访问"}, status=403)
     origin = request.headers.get("Origin")
-    if origin is not None and (origin == "null" or _hostname(origin) not in LOCAL_HOSTNAMES):
+    if origin is not None and (origin == "null" or _hostname(origin) not in allowed_hostnames):
         return web.json_response({"error": "仅允许本机来源"}, status=403)
     return await handler(request)
 
@@ -108,7 +116,10 @@ def create_app(
     history_path: str | Path | None = None,
     custom_prompts_path: str | Path | None = None,
     style_presets_path: str | Path | None = None,
+    lora_trigger_overrides_path: str | Path | None = None,
+    prompt_replacements_path: str | Path | None = None,
     anima_tools_dir: str | Path | None = None,
+    trusted_hostnames: set[str] | frozenset[str] | None = None,
 ) -> web.Application:
     root = Path(app_dir)
     client = comfy or ComfyClient()
@@ -118,17 +129,33 @@ def create_app(
         custom_prompts_path or root / "data" / "custom_prompts.json", catalog
     )
     favorites = FavoritesService(client, catalog)
-    style_presets = StylePresetStore(style_presets_path or root / "data" / "style_presets.json")
+    prompt_rules = PromptRuleStore(
+        prompt_replacements_path or root / "data" / "prompt_replacements.json"
+    )
+    lora_trigger_overrides = LoraTriggerOverrideStore(
+        lora_trigger_overrides_path or root / "data" / "lora_trigger_overrides.json"
+    )
+    style_presets = StylePresetStore(
+        style_presets_path or root / "data" / "style_presets.json", prompt_rules
+    )
     templates = WorkflowTemplates.load(root / "templates")
-    manager = BatchManager(templates, history, client, catalog)
+    manager = BatchManager(templates, history, client, catalog, prompt_rules)
 
     startup_warnings = [
         *history.load_warnings,
         *custom_prompts.load_warnings,
         *style_presets.load_warnings,
+        *lora_trigger_overrides.load_warnings,
+        *prompt_rules.load_warnings,
     ]
 
     app = web.Application(middlewares=[error_middleware, local_only_middleware])
+    normalized_trusted_hostnames = {
+        hostname
+        for value in trusted_hostnames or set()
+        if (hostname := _hostname(value))
+    }
+    app[ALLOWED_HOSTNAMES_KEY] = frozenset(LOCAL_HOSTNAMES | normalized_trusted_hostnames)
     app[COMFY_KEY] = client
     app[HISTORY_KEY] = history
     app[MANAGER_KEY] = manager
@@ -136,6 +163,8 @@ def create_app(
     app[CUSTOM_PROMPTS_KEY] = custom_prompts
     app[FAVORITES_KEY] = favorites
     app[STYLE_PRESETS_KEY] = style_presets
+    app[LORA_TRIGGER_OVERRIDES_KEY] = lora_trigger_overrides
+    app[PROMPT_RULES_KEY] = prompt_rules
 
     async def favorite_keys(section: str, collection: str = "") -> set[str] | None:
         if not collection:
@@ -185,6 +214,7 @@ def create_app(
             raise WorkflowError("分页参数无效") from error
         collection = str(params.get("collection") or "")
         sort = str(params.get("sort") or "")
+        custom_group = str(params.get("custom_group") or "")
         keys = await favorite_keys(section, collection or ("__all__" if sort == "favorite-first" else ""))
         result = catalog.search(
             section,
@@ -195,7 +225,9 @@ def create_app(
             hair=str(params.get("hair") or ""),
             eye=str(params.get("eye") or ""),
             series=str(params.get("series") or ""),
-            custom_group=str(params.get("custom_group") or ""),
+            custom_group=custom_prompts.group_filter_ids(section, custom_group)
+            if custom_group
+            else "",
             favorite_keys=keys,
             favorites_only=bool(collection),
             sort=sort,
@@ -230,6 +262,14 @@ def create_app(
     async def update_favorite(request: web.Request) -> web.Response:
         return web.json_response(
             await favorites.update_item(request.match_info["section"], await _json_body(request))
+        )
+
+    async def update_favorite_selection(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        return web.json_response(
+            await favorites.update_selection(
+                request.match_info["section"], body.get("selection"), body.get("groupIds")
+            )
         )
 
     async def create_favorite_group(request: web.Request) -> web.Response:
@@ -317,11 +357,14 @@ def create_app(
         )
 
     async def delete_custom_group(request: web.Request) -> web.Response:
+        delete_mode = request.query.get("deleteMode")
+        delete_items = False if delete_mode is not None else _query_bool(request, "deleteItems")
         return web.json_response(
             await custom_prompts.delete_group(
                 request.match_info["section"],
                 request.match_info["group_id"],
-                _query_bool(request, "deleteItems"),
+                delete_items,
+                delete_mode,
             )
         )
 
@@ -342,6 +385,7 @@ def create_app(
                 str(body.get("format") or ""),
                 str(body.get("content") or ""),
                 str(body.get("section") or ""),
+                str(body.get("bundleName") or ""),
             )
         )
 
@@ -352,6 +396,7 @@ def create_app(
                 body.get("rows"),
                 str(body.get("section") or ""),
                 body.get("targetGroupIds"),
+                str(body.get("bundleName") or ""),
             )
         )
 
@@ -370,6 +415,42 @@ def create_app(
         except ComfyError as error:
             return web.json_response({"online": False, "error": str(error)})
 
+    async def _lora_inventory_item(filename: Any) -> tuple[dict[str, Any], str]:
+        target = str(filename or "")
+        if not target:
+            raise WorkflowError("filename 不能为空")
+        from .workflow import normalize_lora_path
+
+        identity = normalize_lora_path(target).casefold()
+        inventory = await client.lora_inventory()
+        matches = [
+            item
+            for item in inventory.get("items") or []
+            if normalize_lora_path(item.get("filename")).casefold() == identity
+        ]
+        if len(matches) != 1:
+            raise WorkflowError(f"LoRA 文件不存在: {target}")
+        return matches[0], normalize_lora_path(matches[0]["filename"])
+
+    def _public_lora_item(item: dict[str, Any]) -> dict[str, Any]:
+        value = dict(item)
+        source_words = value.get("trigger_words") or []
+        effective_words, overridden = lora_trigger_overrides.effective(
+            value["filename"], source_words
+        )
+        value["source_trigger_words"] = source_words
+        value["trigger_words"] = effective_words
+        value["trigger_override"] = overridden
+        if overridden:
+            value["trigger_metadata_available"] = True
+        preview = str(value.get("preview") or "")
+        value["preview"] = (
+            f"/api/loras/preview?{urlencode({'filename': value['filename']})}"
+            if preview
+            else ""
+        )
+        return value
+
     async def loras(_: web.Request) -> web.Response:
         inventory = await client.lora_inventory()
         public = {
@@ -377,15 +458,22 @@ def create_app(
             "count": inventory.get("count", 0),
         }
         for item in inventory.get("items") or []:
-            value = dict(item)
-            preview = str(value.get("preview") or "")
-            value["preview"] = (
-                f"/api/loras/preview?{urlencode({'filename': value['filename']})}"
-                if preview
-                else ""
-            )
-            public["items"].append(value)
+            public["items"].append(_public_lora_item(item))
         return web.json_response(public)
+
+    async def update_lora_triggers(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        item, filename = await _lora_inventory_item(body.get("filename"))
+        words = await lora_trigger_overrides.set(filename, body.get("triggerWords"))
+        value = _public_lora_item({**item, "filename": filename})
+        value["trigger_words"] = words
+        value["trigger_override"] = True
+        return web.json_response(value)
+
+    async def reset_lora_triggers(request: web.Request) -> web.Response:
+        item, filename = await _lora_inventory_item(request.query.get("filename"))
+        await lora_trigger_overrides.delete(filename)
+        return web.json_response(_public_lora_item({**item, "filename": filename}))
 
     async def lora_preview(request: web.Request) -> web.Response:
         filename = request.query.get("filename")
@@ -416,6 +504,38 @@ def create_app(
         if not await style_presets.delete(request.match_info["preset_id"]):
             raise KeyError(request.match_info["preset_id"])
         return web.json_response({"deleted": True})
+
+    async def list_prompt_rules(_: web.Request) -> web.Response:
+        return web.json_response(prompt_rules.list())
+
+    async def create_prompt_rule(request: web.Request) -> web.Response:
+        return web.json_response(
+            await prompt_rules.create(await _json_body(request)), status=201
+        )
+
+    async def update_prompt_rule(request: web.Request) -> web.Response:
+        return web.json_response(
+            await prompt_rules.update(
+                request.match_info["rule_id"], await _json_body(request)
+            )
+        )
+
+    async def delete_prompt_rule(request: web.Request) -> web.Response:
+        rule_id = request.match_info["rule_id"]
+        if not await prompt_rules.delete(rule_id):
+            raise KeyError(rule_id)
+        return web.json_response({"deleted": True})
+
+    async def normalize_prompts(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        unknown = set(body) - {"fields", "managedTriggers"}
+        if unknown:
+            raise WorkflowError(f"提示词规范请求包含未知参数: {', '.join(sorted(unknown))}")
+        return web.json_response(
+            prompt_rules.normalize_fields(
+                body.get("fields"), body.get("managedTriggers", [])
+            )
+        )
 
     async def start_batch(request: web.Request) -> web.Response:
         await client.status()
@@ -475,13 +595,21 @@ def create_app(
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/loras", loras)
     app.router.add_get("/api/loras/preview", lora_preview)
+    app.router.add_put("/api/loras/triggers", update_lora_triggers)
+    app.router.add_delete("/api/loras/triggers", reset_lora_triggers)
     app.router.add_get("/api/resources", resources)
     app.router.add_get("/api/style-presets", list_style_presets)
     app.router.add_post("/api/style-presets", create_style_preset)
     app.router.add_put("/api/style-presets/{preset_id}", update_style_preset)
     app.router.add_delete("/api/style-presets/{preset_id}", delete_style_preset)
+    app.router.add_get("/api/prompt-rules", list_prompt_rules)
+    app.router.add_post("/api/prompt-rules", create_prompt_rule)
+    app.router.add_put("/api/prompt-rules/{rule_id}", update_prompt_rule)
+    app.router.add_delete("/api/prompt-rules/{rule_id}", delete_prompt_rule)
+    app.router.add_post("/api/prompts/normalize", normalize_prompts)
     app.router.add_get("/api/favorites/{section}", get_favorites)
     app.router.add_put("/api/favorites/{section}/item", update_favorite)
+    app.router.add_post("/api/favorites/{section}/selection", update_favorite_selection)
     app.router.add_post("/api/favorites/{section}/groups", create_favorite_group)
     app.router.add_put("/api/favorites/{section}/groups/{group_id}", update_favorite_group)
     app.router.add_post(
@@ -556,11 +684,21 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8190)
     parser.add_argument("--comfy-url", default="http://127.0.0.1:8188")
     parser.add_argument("--anima-tools-dir", default=None)
+    parser.add_argument(
+        "--trusted-host",
+        action="append",
+        default=[],
+        help="额外允许的反向代理主机名；可重复指定",
+    )
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("WebUI 只允许监听本机地址")
-    app = create_app(comfy=ComfyClient(args.comfy_url), anima_tools_dir=args.anima_tools_dir)
+    app = create_app(
+        comfy=ComfyClient(args.comfy_url),
+        anima_tools_dir=args.anima_tools_dir,
+        trusted_hostnames=set(args.trusted_host),
+    )
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(f"http://127.0.0.1:{args.port}")).start()
     web.run_app(app, host=args.host, port=args.port, print=lambda message: print(message, flush=True))

@@ -8,13 +8,15 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_QUALITY = "masterpiece, best quality, score_9, score_8, highres, 2025, newest, safe"
+DEFAULT_QUALITY = "masterpiece, best quality, score_9, score_8, highres, year 2025, newest, safe"
 DEFAULT_NEGATIVE = (
     "worst quality, low quality, lowres, score_1, score_2, score_3, blurry, "
     "jpeg artifacts, bad anatomy, watermark, artist name,"
 )
 DEFAULT_LORAS: list[dict[str, Any]] = []
 DEFAULT_MODEL = "miaomiaoHarem_anima14.safetensors"
+DEFAULT_SAMPLER = "er_sde"
+DEFAULT_SCHEDULER = "simple"
 DEFAULT_HIRES = {
     "enabled": True,
     "model_name": "4x_foolhardy_Remacri.pth",
@@ -78,6 +80,8 @@ DEFAULT_SETTINGS = {
     "height": 1216,
     "steps": 30,
     "cfg": 4.0,
+    "sampler_name": DEFAULT_SAMPLER,
+    "scheduler": DEFAULT_SCHEDULER,
 }
 
 MAX_SAMPLE_SEED = 1125899906842624
@@ -96,6 +100,7 @@ REMOVED_NODE_IDS = {3, 4}
 REQUIRED_API_NODES: dict[int, str] = {
     1: "UNETLoader 主模型",
     2: "Power LoRA Loader",
+    5: "KSampler 主采样器",
     12: "SaveImage 保存图像",
     22: "VAE 解码",
     23: "宽度",
@@ -406,6 +411,12 @@ def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]
     settings["cfg"] = float(settings["cfg"])
     if not 0.1 <= settings["cfg"] <= 30:
         raise WorkflowError("cfg 必须在 0.1-30 之间")
+    settings["sampler_name"] = _text("sampler_name", settings["sampler_name"])
+    settings["scheduler"] = _text("scheduler", settings["scheduler"])
+    if not settings["sampler_name"]:
+        raise WorkflowError("sampler_name 不能为空")
+    if not settings["scheduler"]:
+        raise WorkflowError("scheduler 不能为空")
     return settings
 
 
@@ -856,6 +867,8 @@ def render_workflows(
     api["37"]["inputs"]["seed"] = sample_seed
     api["39"]["inputs"]["value"] = settings["steps"]
     api["41"]["inputs"]["value"] = settings["cfg"]
+    api["5"]["inputs"]["sampler_name"] = settings["sampler_name"]
+    api["5"]["inputs"]["scheduler"] = settings["scheduler"]
     api["12"]["inputs"]["filename_prefix"] = filename_prefix
 
     current_image: list[Any] = ["48", 0]
@@ -919,6 +932,8 @@ def render_workflows(
     for node_id, value in ((23, settings["width"]), (31, settings["height"]), (35, 1), (39, settings["steps"]), (41, settings["cfg"]), (12, filename_prefix)):
         _set_ui_widget(ui, node_id, value, 0)
     _set_ui_widget(ui, 37, sample_seed, 0)
+    _set_ui_widget(ui, 5, settings["sampler_name"], 4)
+    _set_ui_widget(ui, 5, settings["scheduler"], 5)
     return api, ui
 
 

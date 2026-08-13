@@ -229,6 +229,86 @@ class FavoritesService:
         return await self.get(section)
 
     @_locked
+    async def update_selection(
+        self, section: str, selection: Any, group_ids: Any
+    ) -> dict[str, Any]:
+        section = _section(section)
+        if not isinstance(selection, dict):
+            raise CatalogError("selection 必须是对象")
+        mode = str(selection.get("mode") or "include")
+        if mode not in {"include", "all"}:
+            raise CatalogError("selection.mode 必须是 include 或 all")
+        if not isinstance(group_ids, list):
+            raise CatalogError("groupIds 必须是数组")
+        data = await self.comfy.favorites()
+        current = normalize_section(data.get(section))
+        valid_group_ids = {group["id"] for group in current["groups"]}
+        selected_groups = list(
+            dict.fromkeys(str(value).strip() for value in group_ids if str(value).strip())
+        )
+        if not selected_groups:
+            raise CatalogError("至少选择一个收藏分组")
+        invalid_groups = [value for value in selected_groups if value not in valid_group_ids]
+        if invalid_groups:
+            raise CatalogError(f"收藏分组不存在: {', '.join(invalid_groups)}")
+
+        catalog_items = self.catalog.all_items(section)
+        by_id = {str(item.get("id")): item for item in catalog_items}
+        if mode == "include":
+            raw_ids = selection.get("ids")
+            if not isinstance(raw_ids, list):
+                raise CatalogError("selection.ids 必须是数组")
+            selected_ids = list(dict.fromkeys(str(value).strip() for value in raw_ids if str(value).strip()))
+            excluded_ids: set[str] = set()
+        else:
+            selected_ids = list(by_id)
+            raw_excluded = selection.get("excluded_ids")
+            if raw_excluded is None:
+                raw_excluded = []
+            if not isinstance(raw_excluded, list):
+                raise CatalogError("selection.excluded_ids 必须是数组")
+            excluded_ids = {str(value).strip() for value in raw_excluded if str(value).strip()}
+            invalid_excluded = [item_id for item_id in excluded_ids if item_id not in by_id]
+            if invalid_excluded:
+                raise CatalogError(
+                    f"排除项包含当前词池不存在的词条: {', '.join(invalid_excluded[:5])}"
+                )
+            selected_ids = [item_id for item_id in selected_ids if item_id not in excluded_ids]
+        invalid_ids = [item_id for item_id in selected_ids if item_id not in by_id]
+        if invalid_ids:
+            raise CatalogError(f"选择中包含当前词池不存在的词条: {', '.join(invalid_ids[:5])}")
+        if not selected_ids:
+            raise CatalogError("本次选择没有可收藏的词条")
+
+        existing_by_key = {
+            favorite_key(section, item): item for item in current["items"]
+        }
+        created_count = 0
+        updated_count = 0
+        for item_id in selected_ids:
+            catalog_item = by_id[item_id]
+            key = str(catalog_item.get("favorite_key") or favorite_key(section, catalog_item))
+            existing = existing_by_key.get(key)
+            if existing is None:
+                current["items"].append(self._favorite_record(section, catalog_item, selected_groups, ""))
+                created_count += 1
+                continue
+            old_groups = list(existing.get("groupIds") or [])
+            merged_groups = list(dict.fromkeys([*old_groups, *selected_groups]))
+            if merged_groups != old_groups:
+                existing["groupIds"] = merged_groups
+                updated_count += 1
+
+        await self.comfy.save_favorites({section: current})
+        return {
+            **(await self.get(section)),
+            "selectedCount": len(selected_ids),
+            "createdCount": created_count,
+            "updatedCount": updated_count,
+            "groupIds": selected_groups,
+        }
+
+    @_locked
     async def create_group(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
         section = _section(section)
         name = self._group_name(payload)

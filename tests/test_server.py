@@ -50,6 +50,7 @@ class FakeComfy:
 
     def __init__(self):
         self.preview_items = []
+        self.submissions = []
         self.favorites_data = {
             section: {"groups": [{"id": "default", "name": "Default Favorites", "isSystem": True}], "items": []}
             for section in ("artist", "character", "lora", "clothing", "background", "pose", "expression")
@@ -86,6 +87,8 @@ class FakeComfy:
         return {
             "models": [DEFAULT_SETTINGS["model_name"]],
             "upscale_models": [DEFAULT_SETTINGS["hires"]["model_name"]],
+            "samplers": [DEFAULT_SETTINGS["sampler_name"], "euler"],
+            "schedulers": [DEFAULT_SETTINGS["scheduler"], "karras"],
         }
 
     async def favorites(self):
@@ -97,6 +100,7 @@ class FakeComfy:
         return {"success": True}
 
     async def submit(self, payload):
+        self.submissions.append(copy.deepcopy(payload))
         return "prompt-id"
 
     async def wait_for_history(self, prompt_id, should_abort=None, missing_timeout=30.0):
@@ -126,6 +130,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             history_path=Path(self.temp.name) / "history.sqlite3",
             custom_prompts_path=Path(self.temp.name) / "custom_prompts.json",
             style_presets_path=Path(self.temp.name) / "style_presets.json",
+            lora_trigger_overrides_path=Path(self.temp.name) / "lora_trigger_overrides.json",
+            prompt_replacements_path=Path(self.temp.name) / "prompt_replacements.json",
             anima_tools_dir=_write_fake_tools(Path(self.temp.name)),
         )
         self.client = TestClient(TestServer(app))
@@ -158,6 +164,19 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("function reconcileLoraTriggers", app_js)
         self.assertIn("lora_managed_triggers", app_js)
         self.assertIn("lora-catalog-preview", index_html + app_js)
+        self.assertIn('id="loraTriggerDialog"', index_html)
+        self.assertIn('id="promptRuleDialog"', index_html)
+        self.assertIn('id="sampler_name"', index_html)
+        self.assertIn('id="scheduler"', index_html)
+        self.assertIn('sampler_name: ui.sampler_name.value', app_js)
+        self.assertIn('scheduler: ui.scheduler.value', app_js)
+        self.assertIn("normalizePromptFields", app_js)
+        self.assertIn('id="deleteGroupAll"', index_html)
+        self.assertIn('value="exclusive"', index_html)
+        self.assertIn("deleteMode=${deleteMode}", app_js)
+        self.assertIn('id="favoriteSelection"', index_html)
+        self.assertIn('id="favoriteSelectionDialog"', index_html)
+        self.assertIn("/api/favorites/${activeSection}/selection", app_js)
         self.assertEqual(
             static_response.headers["Cache-Control"],
             "no-cache, max-age=0, must-revalidate",
@@ -195,6 +214,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         payload = await (await self.client.get("/api/loras")).json()
         item = payload["items"][0]
         self.assertEqual(item["trigger_words"], ["@one"])
+        self.assertEqual(item["source_trigger_words"], ["@one"])
+        self.assertFalse(item["trigger_override"])
         self.assertNotIn("secret", item["preview"])
         self.assertTrue(item["preview"].startswith("/api/loras/preview?filename="))
 
@@ -207,6 +228,82 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         invalid = await self.client.get("/api/loras/preview?filename=../one.safetensors")
         self.assertEqual(invalid.status, 404)
 
+    async def test_lora_trigger_override_can_be_edited_cleared_and_reset(self):
+        self.comfy.preview_items = [
+            {
+                "filename": "风格/one.safetensors",
+                "display_name": "One",
+                "preview": "",
+                "trigger_words": ["@One", "Second"],
+                "trigger_metadata_available": True,
+            }
+        ]
+        updated = await self.client.put(
+            "/api/loras/triggers",
+            json={"filename": "风格/one.safetensors", "triggerWords": [" @Exact_One ", "@exact_one"]},
+        )
+        self.assertEqual(updated.status, 200)
+        payload = await updated.json()
+        self.assertEqual(payload["source_trigger_words"], ["@One", "Second"])
+        self.assertEqual(payload["trigger_words"], ["@Exact_One"])
+        self.assertTrue(payload["trigger_override"])
+
+        cleared = await self.client.put(
+            "/api/loras/triggers",
+            json={"filename": "风格/one.safetensors", "triggerWords": []},
+        )
+        self.assertEqual((await cleared.json())["trigger_words"], [])
+        listing = await (await self.client.get("/api/loras")).json()
+        self.assertEqual(listing["items"][0]["trigger_words"], [])
+        self.assertTrue(listing["items"][0]["trigger_override"])
+        self.assertTrue(Path(self.temp.name, "lora_trigger_overrides.json").is_file())
+
+        reset = await self.client.delete(
+            "/api/loras/triggers?filename=%E9%A3%8E%E6%A0%BC%2Fone.safetensors"
+        )
+        self.assertEqual(reset.status, 200)
+        reset_payload = await reset.json()
+        self.assertEqual(reset_payload["trigger_words"], ["@One", "Second"])
+        self.assertFalse(reset_payload["trigger_override"])
+
+    async def test_prompt_normalization_and_rule_crud(self):
+        normalized = await self.client.post(
+            "/api/prompts/normalize",
+            json={
+                "fields": {
+                    "quality_prompt": "2025，SCORE 9, Blue_Hair",
+                    "extra_prompt": "@Niji9il, Blue_Hair",
+                },
+                "managedTriggers": ["@Niji9il"],
+            },
+        )
+        self.assertEqual(normalized.status, 200)
+        payload = await normalized.json()
+        self.assertEqual(payload["fields"]["quality_prompt"], "year 2025, score_9, blue hair")
+        self.assertEqual(payload["fields"]["extra_prompt"], "@Niji9il, blue hair")
+
+        created = await self.client.post(
+            "/api/prompt-rules",
+            json={"from": "wrong_tag", "to": "Right_Tag", "scopes": ["positive"], "enabled": True},
+        )
+        self.assertEqual(created.status, 201)
+        item = await created.json()
+        custom = await self.client.post(
+            "/api/prompts/normalize",
+            json={"fields": {"extra_prompt": "WRONG_TAG"}},
+        )
+        self.assertEqual((await custom.json())["fields"]["extra_prompt"], "right tag")
+
+        disabled = await self.client.put(
+            "/api/prompt-rules/lowercase-tags", json={"enabled": False}
+        )
+        self.assertEqual(disabled.status, 200)
+        listing = await (await self.client.get("/api/prompt-rules")).json()
+        self.assertFalse(next(rule for rule in listing["items"] if rule["id"] == "lowercase-tags")["enabled"])
+        deleted = await self.client.delete(f"/api/prompt-rules/{item['id']}")
+        self.assertEqual(deleted.status, 200)
+        self.assertTrue(Path(self.temp.name, "prompt_replacements.json").is_file())
+
     async def test_config_has_empty_default_loras(self):
         payload = await (await self.client.get("/api/config")).json()
         self.assertEqual(payload["defaults"]["loras"], [])
@@ -214,16 +311,20 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_resources_and_style_preset_crud(self):
         resources = await (await self.client.get("/api/resources")).json()
         self.assertEqual(resources["models"], [DEFAULT_SETTINGS["model_name"]])
+        self.assertEqual(resources["samplers"], [DEFAULT_SETTINGS["sampler_name"], "euler"])
+        self.assertEqual(resources["schedulers"], [DEFAULT_SETTINGS["scheduler"], "karras"])
         snapshot = {
             key: copy.deepcopy(DEFAULT_SETTINGS[key])
-            for key in ("model_name", "loras", "lora_managed_triggers", "hires", "detailers", "manual_artist", "quality_prompt", "extra_prompt", "negative_prompt", "width", "height", "steps", "cfg")
+            for key in ("model_name", "loras", "lora_managed_triggers", "hires", "detailers", "manual_artist", "quality_prompt", "extra_prompt", "negative_prompt", "width", "height", "steps", "cfg", "sampler_name", "scheduler")
         }
+        snapshot["quality_prompt"] = "2025, Blue_Hair"
         created = await self.client.post(
             "/api/style-presets",
             json={"name": "Soft", "favorite": False, "settings": snapshot},
         )
         self.assertEqual(created.status, 201)
         item = await created.json()
+        self.assertEqual(item["settings"]["quality_prompt"], "year 2025, blue hair")
         updated = await self.client.put(
             f"/api/style-presets/{item['id']}", json={"favorite": True, "name": "Soft Light"}
         )
@@ -257,6 +358,57 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         payload = await deleted.json()
         self.assertEqual(len(payload["items"]), 1)
         self.assertEqual(payload["items"][0]["groupIds"], ["default"])
+
+    async def test_batch_favorite_selection_api_appends_groups_and_preserves_nickname(self):
+        pose = await (await self.client.get("/api/pools/pose?page=1&limit=2")).json()
+        first_id, second_id = [item["id"] for item in pose["items"]]
+        first_group = await self.client.post("/api/favorites/pose/groups", json={"name": "First"})
+        first_group_id = (await first_group.json())["group"]["id"]
+        second_group = await self.client.post("/api/favorites/pose/groups", json={"name": "Second"})
+        second_group_id = (await second_group.json())["group"]["id"]
+        saved = await self.client.put(
+            "/api/favorites/pose/item",
+            json={"id": first_id, "favorite": True, "groupIds": [first_group_id], "nickname": "memo"},
+        )
+        self.assertEqual(saved.status, 200)
+
+        response = await self.client.post(
+            "/api/favorites/pose/selection",
+            json={
+                "selection": {"mode": "include", "ids": [first_id, second_id, first_id], "excluded_ids": []},
+                "groupIds": [second_group_id],
+            },
+        )
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["selectedCount"], 2)
+        self.assertEqual(payload["createdCount"], 1)
+        self.assertEqual(payload["updatedCount"], 1)
+        by_id = {item["id"]: item for item in payload["items"]}
+        first_key = first_id.split(":", 1)[-1]
+        second_key = second_id.split(":", 1)[-1]
+        self.assertEqual(by_id[first_key]["groupIds"], [first_group_id, second_group_id])
+        self.assertEqual(by_id[first_key]["nickname"], "memo")
+        self.assertEqual(by_id[second_key]["groupIds"], [second_group_id])
+
+        all_response = await self.client.post(
+            "/api/favorites/pose/selection",
+            json={
+                "selection": {"mode": "all", "ids": [], "excluded_ids": [second_id]},
+                "groupIds": ["default"],
+            },
+        )
+        self.assertEqual(all_response.status, 200)
+        all_payload = await all_response.json()
+        self.assertEqual(all_payload["selectedCount"], 1)
+        self.assertEqual(all_payload["updatedCount"], 1)
+        self.assertIn("default", next(item for item in all_payload["items"] if item["id"] == first_key)["groupIds"])
+
+        invalid = await self.client.post(
+            "/api/favorites/pose/selection",
+            json={"selection": {"mode": "include", "ids": ["missing"]}, "groupIds": ["default"]},
+        )
+        self.assertEqual(invalid.status, 400)
 
     async def test_favorite_child_import_parent_filter_and_safe_delete_api(self):
         source = await self.client.post("/api/custom-groups/pose", json={"name": "Snapshot"})
@@ -311,6 +463,60 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         favorite = next(item for item in payload["items"] if item["id"] == custom_id)
         self.assertEqual(favorite["groupIds"], ["default"])
 
+    async def test_custom_group_delete_modes_and_legacy_query_compatibility(self):
+        async def create_group(name):
+            response = await self.client.post("/api/custom-groups/pose", json={"name": name})
+            return (await response.json())["group"]
+
+        first = await create_group("First")
+        second = await create_group("Second")
+        exclusive = await (
+            await self.client.post(
+                "/api/custom-prompts",
+                json={"section": "pose", "title": "Exclusive", "prompt": "exclusive", "groupIds": [first["id"]]},
+            )
+        ).json()
+        shared = await (
+            await self.client.post(
+                "/api/custom-prompts",
+                json={"section": "pose", "title": "Shared", "prompt": "shared", "groupIds": [first["id"], second["id"]]},
+            )
+        ).json()
+
+        deleted = await self.client.delete(
+            f"/api/custom-groups/pose/{first['id']}?deleteMode=all&deleteItems=maybe"
+        )
+        self.assertEqual(deleted.status, 200)
+        payload = await deleted.json()
+        self.assertEqual(payload["deleteMode"], "all")
+        self.assertEqual(set(payload["deletedItemIds"]), {exclusive["id"], shared["id"]})
+        self.assertEqual(
+            (await (await self.client.get("/api/custom-prompts?section=pose")).json())["items"],
+            [],
+        )
+
+        legacy = await create_group("Legacy")
+        legacy_item = await (
+            await self.client.post(
+                "/api/custom-prompts",
+                json={"section": "pose", "title": "Legacy", "prompt": "legacy", "groupIds": [legacy["id"]]},
+            )
+        ).json()
+        legacy_deleted = await self.client.delete(
+            f"/api/custom-groups/pose/{legacy['id']}?deleteItems=true"
+        )
+        self.assertEqual(legacy_deleted.status, 200)
+        legacy_payload = await legacy_deleted.json()
+        self.assertEqual(legacy_payload["deleteMode"], "exclusive")
+        self.assertEqual(legacy_payload["deletedItemIds"], [legacy_item["id"]])
+
+        invalid = await create_group("Invalid")
+        invalid_response = await self.client.delete(
+            f"/api/custom-groups/pose/{invalid['id']}?deleteMode=invalid"
+        )
+        self.assertEqual(invalid_response.status, 400)
+        self.assertIn("deleteMode", (await invalid_response.json())["error"])
+
     async def test_artist_favorites_normalize_prefix_and_preserve_other_sections(self):
         response = await self.client.put(
             "/api/favorites/artist/item",
@@ -348,31 +554,41 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         target_group_id = (await target_group_response.json())["group"]["id"]
         preview_response = await self.client.post(
             "/api/custom-prompts/import/preview",
-            json={"format": "json", "section": "expression", "content": '{"items":[{"section":"expression","title":"Calm","prompt":"calm face","groups":["Mood"]}]}'},
+            json={"format": "json", "section": "expression", "bundleName": "Expression Pack", "content": '{"items":[{"section":"expression","title":"Calm","prompt":"calm face","groups":["Mood"]}]}'},
         )
         self.assertEqual(preview_response.status, 200)
         preview = await preview_response.json()
         self.assertEqual(preview["summary"]["new"], 1)
         committed = await self.client.post("/api/custom-prompts/import", json={
             "rows": preview["rows"], "section": "expression", "targetGroupIds": [target_group_id],
+            "bundleName": "Expression Pack",
         })
         self.assertEqual(committed.status, 200)
-        self.assertEqual((await committed.json())["imported"], 1)
+        committed_payload = await committed.json()
+        self.assertEqual(committed_payload["imported"], 1)
         pool = await (await self.client.get("/api/pools/expression?q=Calm")).json()
         self.assertEqual(pool["items"][0]["title"], "Calm")
-        group_counts = {item["name"]: item["count"] for item in (await (await self.client.get("/api/custom-groups/expression")).json())["groups"]}
-        self.assertEqual(group_counts, {"Mood": 1, "Imported": 1})
+        groups = (await (await self.client.get("/api/custom-groups/expression")).json())["groups"]
+        bundle = next(item for item in groups if item["id"] == committed_payload["bundleId"])
+        children = [item for item in groups if item.get("parentId") == bundle["id"]]
+        self.assertEqual(bundle["count"], 1)
+        self.assertEqual([item["name"] for item in children], ["Mood"])
+        self.assertEqual(next(item for item in groups if item["id"] == target_group_id)["count"], 1)
+        parent_pool = await (
+            await self.client.get(f"/api/pools/expression?custom_group={bundle['id']}")
+        ).json()
+        self.assertEqual([item["title"] for item in parent_pool["items"]], ["Calm"])
 
         mixed_preview = await self.client.post(
             "/api/custom-prompts/import/preview",
-            json={"format": "json", "section": "expression", "content": '{"items":[{"section":"pose","title":"Wave","prompt":"waving"}]}'},
+            json={"format": "json", "section": "expression", "bundleName": "Expression Pack", "content": '{"items":[{"section":"pose","title":"Wave","prompt":"waving"}]}'},
         )
         self.assertEqual(mixed_preview.status, 200)
         self.assertEqual((await mixed_preview.json())["summary"]["error"], 1)
 
         invalid_target = await self.client.post("/api/custom-prompts/import", json={
             "rows": [{"action": "create", "item": {"section": "expression", "title": "Unsafe", "prompt": "unsafe"}}],
-            "section": "expression", "targetGroupIds": ["custom_group_missing"],
+            "section": "expression", "targetGroupIds": ["custom_group_missing"], "bundleName": "Unsafe Pack",
         })
         self.assertEqual(invalid_target.status, 400)
         unsafe_pool = await (await self.client.get("/api/pools/expression?q=Unsafe")).json()
@@ -401,6 +617,22 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status, 400)
                 self.assertIn("hires.percent", (await response.json())["error"])
 
+        for field, value in (("sampler_name", ""), ("sampler_name", 1), ("scheduler", ""), ("scheduler", False)):
+            with self.subTest(field=field, value=value):
+                response = await self.client.post(
+                    "/api/batches", json={**DEFAULT_SETTINGS, field: value}
+                )
+                self.assertEqual(response.status, 400)
+                self.assertIn(field, (await response.json())["error"])
+
+        for field, value in (("sampler_name", "missing"), ("scheduler", "missing")):
+            with self.subTest(field=field):
+                response = await self.client.post(
+                    "/api/batches", json={**DEFAULT_SETTINGS, field: value}
+                )
+                self.assertEqual(response.status, 400)
+                self.assertIn("不可用", (await response.json())["error"])
+
     async def test_new_dimension_settings_are_returned_and_persisted(self):
         settings = {
             **DEFAULT_SETTINGS,
@@ -418,6 +650,32 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["random_character_count"], 2)
         self.assertEqual(saved["fixed_character"], "hero")
         self.assertEqual(saved["random_clothing_count"], 5)
+
+    async def test_batch_submission_normalizes_settings_and_resolved_prompt(self):
+        settings = {
+            **DEFAULT_SETTINGS,
+            "count": 1,
+            "quality_prompt": "2025，SCORE 9, Blue_Hair",
+            "extra_prompt": "@Niji9il, Blue_Hair",
+            "lora_managed_triggers": ["@Niji9il"],
+        }
+        response = await self.client.post("/api/batches", json=settings)
+        self.assertEqual(response.status, 201)
+        state = await response.json()
+        self.assertEqual(
+            state["settings"]["quality_prompt"], "year 2025, score_9, blue hair"
+        )
+        self.assertEqual(state["settings"]["extra_prompt"], "@Niji9il, blue hair")
+        await self.client.server.app[MANAGER_KEY].wait()
+        submitted = self.comfy.submissions[-1]["prompt"]
+        self.assertEqual(
+            submitted["42"]["inputs"]["quality_prompt"],
+            "year 2025, score_9, blue hair",
+        )
+        self.assertEqual(
+            submitted["60"]["inputs"]["resolved_prompt"],
+            "1girl, @Niji9il, blue hair",
+        )
 
     async def test_batch_completes_and_history_is_paged(self):
         response = await self.client.post("/api/batches", json={**DEFAULT_SETTINGS, "count": 1})
@@ -480,6 +738,36 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "/api/config", headers={"Origin": f"http://127.0.0.1:{self.client.port}"}
         )
         self.assertEqual(local_origin.status, 200)
+
+    async def test_explicit_trusted_proxy_host_and_origin_are_allowed(self):
+        trusted_host = "anima.165-99-43-225.sslip.io"
+        trusted_app = create_app(
+            app_dir=APP_DIR,
+            comfy=FakeComfy(),
+            history_path=Path(self.temp.name) / "trusted-history.sqlite3",
+            custom_prompts_path=Path(self.temp.name) / "trusted-custom-prompts.json",
+            style_presets_path=Path(self.temp.name) / "trusted-style-presets.json",
+            anima_tools_dir=Path(self.temp.name) / "tools",
+            trusted_hostnames={trusted_host},
+        )
+        trusted_client = TestClient(TestServer(trusted_app))
+        await trusted_client.start_server()
+        try:
+            trusted = await trusted_client.get(
+                "/api/config",
+                headers={
+                    "Host": trusted_host,
+                    "Origin": f"https://{trusted_host}",
+                },
+            )
+            self.assertEqual(trusted.status, 200)
+            evil = await trusted_client.get(
+                "/api/config",
+                headers={"Host": "evil.example", "Origin": "https://evil.example"},
+            )
+            self.assertEqual(evil.status, 403)
+        finally:
+            await trusted_client.close()
 
     async def test_config_exposes_startup_warnings(self):
         payload = await (await self.client.get("/api/config")).json()

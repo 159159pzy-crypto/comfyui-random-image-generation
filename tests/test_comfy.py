@@ -146,6 +146,14 @@ class FakeInventoryClient(ComfyClient):
                 "input": {"required": {"model_name": ["COMBO", {"options": ["upscale.pth"]}]}}
             },
             "easy hiresFix": {"input": {"required": {"model_name": [["upscale.pth"]]}}},
+            "KSampler": {
+                "input": {
+                    "required": {
+                        "sampler_name": [["er_sde", "euler"]],
+                        "scheduler": [["simple", "karras"]],
+                    }
+                }
+            },
         }
 
     async def _json(self, method, path, **kwargs):
@@ -213,7 +221,15 @@ class InventoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resource_inventory_reads_live_choices(self):
         resources = await FakeInventoryClient().resource_inventory()
-        self.assertEqual(resources, {"models": ["model.safetensors"], "upscale_models": ["upscale.pth"]})
+        self.assertEqual(
+            resources,
+            {
+                "models": ["model.safetensors"],
+                "upscale_models": ["upscale.pth"],
+                "samplers": ["er_sde", "euler"],
+                "schedulers": ["simple", "karras"],
+            },
+        )
 
 
 class WaitForHistoryTests(unittest.IsolatedAsyncioTestCase):

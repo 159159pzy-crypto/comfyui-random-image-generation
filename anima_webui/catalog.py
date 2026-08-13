@@ -352,7 +352,7 @@ class PromptCatalog:
         hair: str = "",
         eye: str = "",
         series: str = "",
-        custom_group: str = "",
+        custom_group: str | Iterable[str] = "",
         favorite_keys: set[str] | None = None,
         favorites_only: bool = False,
         sort: str = "",
@@ -365,7 +365,17 @@ class PromptCatalog:
         trait_values = [normalize_text(value) for value in (traits or []) if normalize_text(value)]
         entries = self._items[section]
         if custom_group:
-            entries = [item for item in entries if not item.get("builtin") and custom_group in (item.get("group_ids") or [])]
+            custom_group_ids = (
+                {custom_group}
+                if isinstance(custom_group, str)
+                else {str(value) for value in custom_group if str(value)}
+            )
+            entries = [
+                item
+                for item in entries
+                if not item.get("builtin")
+                and custom_group_ids.intersection(item.get("group_ids") or [])
+            ]
         query_text = normalize_text(query)
         if query_text:
             entries = [item for item in entries if query_text in normalize_text(" ".join([

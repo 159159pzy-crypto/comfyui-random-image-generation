@@ -67,6 +67,8 @@ class StylePresetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings["model_name"], DEFAULT_SETTINGS["model_name"])
         self.assertEqual(settings["hires"], DEFAULT_SETTINGS["hires"])
         self.assertEqual(settings["detailers"], DEFAULT_SETTINGS["detailers"])
+        self.assertEqual(settings["sampler_name"], DEFAULT_SETTINGS["sampler_name"])
+        self.assertEqual(settings["scheduler"], DEFAULT_SETTINGS["scheduler"])
         self.assertEqual(settings["manual_artist"], "@anmi")
 
     async def test_duplicate_names_are_rejected_case_insensitively(self):

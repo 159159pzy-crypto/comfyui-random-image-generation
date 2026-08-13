@@ -48,6 +48,8 @@ class FakeComfy:
         self.available_loras = [item["filename"] for item in DEFAULT_SETTINGS["loras"]]
         self.available_models = [DEFAULT_SETTINGS["model_name"]]
         self.available_upscalers = [DEFAULT_SETTINGS["hires"]["model_name"]]
+        self.available_samplers = [DEFAULT_SETTINGS["sampler_name"]]
+        self.available_schedulers = [DEFAULT_SETTINGS["scheduler"]]
 
     async def lora_filenames(self):
         return list(self.available_loras)
@@ -56,6 +58,8 @@ class FakeComfy:
         return {
             "models": list(self.available_models),
             "upscale_models": list(self.available_upscalers),
+            "samplers": list(self.available_samplers),
+            "schedulers": list(self.available_schedulers),
         }
 
     async def submit(self, payload):
@@ -187,15 +191,27 @@ class BatchManagerTests(unittest.IsolatedAsyncioTestCase):
         self.comfy.block = asyncio.Event()
         await self.manager.start({**DEFAULT_SETTINGS, "count": 2})
         await asyncio.sleep(0)
-        queued = await self.manager.start({**DEFAULT_SETTINGS, "count": 1})
+        queued_settings = {
+            **DEFAULT_SETTINGS,
+            "count": 1,
+            "sampler_name": "euler",
+            "scheduler": "karras",
+        }
+        self.comfy.available_samplers.append("euler")
+        self.comfy.available_schedulers.append("karras")
+        queued = await self.manager.start(queued_settings)
         self.assertEqual(queued["status"], "queued")
         self.assertEqual(queued["position"], 1)
         self.assertEqual(len(self.manager.queue), 1)
+        self.assertEqual(self.manager.queue[0]["settings"]["sampler_name"], "euler")
+        self.assertEqual(self.manager.queue[0]["settings"]["scheduler"], "karras")
         self.comfy.block.set()
         result = await self.manager.wait()
         # 队列自动接续:两个批次共 3 张图,全部按序生成
         self.assertEqual(result["status"], "completed")
         self.assertEqual(len(self.comfy.submissions), 3)
+        self.assertEqual(self.comfy.submissions[-1]["settings"]["sampler_name"], "euler")
+        self.assertEqual(self.comfy.submissions[-1]["settings"]["scheduler"], "karras")
         self.assertEqual(len(self.manager.queue), 0)
 
     async def test_queue_is_full_at_limit(self):

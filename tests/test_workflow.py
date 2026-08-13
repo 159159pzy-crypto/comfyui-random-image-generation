@@ -92,6 +92,8 @@ class WorkflowTests(unittest.TestCase):
             "height": 768,
             "steps": 22,
             "cfg": 3.5,
+            "sampler_name": "euler",
+            "scheduler": "karras",
         }
         api, ui = render_workflows(self.api, self.ui, settings, 123456, 987, "AnimaRandom/test")
         composer = api["60"]["inputs"]
@@ -108,6 +110,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(composer["extra_prompt"], "rain")
         self.assertEqual(composer["seed"], 987)
         self.assertEqual(api["42"]["inputs"]["artist_tags"], "@anmi")
+        self.assertEqual(api["5"]["inputs"]["sampler_name"], "euler")
+        self.assertEqual(api["5"]["inputs"]["scheduler"], "karras")
+        sampler_ui = next(node for node in ui["nodes"] if node["id"] == 5)
+        self.assertEqual(sampler_ui["widgets_values"][4:6], ["euler", "karras"])
         self.assertEqual(api["42"]["inputs"]["character_tags"], "fixed hero")
         self.assertEqual(api["42"]["inputs"]["clothing_tags"], "")
         self.assertEqual(api["42"]["inputs"]["pose_tags"], "fixed pose")
@@ -361,6 +367,10 @@ class WorkflowTests(unittest.TestCase):
             {"height": 5000},
             {"steps": 0},
             {"cfg": 31},
+            {"sampler_name": ""},
+            {"sampler_name": 1},
+            {"scheduler": ""},
+            {"scheduler": False},
             {"random_pose": "yes"},
             {"random_character_count": 0},
             {"random_clothing_count": 6},

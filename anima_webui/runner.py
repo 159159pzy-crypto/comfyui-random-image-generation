@@ -10,6 +10,7 @@ from typing import Any
 from .comfy import ComfyAborted, ComfyError, extract_images, extract_positive_prompt
 from .catalog import PromptCatalog
 from .history import HistoryStore
+from .prompt_rules import PromptRuleStore
 from .workflow import MAX_SAMPLE_SEED, WorkflowError, WorkflowTemplates, validate_loras, validate_settings
 
 
@@ -50,6 +51,7 @@ class BatchManager:
         history: HistoryStore,
         comfy: Any,
         catalog: PromptCatalog | None = None,
+        prompt_rules: PromptRuleStore | None = None,
     ):
         self.templates = templates
         self.history = history
@@ -59,6 +61,7 @@ class BatchManager:
         self.stop_requested = False
         self.client_id = str(uuid.uuid4())
         self.catalog = catalog
+        self.prompt_rules = prompt_rules
         # 排队中的批次(仅内存;WebUI 重启后队列清空,历史记录只在真正开跑时创建)。
         self.queue: list[dict[str, Any]] = []
         self.shutting_down = False
@@ -75,7 +78,10 @@ class BatchManager:
 
     async def start(self, overrides: dict[str, Any], seeds: dict[str, int] | None = None) -> dict[str, Any]:
         async with self._start_lock:
-            settings = validate_settings(overrides)
+            normalized_overrides = overrides
+            if self.prompt_rules is not None:
+                normalized_overrides, _ = self.prompt_rules.normalize_settings(overrides)
+            settings = validate_settings(normalized_overrides)
             seeds = validate_seeds(seeds)
             if self.catalog:
                 self.catalog.validate_settings(settings)
@@ -90,6 +96,10 @@ class BatchManager:
                     raise WorkflowError(f"主模型不存在: {settings['model_name']}")
                 if settings["hires"]["enabled"] and settings["hires"]["model_name"] not in resources.get("upscale_models", []):
                     raise WorkflowError(f"高清修复模型不存在: {settings['hires']['model_name']}")
+                if settings["sampler_name"] not in resources.get("samplers", []):
+                    raise WorkflowError(f"Sampler 不可用: {settings['sampler_name']}")
+                if settings["scheduler"] not in resources.get("schedulers", []):
+                    raise WorkflowError(f"Scheduler 不可用: {settings['scheduler']}")
             if self.active():
                 # 有批次在跑:进入队列,当前批次结束后自动接续。
                 if len(self.queue) >= MAX_QUEUE:
@@ -179,6 +189,23 @@ class BatchManager:
                     "full_prompt": "",
                     "selected": {},
                 }
+                if self.prompt_rules is not None:
+                    protected = settings.get("lora_managed_triggers", [])
+                    composer_prompt, _ = self.prompt_rules.normalize_text(
+                        resolved["composer_prompt"],
+                        "positive",
+                        protected_lora_words=protected,
+                    )
+                    full_prompt, _ = self.prompt_rules.normalize_text(
+                        resolved["full_prompt"],
+                        "positive",
+                        protected_lora_words=protected,
+                    )
+                    resolved = {
+                        **resolved,
+                        "composer_prompt": composer_prompt,
+                        "full_prompt": full_prompt,
+                    }
                 submission_args = (
                     settings, sample_seed, prompt_seed, prefix, self.client_id, sequence
                 )
