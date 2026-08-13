@@ -25,6 +25,12 @@ test-results/
 Thumbs.db
 Desktop.ini
 
+# Local scratch files and Windows shortcuts
+_tmp*
+*.lnk
+*.url
+*.website
+
 # Corrupt-file backups and packaging artifacts
 *.corrupt.bak
 *.corrupt-*.bak
