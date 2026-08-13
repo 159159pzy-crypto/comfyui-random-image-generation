@@ -339,6 +339,26 @@ class WorkflowTests(unittest.TestCase):
 
     def test_artist_tags_are_canonical_and_independent(self):
         self.assertEqual(normalize_artist_tags("@anmi @rella, by Foo, anmi"), "@anmi, @rella, @Foo")
+
+    def test_frozen_prompt_is_injected_once_and_preserves_generation_settings(self):
+        api, ui = render_workflows(
+            self.api,
+            self.ui,
+            DEFAULT_SETTINGS,
+            123,
+            456,
+            "replay",
+            frozen_positive_prompt="frozen hero, frozen pose, ",
+            frozen_negative_prompt="frozen negative ",
+        )
+        self.assertEqual(api["60"]["inputs"]["resolved_prompt"], "frozen hero, frozen pose, ")
+        self.assertEqual(api["42"]["inputs"]["quality_prompt"], "")
+        self.assertEqual(api["42"]["inputs"]["artist_tags"], "")
+        self.assertEqual(api["45"]["inputs"]["text"], "frozen negative ")
+        self.assertEqual(api["37"]["inputs"]["seed"], 123)
+        self.assertEqual(api["5"]["inputs"]["sampler_name"], DEFAULT_SETTINGS["sampler_name"])
+        self.assertEqual(api["1"]["inputs"]["unet_name"], DEFAULT_SETTINGS["model_name"])
+        self.assertEqual(ui["nodes"][0]["type"], self.ui["nodes"][0]["type"])
         settings = validate_settings({**DEFAULT_SETTINGS, "manual_artist": "anmi, @rella"})
         self.assertEqual(settings["manual_artist"], "@anmi, @rella")
 

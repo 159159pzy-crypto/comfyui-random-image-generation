@@ -804,6 +804,83 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(bad.status, 400)
 
+    async def _create_history_image(self):
+        response = await self.client.post(
+            "/api/batches", json={**DEFAULT_SETTINGS, "count": 1}
+        )
+        self.assertEqual(response.status, 201)
+        await self.client.server.app[MANAGER_KEY].wait()
+        history = await (await self.client.get("/api/history")).json()
+        return history["items"][0]
+
+    async def test_regeneration_options_and_frozen_modes(self):
+        image = await self._create_history_image()
+        options = await (
+            await self.client.get(
+                f"/api/history/{image['id']}/regeneration-options"
+            )
+        ).json()
+        self.assertTrue(options["modes"]["replay"]["available"])
+        self.assertTrue(options["modes"]["prompt_variant"]["available"])
+        original_submissions = len(self.comfy.submissions)
+        replay = await self.client.post(
+            f"/api/history/{image['id']}/regenerate", json={"mode": "replay"}
+        )
+        self.assertEqual(replay.status, 201)
+        await self.client.server.app[MANAGER_KEY].wait()
+        replay_prompt = self.comfy.submissions[original_submissions]["prompt"]
+        self.assertEqual(replay_prompt["37"]["inputs"]["seed"], image["sample_seed"])
+        self.assertEqual(replay_prompt["60"]["inputs"]["seed"], image["prompt_seed"])
+        self.assertEqual(replay_prompt["60"]["inputs"]["resolved_prompt"], "generated")
+        self.assertEqual(replay_prompt["42"]["inputs"]["quality_prompt"], "")
+
+        variant = await self.client.post(
+            f"/api/history/{image['id']}/regenerate",
+            json={"mode": "prompt_variant", "count": 2},
+        )
+        self.assertEqual(variant.status, 201)
+        await self.client.server.app[MANAGER_KEY].wait()
+        variant_prompts = self.comfy.submissions[-2:]
+        self.assertTrue(
+            all(item["prompt"]["60"]["inputs"]["seed"] == image["prompt_seed"] for item in variant_prompts)
+        )
+        self.assertTrue(
+            all(item["prompt"]["37"]["inputs"]["seed"] != image["sample_seed"] for item in variant_prompts)
+        )
+
+    async def test_regeneration_validation_and_missing_resources(self):
+        image = await self._create_history_image()
+        endpoint = f"/api/history/{image['id']}/regenerate"
+        cases = [
+            ({"mode": "replay", "count": 2}, "不接受"),
+            ({"mode": "prompt_variant", "count": 0}, "count"),
+            ({"mode": "content_redraw", "count": 2, "sections": []}, "至少"),
+            ({"mode": "content_redraw", "count": 2, "sections": ["pose", "pose"]}, "重复"),
+            ({"mode": "content_redraw", "count": 2, "sections": ["unknown"]}, "不支持"),
+        ]
+        for payload, text in cases:
+            with self.subTest(payload=payload):
+                response = await self.client.post(endpoint, json=payload)
+                self.assertEqual(response.status, 400)
+                self.assertIn(text, (await response.json())["error"])
+
+        async def missing_inventory():
+            return {
+                "models": [],
+                "upscale_models": [],
+                "samplers": [],
+                "schedulers": [],
+            }
+
+        self.comfy.resource_inventory = missing_inventory
+        options = await (
+            await self.client.get(
+                f"/api/history/{image['id']}/regeneration-options"
+            )
+        ).json()
+        self.assertFalse(options["modes"]["replay"]["available"])
+        self.assertTrue(options["resourceIssues"])
+
 
 if __name__ == "__main__":
     unittest.main()

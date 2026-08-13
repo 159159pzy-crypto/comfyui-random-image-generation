@@ -262,6 +262,8 @@ def validate_loras(settings: dict[str, Any], available_filenames: Any | None = N
             available.setdefault(normalized.casefold(), exact)
             by_basename.setdefault(normalized.rsplit("/", 1)[-1].casefold(), []).append(exact)
         for item in loras:
+            if not item["enabled"]:
+                continue
             normalized = normalize_lora_path(item["filename"])
             exact = available.get(normalized.casefold())
             if exact is None and "/" not in normalized:
@@ -792,6 +794,8 @@ def render_workflows(
     resolved_prompt: str = "",
     resolved_selection: dict[str, Any] | None = None,
     resolved_prompt_full: str = "",
+    frozen_positive_prompt: str = "",
+    frozen_negative_prompt: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     settings = validate_settings(settings)
     if not 0 <= sample_seed <= MAX_SAMPLE_SEED:
@@ -832,6 +836,8 @@ def render_workflows(
         {},
         "",
     ]
+    frozen_positive_prompt = str(frozen_positive_prompt or "")
+    frozen_negative_prompt = str(frozen_negative_prompt or "")
     composer_inputs = api[str(COMPOSER_ID)]["inputs"]
     composer_inputs.update(
         {
@@ -844,23 +850,26 @@ def render_workflows(
             "seed": prompt_seed,
             "artist_count": 0,
             "preview_collapsed": False,
-            "resolved_prompt": resolved_prompt,
+            "resolved_prompt": frozen_positive_prompt or resolved_prompt,
             "character_count": settings["random_character_count"],
             "clothing_count": settings["random_clothing_count"],
             "pose_count": settings["random_pose_count"],
             "background_count": settings["random_background_count"],
-            "extra_prompt": "" if resolved_prompt else settings["extra_prompt"],
+            "extra_prompt": ""
+            if frozen_positive_prompt or resolved_prompt
+            else settings["extra_prompt"],
         }
     )
     positive = api[str(POSITIVE_ID)]["inputs"]
-    positive["quality_prompt"] = settings["quality_prompt"]
-    positive["artist_tags"] = settings["manual_artist"]
-    positive["character_tags"] = "" if settings["random_character"] else settings["fixed_character"]
-    positive["clothing_tags"] = "" if settings["random_clothing"] else settings["fixed_clothing"]
-    positive["pose_tags"] = "" if settings["random_pose"] else settings["fixed_pose"]
-    positive["background_tags"] = "" if settings["random_background"] else settings["fixed_background"]
+    injected_full_prompt = frozen_positive_prompt
+    positive["quality_prompt"] = "" if injected_full_prompt else settings["quality_prompt"]
+    positive["artist_tags"] = "" if injected_full_prompt else settings["manual_artist"]
+    positive["character_tags"] = "" if injected_full_prompt or settings["random_character"] else settings["fixed_character"]
+    positive["clothing_tags"] = "" if injected_full_prompt or settings["random_clothing"] else settings["fixed_clothing"]
+    positive["pose_tags"] = "" if injected_full_prompt or settings["random_pose"] else settings["fixed_pose"]
+    positive["background_tags"] = "" if injected_full_prompt or settings["random_background"] else settings["fixed_background"]
     positive["extra_prompt"] = [str(COMPOSER_ID), 0]
-    api[str(NEGATIVE_ID)]["inputs"]["text"] = settings["negative_prompt"]
+    api[str(NEGATIVE_ID)]["inputs"]["text"] = frozen_negative_prompt or settings["negative_prompt"]
     api["23"]["inputs"]["value"] = settings["width"]
     api["31"]["inputs"]["value"] = settings["height"]
     api["35"]["inputs"]["value"] = 1
@@ -913,22 +922,24 @@ def render_workflows(
             prompt_seed,
             0,
             False,
-            resolved_prompt,
+            frozen_positive_prompt or resolved_prompt,
             settings["random_character_count"],
             settings["random_clothing_count"],
             settings["random_pose_count"],
             settings["random_background_count"],
-            "" if resolved_prompt else settings["extra_prompt"],
+            ""
+            if frozen_positive_prompt or resolved_prompt
+            else settings["extra_prompt"],
         ],
     )
-    _set_ui_widget(ui, POSITIVE_ID, settings["quality_prompt"], 0)
-    _set_ui_widget(ui, POSITIVE_ID, settings["manual_artist"], 1)
+    _set_ui_widget(ui, POSITIVE_ID, positive["quality_prompt"], 0)
+    _set_ui_widget(ui, POSITIVE_ID, positive["artist_tags"], 1)
     _set_ui_widget(ui, POSITIVE_ID, positive["character_tags"], 2)
     _set_ui_widget(ui, POSITIVE_ID, positive["clothing_tags"], 3)
     _set_ui_widget(ui, POSITIVE_ID, positive["pose_tags"], 4)
     _set_ui_widget(ui, POSITIVE_ID, positive["background_tags"], 5)
     _set_ui_widget(ui, POSITIVE_ID, settings["extra_prompt"], 7)
-    _set_ui_widget(ui, NEGATIVE_ID, settings["negative_prompt"], 0)
+    _set_ui_widget(ui, NEGATIVE_ID, api[str(NEGATIVE_ID)]["inputs"]["text"], 0)
     for node_id, value in ((23, settings["width"]), (31, settings["height"]), (35, 1), (39, settings["steps"]), (41, settings["cfg"]), (12, filename_prefix)):
         _set_ui_widget(ui, node_id, value, 0)
     _set_ui_widget(ui, 37, sample_seed, 0)
@@ -949,6 +960,8 @@ def build_submission(
     resolved_prompt: str = "",
     resolved_selection: dict[str, Any] | None = None,
     resolved_prompt_full: str = "",
+    frozen_positive_prompt: str = "",
+    frozen_negative_prompt: str = "",
 ) -> dict[str, Any]:
     api, ui = render_workflows(
         api_template,
@@ -960,6 +973,8 @@ def build_submission(
         resolved_prompt,
         resolved_selection,
         resolved_prompt_full,
+        frozen_positive_prompt,
+        frozen_negative_prompt,
     )
     metadata = {
         "settings": validate_settings(settings),
@@ -969,6 +984,7 @@ def build_submission(
         "resolved_selection": resolved_selection or {},
         "resolved_prompt": resolved_prompt,
         "resolved_prompt_full": resolved_prompt_full,
+        "frozen_positive_prompt": frozen_positive_prompt,
     }
     return {
         "prompt": api,
@@ -999,6 +1015,8 @@ class WorkflowTemplates:
         resolved_prompt: str = "",
         resolved_selection: dict[str, Any] | None = None,
         resolved_prompt_full: str = "",
+        frozen_positive_prompt: str = "",
+        frozen_negative_prompt: str = "",
     ) -> dict[str, Any]:
         return build_submission(
             self.api,
@@ -1012,4 +1030,6 @@ class WorkflowTemplates:
             resolved_prompt,
             resolved_selection,
             resolved_prompt_full,
+            frozen_positive_prompt,
+            frozen_negative_prompt,
         )

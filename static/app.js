@@ -41,6 +41,18 @@ const ui = Object.fromEntries(
     "reproduceImage",
     "variantButton",
     "variantCount",
+    "replayDrawer",
+    "variantDrawer",
+    "closeReplayDrawer",
+    "closeVariantDrawer",
+    "replaySeedSummary",
+    "replayStatus",
+    "variantStatus",
+    "confirmReplay",
+    "confirmVariant",
+    "variantModes",
+    "redrawSections",
+    "variantDrawerCount",
     "settingsForm",
     "count",
     "female_count",
@@ -284,6 +296,18 @@ const OPTIONAL_CONTROLS = new Set([
   "reproduceImage",
   "variantButton",
   "variantCount",
+  "replayDrawer",
+  "variantDrawer",
+  "closeReplayDrawer",
+  "closeVariantDrawer",
+  "replaySeedSummary",
+  "replayStatus",
+  "variantStatus",
+  "confirmReplay",
+  "confirmVariant",
+  "variantModes",
+  "redrawSections",
+  "variantDrawerCount",
 ]);
 const missingUi = Object.entries(ui)
   .filter(([id, element]) => !element && !OPTIONAL_CONTROLS.has(id))
@@ -302,6 +326,9 @@ let defaults = null;
 let config = { catalog: { counts: {} } };
 let currentBatch = null;
 let selectedRecord = null;
+let regenerationOptions = null;
+let regenerationRequest = 0;
+let regenerationTrigger = null;
 let historyPage = 1;
 let historyPages = 1;
 let lastTerminalBatch = "";
@@ -1202,6 +1229,8 @@ async function loadHistory(page = historyPage) {
 }
 function openDetail(record) {
   selectedRecord = record;
+  regenerationOptions = null;
+  closeRegenerationDrawers(false);
   const settings = normalizeSettings(record.settings || {});
   ui.detailImage.src = `/api/images/${record.id}`;
   ui.detailMeta.textContent = `${record.created_at || ""} · ${record.filename || ""}`;
@@ -1224,6 +1253,141 @@ function openDetail(record) {
     : "未使用";
   ui.detailSelection.innerHTML = `<span class="kicker">ACTUAL DRAW</span><div>${SECTIONS.map((section) => `<span><b>${SECTION_META[section].label}</b>${(selected[section] || []).map((item) => escapeHtml(item.title)).join("、") || "未使用"}</span>`).join("")}<span><b>LoRA</b>${loraText}</span></div>`;
   ui.detailDialog.showModal();
+}
+
+function closeRegenerationDrawers(restoreFocus = true) {
+  const hadOpen = !ui.replayDrawer.hidden || !ui.variantDrawer.hidden;
+  ui.replayDrawer.hidden = true;
+  ui.variantDrawer.hidden = true;
+  ui.reproduceImage.setAttribute("aria-expanded", "false");
+  ui.variantButton.setAttribute("aria-expanded", "false");
+  if (restoreFocus && hadOpen && regenerationTrigger && document.contains(regenerationTrigger))
+    regenerationTrigger.focus({ preventScroll: true });
+  regenerationTrigger = null;
+}
+
+function regenerationReasons(mode) {
+  return regenerationOptions?.modes?.[mode]?.reasons || [];
+}
+
+function renderRegenerationOptions() {
+  if (!regenerationOptions || !selectedRecord) return;
+  const issues = regenerationOptions.resourceIssues || [];
+  const issueText = issues.length
+    ? `<strong>无法生成</strong><span>${issues.map((item) => `${escapeHtml(item.label)}：${escapeHtml(item.name)}`).join("<br>")}</span>`
+    : `<strong>资源检查通过</strong><span>模型、已启用 LoRA、高清模型与采样资源均可用。</span>`;
+  ui.replayStatus.dataset.state = issues.length ? "error" : "ok";
+  ui.replayStatus.innerHTML = issueText;
+  ui.variantStatus.dataset.state = issues.length ? "error" : "ok";
+  ui.variantStatus.innerHTML = issueText;
+  ui.replaySeedSummary.innerHTML = `<span><b>图像种子</b>${escapeHtml(selectedRecord.sample_seed)}</span><span><b>提示词种子</b>${escapeHtml(selectedRecord.prompt_seed)}</span>`;
+  ui.confirmReplay.disabled = !regenerationOptions.modes?.replay?.available;
+  for (const input of ui.redrawSections.querySelectorAll("input")) {
+    const section = regenerationOptions.sections?.[input.value];
+    input.disabled = !section?.canRedraw;
+    input.checked = false;
+    input.closest("label").hidden = !section?.canRedraw;
+  }
+  updateVariantDrawer();
+}
+
+async function loadRegenerationOptions() {
+  if (!selectedRecord) return null;
+  if (regenerationOptions) return regenerationOptions;
+  const requestId = ++regenerationRequest;
+  ui.replayStatus.dataset.state = "pending";
+  ui.replayStatus.textContent = "正在检查历史记录与本地资源…";
+  ui.variantStatus.dataset.state = "pending";
+  ui.variantStatus.textContent = "正在检查历史记录与本地资源…";
+  try {
+    const value = await request(`/api/history/${selectedRecord.id}/regeneration-options`);
+    if (requestId !== regenerationRequest || !selectedRecord) return null;
+    regenerationOptions = value;
+    renderRegenerationOptions();
+    return value;
+  } catch (error) {
+    if (requestId !== regenerationRequest) return null;
+    for (const status of [ui.replayStatus, ui.variantStatus]) {
+      status.dataset.state = "error";
+      status.textContent = error.message;
+    }
+    return null;
+  }
+}
+
+async function openRegenerationDrawer(kind, trigger) {
+  const drawer = kind === "replay" ? ui.replayDrawer : ui.variantDrawer;
+  const wasOpen = !drawer.hidden;
+  closeRegenerationDrawers(false);
+  if (wasOpen) {
+    trigger.focus({ preventScroll: true });
+    return;
+  }
+  regenerationTrigger = trigger;
+  drawer.hidden = false;
+  trigger.setAttribute("aria-expanded", "true");
+  await loadRegenerationOptions();
+  const focusTarget = kind === "replay" ? ui.confirmReplay : ui.variantModes.querySelector("input:checked");
+  focusTarget?.focus({ preventScroll: true });
+}
+
+function selectedRegenerationMode() {
+  return ui.variantModes.querySelector('input[name="regenerationMode"]:checked')?.value || "prompt_variant";
+}
+
+function selectedRedrawSections() {
+  return [...ui.redrawSections.querySelectorAll("input:checked")].map((input) => input.value);
+}
+
+function updateVariantDrawer() {
+  const mode = selectedRegenerationMode();
+  const sections = selectedRedrawSections();
+  ui.redrawSections.hidden = mode !== "content_redraw";
+  const labels = {
+    prompt_variant: "生成同提示词变体",
+    content_redraw: "重新抽取所选内容",
+    settings_reroll: "按此配置再抽",
+  };
+  ui.confirmVariant.textContent = labels[mode];
+  const available = Boolean(regenerationOptions?.modes?.[mode]?.available);
+  ui.confirmVariant.disabled = !available || (mode === "content_redraw" && !sections.length);
+  const reasons = regenerationReasons(mode);
+  if (reasons.length && !(regenerationOptions?.resourceIssues || []).length) {
+    ui.variantStatus.dataset.state = "error";
+    ui.variantStatus.innerHTML = `<strong>当前方式不可用</strong><span>${reasons.map(escapeHtml).join("<br>")}</span>`;
+  }
+}
+
+async function submitRegeneration(mode, count = 1, sections = []) {
+  if (!selectedRecord || submitInFlight) return false;
+  submitInFlight = true;
+  ui.confirmReplay.disabled = true;
+  ui.confirmVariant.disabled = true;
+  try {
+    const body = mode === "replay" ? { mode } : { mode, count };
+    if (mode === "content_redraw") body.sections = sections;
+    const state = await request(`/api/history/${selectedRecord.id}/regenerate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    toast(state.status === "queued" ? `已加入队列,第 ${state.position} 位` : "批次已开始");
+    closeRegenerationDrawers(false);
+    ui.detailDialog.close();
+    return true;
+  } catch (error) {
+    toast(error.message);
+    regenerationOptions = null;
+    await loadRegenerationOptions();
+    return false;
+  } finally {
+    submitInFlight = false;
+    try {
+      renderBatchPayload(await request("/api/batches/current"));
+    } catch {
+      ui.startButton.disabled = !ui.connection.classList.contains("online");
+    }
+    if (regenerationOptions) renderRegenerationOptions();
+  }
 }
 
 function selectionHas(section, id) {
@@ -3076,27 +3240,47 @@ ui.queueBadge?.addEventListener("click", () => {
   ui.queuePanel.hidden = !open;
   ui.queueBadge.setAttribute("aria-expanded", String(open));
 });
-ui.reproduceImage?.addEventListener("click", async () => {
-  if (!selectedRecord) return;
-  const settings = normalizeSettings(selectedRecord.settings || {});
-  const ok = await submitBatch(
-    { ...settings, count: 1 },
-    { sample_seed: selectedRecord.sample_seed, prompt_seed: selectedRecord.prompt_seed },
-  );
-  if (ok) ui.detailDialog.close();
+ui.reproduceImage?.addEventListener("click", () => openRegenerationDrawer("replay", ui.reproduceImage));
+ui.variantButton?.addEventListener("click", () => openRegenerationDrawer("variant", ui.variantButton));
+ui.closeReplayDrawer.addEventListener("click", () => closeRegenerationDrawers());
+ui.closeVariantDrawer.addEventListener("click", () => closeRegenerationDrawers());
+ui.confirmReplay.addEventListener("click", () => submitRegeneration("replay"));
+ui.confirmVariant.addEventListener("click", () => {
+  const mode = selectedRegenerationMode();
+  const count = Math.max(1, Math.min(100, Number(ui.variantDrawerCount.value) || 4));
+  submitRegeneration(mode, count, selectedRedrawSections());
 });
-ui.variantButton?.addEventListener("click", async () => {
-  if (!selectedRecord) return;
-  const count = Math.max(1, Math.min(100, Number(ui.variantCount.value) || 4));
-  const settings = normalizeSettings(selectedRecord.settings || {});
-  const ok = await submitBatch({ ...settings, count });
-  if (ok) ui.detailDialog.close();
-});
+ui.variantModes.addEventListener("change", updateVariantDrawer);
+ui.redrawSections.addEventListener("change", updateVariantDrawer);
+for (const input of [ui.variantCount, ui.variantDrawerCount])
+  input.addEventListener("input", (event) => {
+    const count = Math.max(1, Math.min(100, Number(event.target.value) || 4));
+    ui.variantCount.value = count;
+    ui.variantDrawerCount.value = count;
+  });
 ui.prevPage.addEventListener("click", () => loadHistory(historyPage - 1));
 ui.nextPage.addEventListener("click", () => loadHistory(historyPage + 1));
-ui.closeDialog.addEventListener("click", () => ui.detailDialog.close());
+ui.closeDialog.addEventListener("click", () => {
+  closeRegenerationDrawers(false);
+  ui.detailDialog.close();
+});
 ui.detailDialog.addEventListener("click", (event) => {
-  if (event.target === ui.detailDialog) ui.detailDialog.close();
+  if (event.target === ui.detailDialog) {
+    closeRegenerationDrawers(false);
+    ui.detailDialog.close();
+    return;
+  }
+  if (
+    (!ui.replayDrawer.hidden || !ui.variantDrawer.hidden) &&
+    !event.target.closest(".regeneration-drawer, .reproduce-actions")
+  )
+    closeRegenerationDrawers();
+});
+ui.detailDialog.addEventListener("cancel", (event) => {
+  if (!ui.replayDrawer.hidden || !ui.variantDrawer.hidden) {
+    event.preventDefault();
+    closeRegenerationDrawers();
+  }
 });
 ui.restoreSettings.addEventListener("click", () => {
   if (!selectedRecord) return;

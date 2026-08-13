@@ -14,7 +14,7 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260726-liquidglass-2">
+  <link rel="stylesheet" href="/static/styles.css?v=20260814-regeneration-ui">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -376,18 +376,43 @@
         <label>完整提示词<textarea id="detailPositive" rows="8" readonly></textarea></label>
         <label>负面提示词<textarea id="detailNegative" rows="5" readonly></textarea></label>
         <div class="dialog-actions reproduce-actions">
-          <button id="reproduceImage" class="button" type="button" title="使用相同设置与种子重新生成这一张">复现此图</button>
+          <button id="reproduceImage" class="button" type="button" title="查看原种子重跑选项" aria-expanded="false" aria-controls="replayDrawer">复现此图</button>
           <div class="variant-group">
             <input id="variantCount" type="number" min="1" max="100" value="4" aria-label="变体数量">
-            <button id="variantButton" class="button" type="button" title="使用相同设置、随机种子再生成一批">再抽变体</button>
+            <button id="variantButton" class="button" type="button" title="查看变体与重新抽取选项" aria-expanded="false" aria-controls="variantDrawer">再抽变体</button>
           </div>
         </div>
+        <section id="replayDrawer" class="regeneration-drawer replay-drawer" aria-labelledby="replayDrawerTitle" hidden>
+          <header><div><span class="kicker">REPLAY</span><h3 id="replayDrawerTitle">按原种子重跑</h3></div><button id="closeReplayDrawer" class="icon-button dark" type="button" title="收起" aria-label="收起原种子重跑选项">×</button></header>
+          <p>冻结历史最终提示词，沿用原设置与双种子。资源文件内容被覆盖时无法识别，不承诺像素级一致。</p>
+          <div id="replaySeedSummary" class="regeneration-seeds"></div>
+          <div id="replayStatus" class="regeneration-status" role="status"></div>
+          <button id="confirmReplay" class="button primary" type="button" disabled>按原种子重跑</button>
+        </section>
+        <section id="variantDrawer" class="regeneration-drawer variant-drawer" aria-labelledby="variantDrawerTitle" hidden>
+          <header><div><span class="kicker">VARIATIONS</span><h3 id="variantDrawerTitle">变体方式</h3></div><button id="closeVariantDrawer" class="icon-button dark" type="button" title="收起" aria-label="收起变体选项">×</button></header>
+          <div id="variantStatus" class="regeneration-status regeneration-status-compact" role="status"></div>
+          <fieldset id="variantModes" class="regeneration-modes">
+            <legend class="sr-only">选择变体方式</legend>
+            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="prompt_variant" checked><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>同提示词变体</strong><small>提示词不变，只换图像种子</small></span><span class="regeneration-mode-badge">推荐</span></label>
+            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="content_redraw"><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>选择内容重抽</strong><small>只改变勾选的内容维度</small></span></label>
+            <div id="redrawSections" class="redraw-sections" hidden>
+              <label><input type="checkbox" value="character">角色</label>
+              <label><input type="checkbox" value="clothing">服装</label>
+              <label><input type="checkbox" value="pose">姿势</label>
+              <label><input type="checkbox" value="background">背景</label>
+              <label><input type="checkbox" value="expression">表情</label>
+            </div>
+            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="settings_reroll"><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>按此配置再抽</strong><small>候选池和设置不变，全部重新随机</small></span></label>
+          </fieldset>
+          <div class="regeneration-footer"><label class="regeneration-count"><span>生成数量</span><input id="variantDrawerCount" type="number" min="1" max="100" value="4"></label><button id="confirmVariant" class="button primary" type="button" disabled>生成同提示词变体</button></div>
+        </section>
         <div class="dialog-actions"><button id="restoreSettings" class="button primary" type="button">载入设置</button><span></span><button id="deleteRecord" class="button danger" type="button">删除记录</button></div>
       </div>
     </div>
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260810-tag-rules" defer></script>
+  <script src="/static/app.js?v=20260814-regeneration-ui" defer></script>
 </body>
 </html>

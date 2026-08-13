@@ -574,6 +574,201 @@ def create_app(
             raise WorkflowError("分页参数无效") from error
         return web.json_response(await history.list_images(page, limit))
 
+    async def _regeneration_context(image_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        record = await history.get_image(image_id)
+        settings = dict(record.get("settings") or {})
+        positive = ""
+        for candidate in (record.get("positive_prompt"), record.get("resolved_prompt")):
+            text = str(candidate or "")
+            if text.strip():
+                positive = text
+                break
+        negative = ""
+        for candidate in (record.get("negative_prompt"), settings.get("negative_prompt")):
+            text = str(candidate or "")
+            if text.strip():
+                negative = text
+                break
+        selected = record.get("resolved_selection") or {}
+        if not isinstance(selected, dict):
+            selected = {}
+        resource_issues = await manager.resource_issues(settings)
+        sections: dict[str, Any] = {}
+        for section in SECTIONS:
+            random_enabled = bool(settings.get(f"random_{section}"))
+            actual = selected.get(section) if isinstance(selected.get(section), list) else []
+            sections[section] = {
+                "random": random_enabled,
+                "hasSnapshot": bool(actual),
+                "canRedraw": random_enabled,
+            }
+        warnings = [
+            "资源文件内容已被覆盖时无法识别，原种子重跑不承诺像素级一致。"
+        ]
+        if not positive:
+            warnings.append("历史记录缺少最终正向提示词，无法可靠回放。")
+        context = {
+            "positive": positive,
+            "negative": negative,
+            "selected": selected,
+            "resourceIssues": resource_issues,
+            "sections": sections,
+            "warnings": warnings,
+        }
+        return record, context
+
+    async def regeneration_options(request: web.Request) -> web.Response:
+        _record, context = await _regeneration_context(
+            int(request.match_info["image_id"])
+        )
+        resources_ok = not context["resourceIssues"]
+        positive_ok = bool(context["positive"])
+        random_sections = [
+            section for section, value in context["sections"].items() if value["random"]
+        ]
+        return web.json_response(
+            {
+                "modes": {
+                    "replay": {
+                        "available": resources_ok and positive_ok,
+                        "reasons": _regeneration_reasons(context, require_prompt=True),
+                    },
+                    "prompt_variant": {
+                        "available": resources_ok and positive_ok,
+                        "reasons": _regeneration_reasons(context, require_prompt=True),
+                    },
+                    "content_redraw": {
+                        "available": resources_ok and bool(random_sections),
+                        "reasons": _regeneration_reasons(
+                            context, require_random=bool(random_sections)
+                        ),
+                    },
+                    "settings_reroll": {
+                        "available": resources_ok,
+                        "reasons": _regeneration_reasons(context),
+                    },
+                },
+                "resourceIssues": context["resourceIssues"],
+                "warnings": context["warnings"],
+                "sections": context["sections"],
+            }
+        )
+
+    def _regeneration_reasons(
+        context: dict[str, Any],
+        *,
+        require_prompt: bool = False,
+        require_random: bool = True,
+    ) -> list[str]:
+        reasons = [
+            f"{item['label']} 不可用: {item['name']}"
+            for item in context["resourceIssues"]
+        ]
+        if require_prompt and not context["positive"]:
+            reasons.append("历史记录缺少最终正向提示词")
+        if require_random is False:
+            reasons.append("历史设置没有可重新抽取的随机维度")
+        return reasons
+
+    async def regenerate_history(request: web.Request) -> web.Response:
+        await client.status()
+        record, context = await _regeneration_context(
+            int(request.match_info["image_id"])
+        )
+        body = await _json_body(request)
+        unknown = set(body) - {"mode", "count", "sections"}
+        if unknown:
+            raise WorkflowError(
+                f"再生成请求包含未知参数: {', '.join(sorted(unknown))}"
+            )
+        mode = body.get("mode")
+        if mode not in {"replay", "prompt_variant", "content_redraw", "settings_reroll"}:
+            raise WorkflowError("mode 无效")
+        if context["resourceIssues"]:
+            missing = "；".join(
+                f"{item['label']}: {item['name']}" for item in context["resourceIssues"]
+            )
+            raise WorkflowError(f"历史资源不可用: {missing}")
+        settings = dict(record.get("settings") or {})
+        if mode == "replay":
+            if set(body) - {"mode"}:
+                raise WorkflowError("replay 不接受 count 或 sections")
+            if not context["positive"]:
+                raise WorkflowError("历史记录缺少可回放的最终正向提示词")
+            settings["count"] = 1
+            regeneration = {
+                "mode": mode,
+                "frozen_positive_prompt": context["positive"],
+                "frozen_negative_prompt": context["negative"],
+                "fixed_selection": context["selected"],
+            }
+            seeds = {
+                "sample_seed": record["sample_seed"],
+                "prompt_seed": record["prompt_seed"],
+            }
+        else:
+            count = body.get("count", 4)
+            if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 100:
+                raise WorkflowError("count 必须是 1-100 之间的整数")
+            settings["count"] = count
+            seeds = None
+            if mode == "prompt_variant":
+                if "sections" in body:
+                    raise WorkflowError("prompt_variant 不接受 sections")
+                if not context["positive"]:
+                    raise WorkflowError("历史记录缺少可回放的最终正向提示词")
+                regeneration = {
+                    "mode": mode,
+                    "frozen_positive_prompt": context["positive"],
+                    "frozen_negative_prompt": context["negative"],
+                    "fixed_selection": context["selected"],
+                    "prompt_seed": record["prompt_seed"],
+                }
+            elif mode == "settings_reroll":
+                if "sections" in body:
+                    raise WorkflowError("settings_reroll 不接受 sections")
+                regeneration = {"mode": mode}
+            else:
+                sections = body.get("sections")
+                if not isinstance(sections, list) or not sections:
+                    raise WorkflowError("content_redraw 至少选择一个重抽维度")
+                if any(not isinstance(section, str) for section in sections):
+                    raise WorkflowError("sections 必须是字符串数组")
+                if len(sections) != len(set(sections)):
+                    raise WorkflowError("重抽维度不能重复")
+                invalid = set(sections) - set(SECTIONS)
+                if invalid:
+                    raise WorkflowError(f"不支持的重抽维度: {', '.join(sorted(invalid))}")
+                not_random = [
+                    section for section in sections if not context["sections"][section]["random"]
+                ]
+                if not_random:
+                    raise WorkflowError(
+                        f"这些维度在历史设置中不是随机池: {', '.join(not_random)}"
+                    )
+                missing_fixed = [
+                    section
+                    for section, value in context["sections"].items()
+                    if value["random"] and section not in sections and not value["hasSnapshot"]
+                ]
+                if missing_fixed:
+                    raise WorkflowError(
+                        "缺少历史实际抽取结果，请同时重抽: " + ", ".join(missing_fixed)
+                    )
+                fixed_selection = {
+                    section: context["selected"].get(section, [])
+                    for section, value in context["sections"].items()
+                    if value["random"] and section not in sections
+                }
+                regeneration = {
+                    "mode": mode,
+                    "redraw_sections": sections,
+                    "fixed_selection": fixed_selection,
+                    "original_selection": context["selected"],
+                }
+        state = await manager.start(settings, seeds=seeds, regeneration=regeneration)
+        return web.json_response(state, status=201)
+
     async def delete_history(request: web.Request) -> web.Response:
         image_id = int(request.match_info["image_id"])
         if not await history.delete_image(image_id):
@@ -636,6 +831,13 @@ def create_app(
     app.router.add_post("/api/batches/{batch_id}/stop", stop_batch)
     app.router.add_delete("/api/batches/queue/{queue_id}", remove_queued_batch)
     app.router.add_get("/api/history", list_history)
+    app.router.add_get(
+        r"/api/history/{image_id:\d+}/regeneration-options",
+        regeneration_options,
+    )
+    app.router.add_post(
+        r"/api/history/{image_id:\d+}/regenerate", regenerate_history
+    )
     app.router.add_delete(r"/api/history/{image_id:\d+}", delete_history)
     app.router.add_get(r"/api/images/{image_id:\d+}", image)
     app.router.add_get("/", index)

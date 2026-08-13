@@ -81,7 +81,6 @@ class FakeComfy:
                 await self.block.wait()
         if self.error_at == sequence:
             raise RuntimeError("render failed")
-        payload = self.submissions[sequence - 1]
         return {
             "outputs": {
                 "12": {
@@ -97,6 +96,21 @@ class FakeComfy:
             "prompt": [0, prompt_id, {}, {"extra_pnginfo": {"anima_prompt": {"42": {"positive": f"prompt {sequence}"}}}}],
         }
 
+
+class RedrawCatalog(FakeCatalog):
+    def prompt_parts(self, item, section, character_detail="trigger_tags", strip_person_tags=False):
+        return [item.get("prompt") or item.get("title") or ""]
+
+    def resolve_prompt(self, settings, prompt_seed):
+        pose_id = "pose:new" if prompt_seed % 2 else "pose:old"
+        pose = {"id": pose_id, "title": pose_id, "prompt": pose_id}
+        character = {"id": "character:new", "title": "character:new", "prompt": "character:new"}
+        fixed_character = settings.get("fixed_character") or ""
+        return {
+            "composer_prompt": f"{fixed_character}, {pose_id}, ",
+            "full_prompt": f"quality, {fixed_character}, {pose_id}, ",
+            "selected": {"character": [character], "pose": [pose]},
+        }
 
 class ProgressComfy(FakeComfy):
     """带 websocket 进度流的 fake:产出一条采样进度和一帧预览后挂起。"""
@@ -324,6 +338,47 @@ class BatchManagerTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.wait()
         self.assertEqual(self.comfy.submissions[0]["sample_seed"], 123456789)
         self.assertEqual(self.comfy.submissions[0]["prompt_seed"], 42)
+
+    async def test_frozen_replay_bypasses_catalog_and_prompt_rules(self):
+        manager = BatchManager(FakeTemplates(), self.history, self.comfy, FakeCatalog())
+        regeneration = {
+            "mode": "replay",
+            "frozen_positive_prompt": "historical final prompt ",
+            "frozen_negative_prompt": "historical negative ",
+            "fixed_selection": {"pose": [{"id": "deleted", "title": "deleted"}]},
+        }
+        await manager.start(
+            {**DEFAULT_SETTINGS, "count": 1},
+            seeds={"sample_seed": 11, "prompt_seed": 12},
+            regeneration=regeneration,
+        )
+        await manager.wait()
+        submission = self.comfy.submissions[-1]
+        self.assertEqual(submission["resolved_prompt"], "historical final prompt ")
+        self.assertEqual(submission["frozen_positive_prompt"], "historical final prompt ")
+        self.assertEqual(submission["sample_seed"], 11)
+        self.assertEqual(submission["prompt_seed"], 12)
+        image = (await self.history.list_images())["items"][0]
+        self.assertEqual(image["positive_prompt"], "historical final prompt ")
+        self.assertEqual(image["negative_prompt"], "historical negative ")
+
+    async def test_content_redraw_keeps_unselected_dimensions_and_changes_selected(self):
+        manager = BatchManager(FakeTemplates(), self.history, self.comfy, RedrawCatalog())
+        original = {
+            "character": [{"id": "character:old", "title": "character:old", "prompt": "character:old"}],
+            "pose": [{"id": "pose:old", "title": "pose:old", "prompt": "pose:old"}],
+        }
+        regeneration = {
+            "mode": "content_redraw",
+            "redraw_sections": ["pose"],
+            "fixed_selection": {"character": original["character"]},
+            "original_selection": original,
+        }
+        await manager.start({**DEFAULT_SETTINGS, "count": 1}, regeneration=regeneration)
+        await manager.wait()
+        submitted = self.comfy.submissions[-1]
+        self.assertEqual(submitted["resolved_selection"]["character"], original["character"])
+        self.assertEqual(submitted["resolved_selection"]["pose"][0]["id"], "pose:new")
 
     async def test_invalid_seeds_are_rejected(self):
         for bad in ({"sample_seed": -1, "prompt_seed": 1}, {"sample_seed": 1}, {"x": 1}, [1, 2], {"sample_seed": True, "prompt_seed": 1}):

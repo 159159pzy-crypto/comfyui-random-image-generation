@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import secrets
 import uuid
@@ -22,6 +23,8 @@ class BatchConflict(RuntimeError):
 
 
 MAX_QUEUE = 20
+REGENERATION_MODES = {"replay", "prompt_variant", "content_redraw", "settings_reroll"}
+PROMPT_SECTIONS = ("character", "clothing", "pose", "background", "expression")
 
 
 def validate_seeds(value: Any) -> dict[str, int] | None:
@@ -76,14 +79,122 @@ class BatchManager:
     def active(self) -> bool:
         return bool(self.task and not self.task.done())
 
-    async def start(self, overrides: dict[str, Any], seeds: dict[str, int] | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _validate_regeneration(value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise WorkflowError("regeneration 必须是对象")
+        unknown = set(value) - {
+            "mode",
+            "frozen_positive_prompt",
+            "frozen_negative_prompt",
+            "fixed_selection",
+            "redraw_sections",
+            "original_selection",
+            "prompt_seed",
+        }
+        if unknown:
+            raise WorkflowError(
+                f"regeneration 包含未知参数: {', '.join(sorted(unknown))}"
+            )
+        mode = value.get("mode")
+        if mode not in REGENERATION_MODES:
+            raise WorkflowError("regeneration.mode 无效")
+        result = copy.deepcopy(value)
+        result["mode"] = mode
+        if mode in {"replay", "prompt_variant"}:
+            positive = str(value.get("frozen_positive_prompt") or "")
+            if not positive.strip():
+                raise WorkflowError("历史记录缺少可回放的最终正向提示词")
+            result["frozen_positive_prompt"] = positive
+            result["frozen_negative_prompt"] = str(
+                value.get("frozen_negative_prompt") or ""
+            )
+            fixed_selection = value.get("fixed_selection") or {}
+            if not isinstance(fixed_selection, dict):
+                raise WorkflowError("regeneration.fixed_selection 必须是对象")
+            result["fixed_selection"] = copy.deepcopy(fixed_selection)
+            if mode == "prompt_variant":
+                prompt_seed = value.get("prompt_seed")
+                if isinstance(prompt_seed, bool) or not isinstance(prompt_seed, int):
+                    raise WorkflowError("regeneration.prompt_seed 必须是整数")
+                if not 0 <= prompt_seed <= 2**31 - 1:
+                    raise WorkflowError("regeneration.prompt_seed 超出范围")
+                result["prompt_seed"] = prompt_seed
+        elif mode == "content_redraw":
+            sections = value.get("redraw_sections")
+            if not isinstance(sections, list) or not sections:
+                raise WorkflowError("content_redraw 至少选择一个重抽维度")
+            if any(not isinstance(section, str) for section in sections):
+                raise WorkflowError("regeneration.redraw_sections 必须是字符串数组")
+            if len(sections) != len(set(sections)):
+                raise WorkflowError("重抽维度不能重复")
+            invalid = set(sections) - set(PROMPT_SECTIONS)
+            if invalid:
+                raise WorkflowError(f"不支持的重抽维度: {', '.join(sorted(invalid))}")
+            fixed_selection = value.get("fixed_selection") or {}
+            original_selection = value.get("original_selection") or {}
+            if not isinstance(fixed_selection, dict) or not isinstance(
+                original_selection, dict
+            ):
+                raise WorkflowError("历史实际抽取结果无效")
+            result["redraw_sections"] = list(sections)
+            result["fixed_selection"] = copy.deepcopy(fixed_selection)
+            result["original_selection"] = copy.deepcopy(original_selection)
+        return result
+
+    async def resource_issues(self, overrides: dict[str, Any]) -> list[dict[str, str]]:
+        settings = validate_settings(overrides)
+        issues: list[dict[str, str]] = []
+        lora_filenames = getattr(self.comfy, "lora_filenames", None)
+        available_loras = {
+            str(value).replace("\\", "/").casefold(): str(value)
+            for value in await lora_filenames()
+        } if lora_filenames else {}
+        for item in settings["loras"]:
+            if item["enabled"] and item["filename"].replace("\\", "/").casefold() not in available_loras:
+                issues.append({"type": "lora", "name": item["filename"], "label": "LoRA"})
+        resource_inventory = getattr(self.comfy, "resource_inventory", None)
+        if resource_inventory:
+            resources = await resource_inventory()
+            checks = [
+                ("model", "主模型", settings["model_name"], resources.get("models", [])),
+                ("sampler", "Sampler", settings["sampler_name"], resources.get("samplers", [])),
+                ("scheduler", "Scheduler", settings["scheduler"], resources.get("schedulers", [])),
+            ]
+            if settings["hires"]["enabled"]:
+                checks.append(
+                    (
+                        "upscale_model",
+                        "高清模型",
+                        settings["hires"]["model_name"],
+                        resources.get("upscale_models", []),
+                    )
+                )
+            for kind, label, name, available in checks:
+                if name not in available:
+                    issues.append({"type": kind, "name": name, "label": label})
+        return issues
+
+    async def start(
+        self,
+        overrides: dict[str, Any],
+        seeds: dict[str, int] | None = None,
+        regeneration: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         async with self._start_lock:
+            regeneration = self._validate_regeneration(regeneration)
             normalized_overrides = overrides
-            if self.prompt_rules is not None:
+            if self.prompt_rules is not None and not (
+                regeneration and regeneration.get("frozen_positive_prompt")
+            ):
                 normalized_overrides, _ = self.prompt_rules.normalize_settings(overrides)
             settings = validate_settings(normalized_overrides)
             seeds = validate_seeds(seeds)
-            if self.catalog:
+            if self.catalog and not (
+                regeneration and regeneration.get("frozen_positive_prompt")
+            ):
                 self.catalog.validate_settings(settings)
             lora_filenames = getattr(self.comfy, "lora_filenames", None)
             if not lora_filenames:
@@ -108,6 +219,7 @@ class BatchManager:
                     "queue_id": f"queue_{uuid.uuid4().hex[:8]}",
                     "settings": settings,
                     "seeds": seeds,
+                    "regeneration": regeneration,
                 }
                 self.queue.append(entry)
                 return {
@@ -116,10 +228,15 @@ class BatchManager:
                     "position": len(self.queue),
                     "count": settings["count"],
                 }
-            await self._begin_batch(settings, seeds)
+            await self._begin_batch(settings, seeds, regeneration)
             return self.snapshot()
 
-    async def _begin_batch(self, settings: dict[str, Any], seeds: dict[str, int] | None) -> None:
+    async def _begin_batch(
+        self,
+        settings: dict[str, Any],
+        seeds: dict[str, int] | None,
+        regeneration: dict[str, Any] | None = None,
+    ) -> None:
         batch_id = uuid.uuid4().hex[:12]
         self.stop_requested = False
         self.preview = None
@@ -134,7 +251,7 @@ class BatchManager:
             "settings": settings,
         }
         await self.history.create_batch(batch_id, settings["count"], settings)
-        self.task = asyncio.create_task(self._run(batch_id, settings, seeds))
+        self.task = asyncio.create_task(self._run(batch_id, settings, seeds, regeneration))
         self._ensure_monitor()
 
     def queue_snapshot(self) -> list[dict[str, Any]]:
@@ -174,22 +291,49 @@ class BatchManager:
             await asyncio.sleep(0)
         return self.snapshot()
 
-    async def _run(self, batch_id: str, settings: dict[str, Any], seeds: dict[str, int] | None = None) -> None:
+    async def _run(
+        self,
+        batch_id: str,
+        settings: dict[str, Any],
+        seeds: dict[str, int] | None = None,
+        regeneration: dict[str, Any] | None = None,
+    ) -> None:
         try:
             for sequence in range(1, settings["count"] + 1):
                 if self.stop_requested:
                     break
                 # 固定种子用于复现历史图片;未指定时每张随机。
                 sample_seed = seeds["sample_seed"] if seeds else secrets.randbelow(MAX_SAMPLE_SEED + 1)
-                prompt_seed = seeds["prompt_seed"] if seeds else secrets.randbelow(2**31)
+                prompt_seed = (
+                    seeds["prompt_seed"]
+                    if seeds
+                    else regeneration.get("prompt_seed")
+                    if regeneration and regeneration.get("mode") == "prompt_variant"
+                    else secrets.randbelow(2**31)
+                )
                 date_folder = datetime.now().strftime("%Y-%m-%d")
                 prefix = f"AnimaRandom/{date_folder}/{batch_id}/image"
-                resolved = self.catalog.resolve_prompt(settings, prompt_seed) if self.catalog else {
-                    "composer_prompt": "",
-                    "full_prompt": "",
-                    "selected": {},
-                }
-                if self.prompt_rules is not None:
+                resolved = self._resolve_regeneration(settings, prompt_seed, regeneration) if regeneration else (
+                    self.catalog.resolve_prompt(settings, prompt_seed) if self.catalog else {
+                        "composer_prompt": "",
+                        "full_prompt": "",
+                        "selected": {},
+                    }
+                )
+                if regeneration and regeneration.get("mode") == "content_redraw":
+                    for attempt in range(512):
+                        candidate_seed = (prompt_seed + attempt) % (2**31)
+                        resolved = self._resolve_regeneration(
+                            settings, candidate_seed, regeneration
+                        )
+                        if resolved.pop("_changed", False):
+                            prompt_seed = candidate_seed
+                            break
+                    else:
+                        raise WorkflowError("所选维度无可用替代组合")
+                if self.prompt_rules is not None and not (
+                    regeneration and regeneration.get("frozen_positive_prompt")
+                ):
                     protected = settings.get("lora_managed_triggers", [])
                     composer_prompt, _ = self.prompt_rules.normalize_text(
                         resolved["composer_prompt"],
@@ -215,6 +359,12 @@ class BatchManager:
                         resolved_prompt=resolved["composer_prompt"],
                         resolved_selection=resolved["selected"],
                         resolved_prompt_full=resolved["full_prompt"],
+                        frozen_positive_prompt=(regeneration or {}).get(
+                            "frozen_positive_prompt", ""
+                        ),
+                        frozen_negative_prompt=(regeneration or {}).get(
+                            "frozen_negative_prompt", ""
+                        ),
                     )
                 else:
                     payload = self.templates.submission(*submission_args)
@@ -231,7 +381,9 @@ class BatchManager:
                 images = extract_images(entry)
                 if not images:
                     raise ComfyError("任务完成但未返回保存图片")
-                positive = extract_positive_prompt(entry)
+                frozen_positive = (regeneration or {}).get("frozen_positive_prompt", "")
+                frozen_negative = (regeneration or {}).get("frozen_negative_prompt", "")
+                positive = frozen_positive or extract_positive_prompt(entry)
                 for image in images:
                     await self.history.add_image(
                         batch_id=batch_id,
@@ -239,7 +391,7 @@ class BatchManager:
                         prompt_id=prompt_id,
                         image=image,
                         positive_prompt=positive,
-                        negative_prompt=settings["negative_prompt"],
+                        negative_prompt=frozen_negative or settings["negative_prompt"],
                         sample_seed=sample_seed,
                         prompt_seed=prompt_seed,
                         settings=settings,
@@ -278,7 +430,9 @@ class BatchManager:
             return
         entry = self.queue.pop(0)
         try:
-            await self._begin_batch(entry["settings"], entry["seeds"])
+            await self._begin_batch(
+                entry["settings"], entry["seeds"], entry.get("regeneration")
+            )
         except Exception as error:  # 接续失败不应吞掉:记录并继续尝试下一个
             logger.warning("队列批次启动失败: %s", error)
             await self._advance_queue()
@@ -345,3 +499,54 @@ class BatchManager:
             await interrupt()
         except ComfyError:
             pass
+
+    def _resolve_regeneration(
+        self,
+        settings: dict[str, Any],
+        prompt_seed: int,
+        regeneration: dict[str, Any],
+    ) -> dict[str, Any]:
+        mode = regeneration["mode"]
+        fixed_selection = copy.deepcopy(regeneration.get("fixed_selection") or {})
+        if mode in {"replay", "prompt_variant"}:
+            positive = regeneration["frozen_positive_prompt"]
+            return {
+                "composer_prompt": positive,
+                "full_prompt": positive,
+                "selected": fixed_selection,
+            }
+        if mode == "settings_reroll":
+            return self.catalog.resolve_prompt(settings, prompt_seed) if self.catalog else {
+                "composer_prompt": "",
+                "full_prompt": "",
+                "selected": {},
+            }
+        if not self.catalog:
+            raise WorkflowError("当前提示词目录不可用，无法重新抽取内容")
+        redraw_settings = copy.deepcopy(settings)
+        for section, entries in fixed_selection.items():
+            redraw_settings[f"random_{section}"] = False
+            parts: list[str] = []
+            for item in entries:
+                parts.extend(
+                    self.catalog.prompt_parts(
+                        item,
+                        section,
+                        settings.get("character_detail", "trigger_tags"),
+                        bool(settings.get("female_count") or settings.get("male_count"))
+                        and section == "character",
+                    )
+                )
+            redraw_settings[f"fixed_{section}"] = ", ".join(parts)
+        resolved = self.catalog.resolve_prompt(redraw_settings, prompt_seed)
+        merged = copy.deepcopy(resolved["selected"])
+        for section, entries in fixed_selection.items():
+            merged[section] = copy.deepcopy(entries)
+        redraw_sections = regeneration["redraw_sections"]
+        original = regeneration.get("original_selection") or {}
+        changed = any(
+            [item.get("id") for item in merged.get(section, [])]
+            != [item.get("id") for item in original.get(section, [])]
+            for section in redraw_sections
+        )
+        return {**resolved, "selected": merged, "_changed": changed}
