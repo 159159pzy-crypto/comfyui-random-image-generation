@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<local:LauncherPage
+    x:Class="Anima.Launcher.Pages.EnvironmentPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Anima.Launcher.Pages"
+    xmlns:launch="using:Anima.Launcher"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="12" Margin="24,0,24,24" MaxWidth="880">
+
+            <launch:Card Header="系统检测" IconGlyph="&#xE950;" Description="自动识别系统、显卡与可用磁盘空间">
+                <launch:Card.ActionContent>
+                    <TextBlock x:Name="SystemInfo" Text="正在检测系统…" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="420" TextAlignment="Right" />
+                </launch:Card.ActionContent>
+            </launch:Card>
+
+            <launch:Card Header="安装方式" IconGlyph="&#xE8F1;" Description="导入已有环境，或为 NVIDIA 创建新的隔离环境">
+                <launch:Card.ActionContent>
+                    <RadioButtons>
+                        <RadioButton x:Name="ImportMode" Content="导入已有 ComfyUI" IsChecked="True" />
+                        <RadioButton x:Name="FreshMode" Content="新建 ComfyUI（NVIDIA）" />
+                    </RadioButtons>
+                </launch:Card.ActionContent>
+            </launch:Card>
+
+            <launch:Card Header="ComfyUI 目录" IconGlyph="&#xE8DA;" Description="新建选择空目录；导入选择含 main.py 的目录或便携版上级目录">
+                <launch:Card.ActionContent>
+                    <Grid ColumnSpacing="8" MinWidth="380">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="RootBox" PlaceholderText="例如 D:\\ComfyUI" />
+                        <Button Grid.Column="1" Content="选择目录" Click="PickRoot_Click" />
+                    </Grid>
+                </launch:Card.ActionContent>
+            </launch:Card>
+
+            <launch:Card Header="Python（导入时可选）" IconGlyph="&#xE943;" Description="自动识别 .venv / venv / python_embeded；也可手动指定 python.exe">
+                <launch:Card.ActionContent>
+                    <Grid ColumnSpacing="8" MinWidth="380">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="PythonBox" PlaceholderText="python.exe（留空自动识别）" />
+                        <Button Grid.Column="1" Content="选择文件" Click="PickPython_Click" />
+                    </Grid>
+                </launch:Card.ActionContent>
+            </launch:Card>
+
+            <launch:Card Header="下载来源" IconGlyph="&#xE774;" Description="仅作用于本次安装，不修改系统 Git / pip 设置">
+                <launch:Card.ActionContent>
+                    <ComboBox x:Name="SourceBox" MinWidth="280" SelectionChanged="Source_Changed" />
+                </launch:Card.ActionContent>
+            </launch:Card>
+
+            <Expander HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                <Expander.Header>
+                    <Grid>
+                        <TextBlock Text="镜像与仓库" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
+                    </Grid>
+                </Expander.Header>
+                <StackPanel Spacing="8" Margin="0,8,0,0">
+                    <launch:Card Header="Git HTTPS 镜像模板" Description="HTTPS 前缀或包含 {url} 的模板">
+                        <launch:Card.ActionContent><TextBox x:Name="GitMirrorBox" MinWidth="280" /></launch:Card.ActionContent>
+                    </launch:Card>
+                    <launch:Card Header="Hugging Face 镜像">
+                        <launch:Card.ActionContent><TextBox x:Name="HfMirrorBox" MinWidth="280" /></launch:Card.ActionContent>
+                    </launch:Card>
+                    <launch:Card Header="Python 包索引">
+                        <launch:Card.ActionContent><TextBox x:Name="PipBox" MinWidth="280" /></launch:Card.ActionContent>
+                    </launch:Card>
+                    <launch:Card Header="自定义 ComfyUI Git URL" Description="必须含有清单锁定提交">
+                        <launch:Card.ActionContent><TextBox x:Name="CustomRepoBox" MinWidth="280" /></launch:Card.ActionContent>
+                    </launch:Card>
+                </StackPanel>
+            </Expander>
+
+            <launch:Card Header="操作" IconGlyph="&#xE768;">
+                <launch:Card.ActionContent>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="检查 / 导入目录" Click="Check_Click" />
+                        <Button Content="安装环境 / 补齐缺失节点" Click="Install_Click" Style="{StaticResource AccentButtonStyle}" />
+                    </StackPanel>
+                </launch:Card.ActionContent>
+            </launch:Card>
+
+            <InfoBar IsOpen="True" IsClosable="False" Severity="Informational">
+                <InfoBar.Content>
+                    <TextBlock TextWrapping="Wrap" Text="新建环境自动准备 Git、Python、CUDA PyTorch 和锁定节点。导入已有环境保留现有节点版本；只安装缺失节点。来源切换仅作用于本次安装，不修改系统 Git / pip 设置。&#x0a;&#x0a;Git 镜像填写 HTTPS 前缀或包含 {url} 的模板。自定义仓库必须含有清单锁定提交。&#x0a;&#x0a;新建建议预留 20 GiB 以上；模型需要另加约 6 GiB。固定版本组合已通过本机独立环境安装和最小生图验收。" />
+                </InfoBar.Content>
+            </InfoBar>
+
+        </StackPanel>
+    </ScrollViewer>
+</local:LauncherPage>

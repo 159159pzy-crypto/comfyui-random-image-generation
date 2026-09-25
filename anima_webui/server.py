@@ -22,6 +22,7 @@ from .prompt_rules import PromptRuleStore
 from .runner import BatchConflict, BatchManager
 from .style_presets import StylePresetStore
 from .workflow import DEFAULT_SETTINGS, WorkflowError, WorkflowTemplates
+from .launcher import configure_resources
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -120,25 +121,29 @@ def create_app(
     prompt_replacements_path: str | Path | None = None,
     anima_tools_dir: str | Path | None = None,
     trusted_hostnames: set[str] | frozenset[str] | None = None,
+    data_dir: str | Path | None = None,
+    resource_paths: dict[str, str] | None = None,
 ) -> web.Application:
     root = Path(app_dir)
+    storage = Path(data_dir) if data_dir is not None else root / "data"
     client = comfy or ComfyClient()
-    history = HistoryStore(history_path or root / "data" / "history.sqlite3")
+    history = HistoryStore(history_path or storage / "history.sqlite3")
     catalog = PromptCatalog(root, anima_tools_dir)
     custom_prompts = CustomPromptStore(
-        custom_prompts_path or root / "data" / "custom_prompts.json", catalog
+        custom_prompts_path or storage / "custom_prompts.json", catalog
     )
     favorites = FavoritesService(client, catalog)
     prompt_rules = PromptRuleStore(
-        prompt_replacements_path or root / "data" / "prompt_replacements.json"
+        prompt_replacements_path or storage / "prompt_replacements.json"
     )
     lora_trigger_overrides = LoraTriggerOverrideStore(
-        lora_trigger_overrides_path or root / "data" / "lora_trigger_overrides.json"
+        lora_trigger_overrides_path or storage / "lora_trigger_overrides.json"
     )
     style_presets = StylePresetStore(
-        style_presets_path or root / "data" / "style_presets.json", prompt_rules
+        style_presets_path or storage / "style_presets.json", prompt_rules
     )
     templates = WorkflowTemplates.load(root / "templates")
+    startup_defaults = configure_resources(templates, resource_paths)
     manager = BatchManager(templates, history, client, catalog, prompt_rules)
 
     startup_warnings = [
@@ -192,7 +197,7 @@ def create_app(
     async def config(_: web.Request) -> web.Response:
         return web.json_response(
             {
-                "defaults": DEFAULT_SETTINGS,
+                "defaults": startup_defaults,
                 "comfy_url": getattr(client, "base_url", "local"),
                 "catalog": {
                     "available": catalog.available,
@@ -541,6 +546,8 @@ def create_app(
         await client.status()
         body = await _json_body(request)
         seeds = body.pop("seeds", None)  # 复现历史图片时携带固定种子,不属于 settings
+        if resource_paths is not None:
+            body = {**startup_defaults, **body}
         state = await manager.start(body, seeds=seeds)
         return web.json_response(state, status=201)
 
@@ -786,6 +793,15 @@ def create_app(
     async def favicon(_: web.Request) -> web.Response:
         return web.Response(status=204)
 
+    async def launcher_health(_: web.Request) -> web.Response:
+        return web.json_response({
+            "app": "anima-random-studio",
+            "app_dir": str(root.resolve()),
+            "data_dir": str(storage.resolve()),
+            "comfy_url": getattr(client, "base_url", "local"),
+        })
+
+    app.router.add_get("/api/launcher-health", launcher_health)
     app.router.add_get("/api/config", config)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/loras", loras)
@@ -865,11 +881,13 @@ def create_app(
     return app
 
 
-def _setup_logging(root: Path) -> None:
+def _setup_logging(root: Path, data_dir: Path | None = None) -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     try:
-        (root / "data").mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(root / "data" / "webui.log", encoding="utf-8"))
+        directory = data_dir if data_dir is not None else root / "data"
+        directory.mkdir(parents=True, exist_ok=True)
+        from logging.handlers import RotatingFileHandler
+        handlers.append(RotatingFileHandler(directory / "webui.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"))
     except OSError:
         pass
     logging.basicConfig(
@@ -880,12 +898,13 @@ def _setup_logging(root: Path) -> None:
 
 
 def main() -> None:
-    _setup_logging(APP_DIR)
     parser = argparse.ArgumentParser(description="Anima Random WebUI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8190)
     parser.add_argument("--comfy-url", default="http://127.0.0.1:8188")
     parser.add_argument("--anima-tools-dir", default=None)
+    parser.add_argument("--data-dir", default=None, help="用户数据目录；默认仍为项目 data")
+    parser.add_argument("--resource-paths", default=None, help="启动器解析的模型相对路径映射 JSON")
     parser.add_argument(
         "--trusted-host",
         action="append",
@@ -896,10 +915,13 @@ def main() -> None:
     args = parser.parse_args()
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("WebUI 只允许监听本机地址")
+    _setup_logging(APP_DIR, Path(args.data_dir) if args.data_dir else None)
     app = create_app(
         comfy=ComfyClient(args.comfy_url),
         anima_tools_dir=args.anima_tools_dir,
         trusted_hostnames=set(args.trusted_host),
+        data_dir=args.data_dir,
+        resource_paths=json.loads(Path(args.resource_paths).read_text(encoding="utf-8")) if args.resource_paths else None,
     )
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(f"http://127.0.0.1:{args.port}")).start()

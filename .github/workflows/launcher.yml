@@ -1,0 +1,29 @@
+name: Windows launcher
+on:
+  push:
+    paths: ['launcher/**', 'anima_webui/**', 'tests/**', 'static/**', 'templates/**', 'Build-Launcher.ps1', 'AnimaRandomStudio.ico', '.github/workflows/launcher.yml']
+  pull_request:
+  workflow_dispatch:
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m pytest -q
+      - run: dotnet run -c Release --project launcher/Anima.Launcher.Tests
+      - name: Publish unsigned candidate
+        shell: pwsh
+        run: ./Build-Launcher.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AnimaRandomStudio-win-x64-unsigned
+          path: |
+            dist/launcher/AnimaRandomStudio.exe
+            dist/launcher/SHA256SUMS.txt

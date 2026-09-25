@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "official",
+      "name": "官方来源",
+      "gitTemplate": "",
+      "huggingFaceBase": "",
+      "pipIndex": "https://pypi.org/simple"
+    },
+    {
+      "id": "china",
+      "name": "国内模型 / Python 镜像（Git 使用官方）",
+      "gitTemplate": "",
+      "huggingFaceBase": "https://hf-mirror.com",
+      "pipIndex": "https://pypi.tuna.tsinghua.edu.cn/simple"
+    },
+    {
+      "id": "github-mirror",
+      "name": "GitHub 镜像 + 国内模型 / Python 镜像",
+      "gitTemplate": "https://ghfast.top/{url}",
+      "huggingFaceBase": "https://hf-mirror.com",
+      "pipIndex": "https://pypi.tuna.tsinghua.edu.cn/simple"
+    },
+    {
+      "id": "custom",
+      "name": "自定义来源",
+      "gitTemplate": "",
+      "huggingFaceBase": "",
+      "pipIndex": "https://pypi.org/simple"
+    }
+  ]
+}

@@ -163,6 +163,18 @@ class FakeInventoryClient(ComfyClient):
 
 
 class InventoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_basic_resources_work_without_optional_upscaler(self):
+        class NoUpscaler(FakeInventoryClient):
+            async def object_info(self):
+                result = await super().object_info()
+                result["UpscaleModelLoader"] = {"input": {"required": {"model_name": [[]]}}}
+                result["easy hiresFix"] = {"input": {"required": {"model_name": [[]]}}}
+                return result
+
+        resources = await NoUpscaler().resource_inventory()
+        self.assertEqual(resources["upscale_models"], [])
+        self.assertEqual(resources["models"], ["model.safetensors"])
+
     async def test_lora_inventory_deduplicates_path_separators(self):
         client = FakeInventoryClient()
         inventory = await client.lora_inventory()

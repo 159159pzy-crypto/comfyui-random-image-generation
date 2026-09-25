@@ -9,7 +9,13 @@
 - 需要在不直接暴露 ComfyUI 的情况下，通过一个本机 WebUI 管理生成任务。
 - 想保留 ComfyUI 原生工作流，同时获得更清晰的随机池和收藏管理。
 
-项目不打包任何模型、LoRA、检测器或第三方节点。首次运行前必须完成下面的 ComfyUI 和模型配置。
+项目不打包任何模型、LoRA、检测器或第三方节点。Windows 用户可使用安装启动器导入已有 ComfyUI，或自动创建 NVIDIA 环境并按需下载模型。
+
+## Windows 安装启动器
+
+双击 `AnimaRandomStudio.exe`，按“选择 ComfyUI 目录 → 检查或安装环境 → 勾选缺失模型 → 启动工作台”完成首次配置。之后双击自动检查并启动服务，托盘提供打开工作台、启动/停止、检查资源、设置与日志。已有 `models/clip`、`models/unet` 和 `extra_model_paths.yaml` 中的资源会被识别，模型必须勾选才下载。
+
+源码构建运行 `pwsh ./Build-Launcher.ps1`，输出位于 `dist/launcher/`；新版基于 **WinUI 3**，以自包含文件夹分发（`AnimaRandomStudio.exe` + 依赖 DLL，内置 .NET / Windows App Runtime / WebUI），无需为启动器单独安装运行时。详见 [启动器使用、构建与发布说明](launcher/README.md)。首次发布包仍需可信 Authenticode 签名。
 
 ## 主要功能
 

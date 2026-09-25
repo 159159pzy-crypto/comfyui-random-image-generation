@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "id": "miaomiao-14",
+      "name": "喵喵 Anima 1.4",
+      "group": "基础生成",
+      "category": "diffusion_models",
+      "relativePath": "miaomiaoHarem_anima14.safetensors",
+      "aliases": [],
+      "size": 4182218328,
+      "sha256": "9542fdd6db4f579b276a3fa6e26955e7e377a42ba65efd237dcda0b14e044d1b",
+      "urls": [
+        "https://civitai.com/api/download/models/3107122?fileId=2987069"
+      ],
+      "license": "作者模型页条款（下载前查看）",
+      "licenseUrl": "https://civitai.com/models/934764?modelVersionId=3107122"
+    },
+    {
+      "id": "qwen-text",
+      "name": "Qwen 文本编码器",
+      "group": "基础生成",
+      "category": "text_encoders",
+      "relativePath": "qwen_3_06b_base.safetensors",
+      "aliases": [],
+      "size": 1192135096,
+      "sha256": "cd2a512003e2f9f3cd3c32a9c3573f820bb28c940f73c57b1ddaa983d9223eba",
+      "urls": [
+        "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors"
+      ],
+      "license": "Anima 仓库 LICENSE.md",
+      "licenseUrl": "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md"
+    },
+    {
+      "id": "qwen-vae",
+      "name": "Qwen VAE",
+      "group": "基础生成",
+      "category": "vae",
+      "relativePath": "qwen_image_vae.safetensors",
+      "aliases": [],
+      "size": 253806246,
+      "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
+      "urls": [
+        "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors"
+      ],
+      "license": "Anima 仓库 LICENSE.md",
+      "licenseUrl": "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md"
+    },
+    {
+      "id": "remacri",
+      "name": "4x Remacri",
+      "group": "高清修复",
+      "category": "upscale_models",
+      "relativePath": "4x_foolhardy_Remacri.pth",
+      "aliases": [],
+      "size": 67025055,
+      "sha256": "e1a73bd89c2da1ae494774746398689048b5a892bd9653e146713f9df8bca86a",
+      "urls": [
+        "https://huggingface.co/FacehugmanIII/4x_foolhardy_Remacri/resolve/main/4x_foolhardy_Remacri.pth"
+      ],
+      "license": "参考模型作者说明",
+      "licenseUrl": "https://huggingface.co/FacehugmanIII/4x_foolhardy_Remacri"
+    },
+    {
+      "id": "sam",
+      "name": "SAM ViT-B",
+      "group": "Detailer",
+      "category": "sams",
+      "relativePath": "sam_vit_b_01ec64.pth",
+      "aliases": [],
+      "size": 375042383,
+      "sha256": "ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912",
+      "urls": [
+        "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+      ],
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/facebookresearch/segment-anything/blob/main/LICENSE"
+    },
+    {
+      "id": "hand",
+      "name": "hand_yolov9c.pt",
+      "group": "Detailer",
+      "category": "ultralytics",
+      "relativePath": "bbox/hand_yolov9c.pt",
+      "aliases": [],
+      "size": 51633747,
+      "sha256": "6f116f686ef5942fa0c1d08db481b3d7622047a97847eccfb2a264f9ce9777f2",
+      "urls": [
+        "https://huggingface.co/Bingsu/adetailer/resolve/main/hand_yolov9c.pt"
+      ],
+      "license": "AGPL-3.0（详见模型页）",
+      "licenseUrl": "https://huggingface.co/Bingsu/adetailer"
+    },
+    {
+      "id": "face",
+      "name": "face_yolov9c.pt",
+      "group": "Detailer",
+      "category": "ultralytics",
+      "relativePath": "bbox/face_yolov9c.pt",
+      "aliases": [],
+      "size": 51648019,
+      "sha256": "d02fe493c31e1bbc6450f4dc6f1db86a02a59322ff1f6d318da0661d72ddd084",
+      "urls": [
+        "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov9c.pt"
+      ],
+      "license": "AGPL-3.0（详见模型页）",
+      "licenseUrl": "https://huggingface.co/Bingsu/adetailer"
+    },
+    {
+      "id": "eyes",
+      "name": "眼睛检测器（手动导入）",
+      "group": "Detailer",
+      "category": "ultralytics",
+      "relativePath": "bbox/Eyeful_v2-Individual.pt",
+      "aliases": [],
+      "size": 22545748,
+      "sha256": "278fee230b1be01cfb8c47c3f9ad7118c7aa33149a2249b80cea4da236361fbe",
+      "urls": [],
+      "license": "未核实，仅检测现有文件",
+      "licenseUrl": ""
+    },
+    {
+      "id": "nsfw",
+      "name": "NSFW 检测器（手动导入）",
+      "group": "Detailer",
+      "category": "ultralytics",
+      "relativePath": "segm/ntd11_anime_nsfw_segm_v5-variant1.pt",
+      "aliases": [],
+      "size": 20585444,
+      "sha256": "d04eec2d5b657410c90bc06895634a4d9a67f8fc710852fdc67086f30e0cc900",
+      "urls": [],
+      "license": "未核实，仅检测现有文件",
+      "licenseUrl": ""
+    }
+  ]
+}

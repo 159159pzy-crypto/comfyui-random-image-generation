@@ -35,3 +35,9 @@ _tmp*
 *.corrupt.bak
 *.corrupt-*.bak
 *.egg-info/
+
+# Windows launcher build outputs
+dist/
+launcher/**/bin/
+launcher/**/obj/
+launcher/payload.zip

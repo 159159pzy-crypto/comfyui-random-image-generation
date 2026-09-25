@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI>
+    <RootNamespace>Anima.Launcher</RootNamespace>
+    <AssemblyName>AnimaRandomStudio</AssemblyName>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>0.3.0</Version>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <DebugType>embedded</DebugType>
+    <CsWinRTIncludesProjectionAttributes>true</CsWinRTIncludesProjectionAttributes>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <!-- Publish must still emit the compiled XAML .xbf files + app .pri, or the window crashes (0xc000027b). -->
+    <EnablePriGenTooling>true</EnablePriGenTooling>
+    <IncludePackageReferencesDuringMarkupCompilation>true</IncludePackageReferencesDuringMarkupCompilation>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <StartupObject>Anima.Launcher.Program</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Anima.Launcher.Core/Anima.Launcher.Core.csproj" />
+    <EmbeddedResource Include="../manifests/*.json" />
+    <EmbeddedResource Include="../scripts/probe_comfy.py" />
+    <EmbeddedResource Include="../payload.zip" Condition="Exists('../payload.zip')" />
+    <Content Include="app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4948" />
+    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.1.0" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
+  </ItemGroup>
+  <!--
+    WinExe sets $(TargetExt)=.exe but MarkupCompilePass1 emits a .dll under intermediatexaml;
+    @(XamlIntermediateAssembly) therefore never Exists() and LocalAssembly stays empty (WMC1509),
+    which in turn makes the XAML compiler fail to resolve toolkit and project types (WMC0001/9999).
+    Point LocalAssembly at the emitted intermediate dll explicitly.
+  -->
+  <Target Name="_SetXamlLocalAssembly" BeforeTargets="MarkupCompilePass2">
+    <PropertyGroup>
+      <LocalAssembly Condition="Exists('$(IntermediateOutputPath)intermediatexaml\$(TargetName).dll')">$(IntermediateOutputPath)intermediatexaml\$(TargetName).dll</LocalAssembly>
+      <XamlLocalAssembly Condition="Exists('$(IntermediateOutputPath)intermediatexaml\$(TargetName).dll')">$(IntermediateOutputPath)intermediatexaml\$(TargetName).dll</XamlLocalAssembly>
+    </PropertyGroup>
+  </Target>
+
+  <!--
+    dotnet publish of an unpackaged WinUI 3 app does NOT copy the compiled XAML (.xbf) or the
+    app package resource index (*.pri) into the publish folder, so the published exe crashes
+    with a stowed 0xc000027b in Microsoft.UI.Xaml.dll. Inject them into ResolvedFileToPublish.
+  -->
+  <Target Name="_PublishXamlResources" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(OutDir)$(TargetName).pri" Condition="Exists('$(OutDir)$(TargetName).pri')">
+        <RelativePath>$(TargetName).pri</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+
+    </ItemGroup>
+  </Target>
+</Project>

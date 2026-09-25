@@ -289,8 +289,8 @@ class ComfyClient:
         upscale_models = choices("UpscaleModelLoader", "model_name") or choices("easy hiresFix", "model_name")
         samplers = choices("KSampler", "sampler_name")
         schedulers = choices("KSampler", "scheduler")
-        if not models or not upscale_models or not samplers or not schedulers:
-            raise ComfyError("ComfyUI 未返回模型、高清修复模型或采样器列表")
+        if not models or not samplers or not schedulers:
+            raise ComfyError("ComfyUI 未返回模型或采样器列表")
         return {
             "models": models,
             "upscale_models": upscale_models,

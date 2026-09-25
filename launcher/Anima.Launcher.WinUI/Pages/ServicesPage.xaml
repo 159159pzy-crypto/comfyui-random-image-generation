@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<local:LauncherPage
+    x:Class="Anima.Launcher.Pages.ServicesPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Anima.Launcher.Pages"
+    xmlns:launch="using:Anima.Launcher"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="12" Margin="24,0,24,24" MaxWidth="880">
+
+            <InfoBar x:Name="StatusNote" IsOpen="False" IsClosable="False" Severity="Informational" />
+
+            <launch:ServiceCard
+                x:Name="ComfyCard"
+                Title="ComfyUI"
+                GlyphText="&#xE7B8;"
+                StartClicked="ComfyStart_Click"
+                StopClicked="ComfyStop_Click"
+                OpenClicked="ComfyOpen_Click" />
+
+            <launch:ServiceCard
+                x:Name="StudioCard"
+                Title="Studio 工作台"
+                GlyphText="&#xE91B;"
+                StartClicked="StudioStart_Click"
+                StopClicked="StudioStop_Click"
+                OpenClicked="StudioOpen_Click" />
+
+            <launch:Card Header="全局操作" IconGlyph="&#xE768;" Description="一键启动两个服务，或停止本程序创建的全部服务">
+                <launch:Card.ActionContent>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="StartAllButton" Content="全部启动并打开工作台" Click="StartAll_Click" Style="{StaticResource AccentButtonStyle}" />
+                        <Button x:Name="StopAllButton" Content="停止全部服务" Click="StopAll_Click" />
+                    </StackPanel>
+                </launch:Card.ActionContent>
+            </launch:Card>
+
+            <TextBlock
+                Text="外部已运行的 ComfyUI / 工作台只检测不停止；仅停止本程序创建的服务。停止 ComfyUI 会使工作台失去后端。"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                TextWrapping="Wrap" />
+        </StackPanel>
+    </ScrollViewer>
+</local:LauncherPage>

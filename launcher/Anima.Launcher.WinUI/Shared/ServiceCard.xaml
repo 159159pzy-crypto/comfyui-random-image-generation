@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="Anima.Launcher.ServiceCard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Border
+        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+        BorderThickness="1"
+        CornerRadius="8"
+        Padding="18,16">
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CardSizeStates">
+                <VisualState x:Name="Wide" />
+                <VisualState x:Name="Narrow">
+                    <VisualState.Setters>
+                        <Setter Target="Actions.(Grid.Row)" Value="1" />
+                        <Setter Target="Actions.(Grid.Column)" Value="0" />
+                        <Setter Target="Actions.(Grid.ColumnSpan)" Value="3" />
+                        <Setter Target="Actions.HorizontalAlignment" Value="Left" />
+                        <Setter Target="Actions.Margin" Value="0,10,0,0" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+
+        <Grid ColumnSpacing="14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Viewbox Width="26" Height="26" VerticalAlignment="Top" Margin="0,2,0,0">
+                <FontIcon x:Name="Glyph" FontSize="20" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+            </Viewbox>
+
+            <StackPanel Grid.Column="1" Spacing="4">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock x:Name="NameText" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" />
+                    <Border x:Name="StatusBadge" CornerRadius="10" Padding="10,3" VerticalAlignment="Center" Background="{ThemeResource ControlFillColorSecondaryBrush}">
+                        <TextBlock x:Name="StatusText" Style="{StaticResource CaptionTextBlockStyle}" FontWeight="SemiBold" />
+                    </Border>
+                </StackPanel>
+                <TextBlock x:Name="UrlText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                <TextBlock x:Name="HintText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
+            </StackPanel>
+
+            <StackPanel x:Name="Actions" Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <Button x:Name="OpenButton" Content="打开" Click="Open_Click" />
+                <Button x:Name="StartButton" Content="启动" Click="Start_Click" Style="{StaticResource AccentButtonStyle}" />
+                <Button x:Name="StopButton" Content="停止" Click="Stop_Click" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</UserControl>
