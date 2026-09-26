@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anima-random-studio"
-version = "0.2.0"
+version = "0.3.0"
 description = "基于 ComfyUI 与 Anima Tools 的本地随机生图工作台"
 readme = "README.md"
 requires-python = ">=3.11"
