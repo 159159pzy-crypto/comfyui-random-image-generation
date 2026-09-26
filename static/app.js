@@ -80,6 +80,12 @@ const ui = Object.fromEntries(
     "detailDialog",
     "closeDialog",
     "detailImage",
+    "imagePreviewDialog",
+    "closeImagePreview",
+    "imagePreviewStage",
+    "imagePreviewImage",
+    "imagePreviewVeil",
+    "imagePreviewStatus",
     "detailMeta",
     "detailStats",
     "detailSelection",
@@ -326,6 +332,10 @@ let defaults = null;
 let config = { catalog: { counts: {} } };
 let currentBatch = null;
 let selectedRecord = null;
+const imagePreview = {
+  phase: "closed", token: 0, zoom: 1, x: 0, y: 0, width: 0, height: 0,
+  animation: null, pointers: new Map(), gesture: null, tap: null, backdropPointer: null,
+};
 let regenerationOptions = null;
 let regenerationRequest = 0;
 let regenerationTrigger = null;
@@ -1228,6 +1238,7 @@ async function loadHistory(page = historyPage) {
   }
 }
 function openDetail(record) {
+  closeImagePreview({ immediate: true, restoreFocus: false });
   selectedRecord = record;
   regenerationOptions = null;
   closeRegenerationDrawers(false);
@@ -1253,6 +1264,262 @@ function openDetail(record) {
     : "未使用";
   ui.detailSelection.innerHTML = `<span class="kicker">ACTUAL DRAW</span><div>${SECTIONS.map((section) => `<span><b>${SECTION_META[section].label}</b>${(selected[section] || []).map((item) => escapeHtml(item.title)).join("、") || "未使用"}</span>`).join("")}<span><b>LoRA</b>${loraText}</span></div>`;
   ui.detailDialog.showModal();
+}
+
+const IMAGE_PREVIEW_MAX_ZOOM = 4;
+const imagePreviewReducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const clampPreview = (value, min, max) => Math.min(max, Math.max(min, value));
+
+function imagePreviewFrame() {
+  return { transform: ui.imagePreviewImage.style.transform || "none", clipPath: "inset(0px round 18px)", opacity: 1 };
+}
+
+function cancelImagePreviewAnimation() {
+  imagePreview.animation?.cancel();
+  imagePreview.animation = null;
+}
+
+function animateImagePreview(from, to, duration, onFinish = () => {}) {
+  cancelImagePreviewAnimation();
+  const reduce = imagePreviewReducedMotion();
+  const animation = ui.imagePreviewImage.animate(
+    reduce ? (imagePreview.phase === "closing" ? [from, { ...from, opacity: 0 }] : [{ ...to, opacity: 0 }, to]) : [from, to],
+    { duration: reduce ? 120 : duration, easing: getComputedStyle(document.documentElement).getPropertyValue("--spring").trim(), fill: "both" },
+  );
+  imagePreview.animation = animation;
+  animation.finished.then(() => {
+    if (imagePreview.animation !== animation) return;
+    cancelImagePreviewAnimation();
+    onFinish();
+  }).catch(() => {}); // Reversing/closing during an animation is expected.
+}
+
+function liveImagePreviewFrame() {
+  const style = getComputedStyle(ui.imagePreviewImage);
+  return { transform: style.transform, clipPath: style.clipPath, opacity: style.opacity };
+}
+
+function clampImagePreviewOffset() {
+  const maxX = Math.max(0, (imagePreview.width * imagePreview.zoom - ui.imagePreviewStage.clientWidth) / 2);
+  const maxY = Math.max(0, (imagePreview.height * imagePreview.zoom - ui.imagePreviewStage.clientHeight) / 2);
+  imagePreview.x = clampPreview(imagePreview.x, -maxX, maxX);
+  imagePreview.y = clampPreview(imagePreview.y, -maxY, maxY);
+}
+
+function applyImagePreviewTransform() {
+  clampImagePreviewOffset();
+  ui.imagePreviewImage.style.transform = "translate3d(" + imagePreview.x + "px, " + imagePreview.y + "px, 0) scale(" + imagePreview.zoom + ")";
+  ui.imagePreviewImage.classList.toggle("is-zoomed", imagePreview.zoom > 1);
+}
+
+function layoutImagePreview() {
+  const image = ui.imagePreviewImage;
+  const stage = ui.imagePreviewStage;
+  const style = getComputedStyle(stage);
+  const availableWidth = Math.min(stage.clientWidth * .92, stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+  const availableHeight = Math.min(stage.clientHeight * .92, stage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom));
+  const fit = Math.min(1, availableWidth / image.naturalWidth, availableHeight / image.naturalHeight);
+  imagePreview.width = image.naturalWidth * fit;
+  imagePreview.height = image.naturalHeight * fit;
+  image.style.width = imagePreview.width + "px";
+  image.style.height = imagePreview.height + "px";
+  applyImagePreviewTransform();
+}
+
+// Reproduce object-fit:cover without stretching; reveal the cropped edges as it opens.
+function imagePreviewSourceFrame() {
+  const source = ui.detailImage.getBoundingClientRect();
+  const dialog = ui.detailDialog.getBoundingClientRect();
+  const stage = ui.imagePreviewStage.getBoundingClientRect();
+  const scale = Math.max(source.width / imagePreview.width, source.height / imagePreview.height);
+  const left = Math.max(source.left, dialog.left + 1, stage.left);
+  const top = Math.max(source.top, dialog.top + 1, stage.top);
+  const right = Math.min(source.right, dialog.right - 1, stage.right);
+  const bottom = Math.min(source.bottom, dialog.bottom - 1, stage.bottom);
+  if (!scale || right <= left || bottom <= top) return { ...imagePreviewFrame(), opacity: 0 };
+  const cx = source.left + source.width / 2;
+  const cy = source.top + source.height / 2;
+  const imageLeft = cx - imagePreview.width * scale / 2;
+  const imageTop = cy - imagePreview.height * scale / 2;
+  const insets = [
+    (top - imageTop) / scale,
+    (imageLeft + imagePreview.width * scale - right) / scale,
+    (imageTop + imagePreview.height * scale - bottom) / scale,
+    (left - imageLeft) / scale,
+  ].map(value => Math.max(0, value) + "px").join(" ");
+  return {
+    transform: "translate3d(" + (cx - stage.left - stage.width / 2) + "px, " + (cy - stage.top - stage.height / 2) + "px, 0) scale(" + scale + ")",
+    clipPath: "inset(" + insets + " round " + (18 / scale) + "px)",
+    opacity: 1,
+  };
+}
+
+async function openImagePreview(event) {
+  event?.stopPropagation(); // Preserve any expanded replay/variant controls underneath.
+  if (!selectedRecord || !ui.detailImage.getAttribute("src") || imagePreview.phase !== "closed") return;
+  const token = ++imagePreview.token;
+  imagePreview.phase = "loading";
+  imagePreview.zoom = 1;
+  imagePreview.x = imagePreview.y = 0;
+  imagePreview.tap = null;
+  ui.imagePreviewImage.hidden = true;
+  ui.imagePreviewStatus.hidden = false;
+  ui.imagePreviewStatus.textContent = "正在加载原图…";
+  ui.imagePreviewImage.src = ui.detailImage.currentSrc || ui.detailImage.src;
+  ui.imagePreviewImage.alt = "生成结果全尺寸预览";
+  document.documentElement.classList.add("image-preview-open");
+  ui.imagePreviewDialog.showModal();
+  ui.detailImage.setAttribute("aria-expanded", "true");
+  ui.closeImagePreview.focus({ preventScroll: true });
+  ui.imagePreviewVeil.getAnimations().forEach(animation => animation.cancel());
+  ui.imagePreviewVeil.animate([{ opacity: 0 }, { opacity: 1 }], { duration: imagePreviewReducedMotion() ? 120 : 420, fill: "both" });
+  try {
+    await ui.imagePreviewImage.decode();
+    if (token !== imagePreview.token || !ui.detailDialog.open) return;
+    ui.imagePreviewStatus.hidden = true;
+    ui.imagePreviewImage.hidden = false;
+    layoutImagePreview();
+    imagePreview.phase = "open";
+    animateImagePreview(imagePreviewSourceFrame(), imagePreviewFrame(), 500);
+  } catch {
+    if (token !== imagePreview.token) return;
+    imagePreview.phase = "error";
+    ui.imagePreviewStatus.textContent = "图片加载失败，请关闭后重试。";
+  }
+}
+
+function finishImagePreviewClose(restoreFocus = true) {
+  ++imagePreview.token;
+  imagePreview.phase = "closed";
+  cancelImagePreviewAnimation();
+  imagePreview.pointers.clear();
+  imagePreview.gesture = imagePreview.tap = imagePreview.backdropPointer = null;
+  ui.imagePreviewVeil.getAnimations().forEach(animation => animation.cancel());
+  ui.imagePreviewImage.classList.remove("is-interacting", "is-zoomed");
+  ui.imagePreviewImage.hidden = true;
+  ui.imagePreviewImage.removeAttribute("src");
+  document.documentElement.classList.remove("image-preview-open");
+  ui.detailImage.setAttribute("aria-expanded", "false");
+  if (ui.imagePreviewDialog.open) ui.imagePreviewDialog.close();
+  if (restoreFocus && ui.detailDialog.open) ui.detailImage.focus({ preventScroll: true });
+}
+
+function closeImagePreview({ immediate = false, restoreFocus = true } = {}) {
+  if (imagePreview.phase === "closed") return;
+  if (immediate) return finishImagePreviewClose(restoreFocus);
+  if (imagePreview.phase === "closing") return;
+  ++imagePreview.token; // Invalidate an in-flight decode before starting the exit.
+  const hasImage = !ui.imagePreviewImage.hidden;
+  imagePreview.phase = "closing";
+  const veilOpacity = getComputedStyle(ui.imagePreviewVeil).opacity;
+  ui.imagePreviewVeil.getAnimations().forEach(animation => animation.cancel());
+  const veil = ui.imagePreviewVeil.animate([{ opacity: veilOpacity }, { opacity: 0 }], {
+    duration: imagePreviewReducedMotion() ? 120 : 300, fill: "both",
+  });
+  if (hasImage) {
+    animateImagePreview(liveImagePreviewFrame(), imagePreviewSourceFrame(), 300, () => finishImagePreviewClose(restoreFocus));
+  } else {
+    veil.finished.then(() => finishImagePreviewClose(restoreFocus)).catch(() => {});
+  }
+}
+
+// During manipulation, update transforms directly so the picture follows the pointer.
+function setImagePreviewZoom(nextZoom, focalPoint = null, smooth = false) {
+  if (imagePreview.phase !== "open") return;
+  const from = liveImagePreviewFrame();
+  const previousZoom = imagePreview.zoom;
+  imagePreview.zoom = clampPreview(nextZoom, 1, IMAGE_PREVIEW_MAX_ZOOM);
+  if (imagePreview.zoom === 1) {
+    imagePreview.x = imagePreview.y = 0;
+  } else if (focalPoint) {
+    const stage = ui.imagePreviewStage.getBoundingClientRect();
+    const ratio = imagePreview.zoom / previousZoom;
+    imagePreview.x = (focalPoint.x - stage.left - stage.width / 2) * (1 - ratio) + imagePreview.x * ratio;
+    imagePreview.y = (focalPoint.y - stage.top - stage.height / 2) * (1 - ratio) + imagePreview.y * ratio;
+  }
+  applyImagePreviewTransform();
+  if (smooth) animateImagePreview(from, imagePreviewFrame(), 220);
+  else cancelImagePreviewAnimation();
+}
+
+function resetImagePreviewTransform() {
+  setImagePreviewZoom(1, null, true);
+}
+
+function beginImagePreviewGesture() {
+  const points = [...imagePreview.pointers.values()];
+  imagePreview.gesture = {
+    points: points.map(point => ({ ...point })),
+    zoom: imagePreview.zoom, x: imagePreview.x, y: imagePreview.y,
+  };
+}
+
+function imagePreviewPointerDown(event) {
+  if (imagePreview.phase !== "open" || (event.pointerType === "mouse" && event.button !== 0)) return;
+  // Continue from the presentation transform if a double-click zoom was still settling.
+  const current = new DOMMatrixReadOnly(getComputedStyle(ui.imagePreviewImage).transform);
+  cancelImagePreviewAnimation();
+  imagePreview.zoom = current.a;
+  imagePreview.x = current.e;
+  imagePreview.y = current.f;
+  applyImagePreviewTransform();
+  ui.imagePreviewImage.setPointerCapture(event.pointerId);
+  imagePreview.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, time: performance.now(), moved: false });
+  if (imagePreview.pointers.size > 1) {
+    imagePreview.tap = null;
+    imagePreview.pointers.forEach(point => { point.moved = true; });
+  }
+  ui.imagePreviewImage.classList.add("is-interacting");
+  beginImagePreviewGesture();
+  event.preventDefault();
+}
+
+function imagePreviewPointerMove(event) {
+  const point = imagePreview.pointers.get(event.pointerId);
+  if (!point || imagePreview.phase !== "open") return;
+  Object.assign(point, { x: event.clientX, y: event.clientY });
+  point.moved ||= Math.hypot(point.x - point.startX, point.y - point.startY) > 6;
+  const points = [...imagePreview.pointers.values()];
+  const gesture = imagePreview.gesture;
+  if (points.length > 1) {
+    const [a, b] = points;
+    const [startA, startB] = gesture.points;
+    const startDistance = Math.max(1, Math.hypot(startA.x - startB.x, startA.y - startB.y));
+    imagePreview.zoom = clampPreview(gesture.zoom * Math.hypot(a.x - b.x, a.y - b.y) / startDistance, 1, IMAGE_PREVIEW_MAX_ZOOM);
+    const stage = ui.imagePreviewStage.getBoundingClientRect();
+    const ratio = imagePreview.zoom / gesture.zoom;
+    imagePreview.x = (a.x + b.x) / 2 - stage.left - stage.width / 2 - ((startA.x + startB.x) / 2 - stage.left - stage.width / 2 - gesture.x) * ratio;
+    imagePreview.y = (a.y + b.y) / 2 - stage.top - stage.height / 2 - ((startA.y + startB.y) / 2 - stage.top - stage.height / 2 - gesture.y) * ratio;
+  } else if (point.moved) {
+    imagePreview.x = gesture.x + point.x - gesture.points[0].x;
+    imagePreview.y = gesture.y + point.y - gesture.points[0].y;
+  }
+  applyImagePreviewTransform();
+  event.preventDefault();
+}
+
+function imagePreviewPointerUp(event) {
+  const point = imagePreview.pointers.get(event.pointerId);
+  if (!point) return;
+  imagePreview.pointers.delete(event.pointerId);
+  if (event.type === "pointerup" && event.pointerType === "touch" && !point.moved && performance.now() - point.time < 300) {
+    const previous = imagePreview.tap;
+    if (previous && performance.now() - previous.time < 300 && Math.hypot(point.x - previous.x, point.y - previous.y) < 30) {
+      setImagePreviewZoom(imagePreview.zoom < 1.01 ? 2 : 1, point, true);
+      imagePreview.tap = null;
+    } else imagePreview.tap = { x: point.x, y: point.y, time: performance.now() };
+  }
+  if (imagePreview.pointers.size) beginImagePreviewGesture();
+  else {
+    imagePreview.gesture = null;
+    ui.imagePreviewImage.classList.remove("is-interacting");
+  }
+}
+
+function imagePreviewWheel(event) {
+  event.preventDefault();
+  const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? ui.imagePreviewStage.clientHeight : 1);
+  setImagePreviewZoom(imagePreview.zoom * Math.exp(-clampPreview(delta, -500, 500) * .0015), { x: event.clientX, y: event.clientY });
 }
 
 function closeRegenerationDrawers(restoreFocus = true) {
@@ -3260,12 +3527,81 @@ for (const input of [ui.variantCount, ui.variantDrawerCount])
   });
 ui.prevPage.addEventListener("click", () => loadHistory(historyPage - 1));
 ui.nextPage.addEventListener("click", () => loadHistory(historyPage + 1));
+ui.detailImage.addEventListener("click", openImagePreview);
+ui.detailImage.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  openImagePreview();
+});
+ui.closeImagePreview.addEventListener("click", () => closeImagePreview());
+ui.imagePreviewImage.addEventListener("pointerdown", imagePreviewPointerDown);
+ui.imagePreviewImage.addEventListener("pointermove", imagePreviewPointerMove);
+ui.imagePreviewImage.addEventListener("pointerup", imagePreviewPointerUp);
+ui.imagePreviewImage.addEventListener("pointercancel", imagePreviewPointerUp);
+ui.imagePreviewImage.addEventListener("lostpointercapture", imagePreviewPointerUp);
+ui.imagePreviewDialog.addEventListener("wheel", imagePreviewWheel, { passive: false });
+ui.imagePreviewImage.addEventListener("dblclick", (event) => {
+  event.preventDefault();
+  setImagePreviewZoom(imagePreview.zoom < 1.01 ? 2 : 1, event, true);
+});
+ui.imagePreviewVeil.addEventListener("pointerdown", (event) => {
+  if (event.button === 0) imagePreview.backdropPointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+});
+ui.imagePreviewVeil.addEventListener("pointerup", (event) => {
+  const start = imagePreview.backdropPointer;
+  imagePreview.backdropPointer = null;
+  if (start?.id === event.pointerId && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 6) closeImagePreview();
+});
+ui.imagePreviewDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeImagePreview();
+    return;
+  }
+  if (event.key === "+" || event.key === "=") {
+    event.preventDefault();
+    setImagePreviewZoom(imagePreview.zoom + .25, null, true);
+  } else if (event.key === "-") {
+    event.preventDefault();
+    setImagePreviewZoom(imagePreview.zoom - .25, null, true);
+  } else if (event.key === "0") {
+    event.preventDefault();
+    resetImagePreviewTransform();
+  } else if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
+    event.preventDefault();
+    cancelImagePreviewAnimation();
+    const amount = event.shiftKey ? 80 : 24;
+    imagePreview.x += event.key === "ArrowLeft" ? amount * -1 : event.key === "ArrowRight" ? amount : 0;
+    imagePreview.y += event.key === "ArrowUp" ? amount * -1 : event.key === "ArrowDown" ? amount : 0;
+    applyImagePreviewTransform();
+  }
+});
+ui.imagePreviewDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeImagePreview();
+});
+ui.imagePreviewDialog.addEventListener("close", () => {
+  if (!ui.imagePreviewDialog.open && imagePreview.phase !== "closed") finishImagePreviewClose();
+});
+ui.detailDialog.addEventListener("close", () => closeImagePreview({ immediate: true, restoreFocus: false }));
+new ResizeObserver(() => {
+  if (imagePreview.phase === "open") {
+    cancelImagePreviewAnimation();
+    imagePreview.pointers.clear();
+    imagePreview.gesture = imagePreview.tap = null;
+    ui.imagePreviewImage.classList.remove("is-interacting");
+    layoutImagePreview();
+  } else if (imagePreview.phase === "closing") finishImagePreviewClose();
+}).observe(ui.imagePreviewStage);
 ui.closeDialog.addEventListener("click", () => {
+  closeImagePreview({ immediate: true, restoreFocus: false });
   closeRegenerationDrawers(false);
   ui.detailDialog.close();
 });
 ui.detailDialog.addEventListener("click", (event) => {
   if (event.target === ui.detailDialog) {
+    closeImagePreview({ immediate: true, restoreFocus: false });
     closeRegenerationDrawers(false);
     ui.detailDialog.close();
     return;
@@ -3284,6 +3620,7 @@ ui.detailDialog.addEventListener("cancel", (event) => {
 });
 ui.restoreSettings.addEventListener("click", () => {
   if (!selectedRecord) return;
+  closeImagePreview({ immediate: true, restoreFocus: false });
   applySettings(selectedRecord.settings);
   ui.detailDialog.close();
   schedulePersist();
@@ -3293,6 +3630,7 @@ ui.deleteRecord.addEventListener("click", async () => {
   if (!selectedRecord || !confirm("只删除 WebUI 历史记录，图片文件会保留。继续吗？")) return;
   try {
     await request(`/api/history/${selectedRecord.id}`, { method: "DELETE" });
+    closeImagePreview({ immediate: true, restoreFocus: false });
     ui.detailDialog.close();
     selectedRecord = null;
     await loadHistory(historyPage);

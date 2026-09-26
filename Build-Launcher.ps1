@@ -16,7 +16,7 @@ try {
     foreach ($folder in @('anima_webui', 'static', 'templates')) {
         $files += Get-ChildItem -LiteralPath (Join-Path $repo $folder) -File -Recurse |
             Where-Object { $_.FullName -notmatch '__pycache__|\.pyc$' } |
-            ForEach-Object { [System.IO.Path]::GetRelativePath($repo, $_.FullName) }
+            ForEach-Object { $_.FullName.Substring($repo.Length + 1) } # Path.GetRelativePath 需要 .NET Core，PS 5.1 没有
     }
     foreach ($file in $files) {
         $entry = $archive.CreateEntry($file.Replace('\', '/'), [System.IO.Compression.CompressionLevel]::Optimal)

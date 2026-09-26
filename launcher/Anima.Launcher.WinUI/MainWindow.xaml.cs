@@ -134,8 +134,14 @@ public sealed partial class MainWindow : Window
             State.SystemInfoText = info;
             State.Reloaded();
             State.OfferUpgradeIfNeeded();
-            if (State.Config.SetupComplete && !forceShow)
-                await State.Run(State.StartServicesAsync);
+            // Even with --show (no auto-start), migrate to the bundled build so the
+            // version takes effect; a stale running instance is replaced, not orphaned.
+            if (State.Config.SetupComplete)
+                await State.Run(async ct =>
+                {
+                    var stoppedStale = await State.EnsureCurrentVersionAsync(ct);
+                    if (!forceShow || stoppedStale) await State.StartServicesAsync(ct);
+                });
         }
         catch (Exception ex)
         {
@@ -219,8 +225,11 @@ public sealed partial class MainWindow : Window
             var menu = new MenuFlyout();
             void Item(string text, Action action)
             {
+                // ContextMenuMode defaults to PopupMenu: the items are cloned into a
+                // native Win32 menu that only executes Command — the Click event is
+                // never forwarded, so items must use Command rather than Click.
                 var item = new MenuFlyoutItem { Text = text };
-                item.Click += (_, _) => action();
+                item.Command = new RelayCommand(action);
                 menu.Items.Add(item);
             }
             Item("打开工作台", () => Program.Open(State.Config.WebUrl));
@@ -248,7 +257,9 @@ public sealed partial class MainWindow : Window
                 iconPath = Directory.GetFiles(AppContext.BaseDirectory, "*.exe").FirstOrDefault() ?? iconPath;
             else if (File.Exists(sibling)) iconPath = sibling;
             try { tray.Icon = Icon.ExtractAssociatedIcon(iconPath) ?? SystemIcons.Application; } catch { }
-            tray.ForceCreate();
+            // The default ForceCreate(true) puts the whole process into Windows
+            // Efficiency Mode, which throttles the installs/downloads this app runs.
+            tray.ForceCreate(enablesEfficiencyMode: false);
         }
         catch (Exception ex)
         {

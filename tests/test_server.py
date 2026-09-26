@@ -1,8 +1,10 @@
+import asyncio
 import copy
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 import sys
 
@@ -880,6 +882,40 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         ).json()
         self.assertFalse(options["modes"]["replay"]["available"])
         self.assertTrue(options["resourceIssues"])
+
+    async def test_launcher_shutdown_requires_token(self):
+        # 未配置 token 时端点不存在;配置了也必须携带正确令牌。
+        self.assertEqual(
+            (await self.client.post("/api/launcher-shutdown", json={"token": "x"})).status,
+            404,
+        )
+        app = create_app(
+            app_dir=APP_DIR,
+            comfy=FakeComfy(),
+            history_path=Path(self.temp.name) / "shutdown-history.sqlite3",
+            custom_prompts_path=Path(self.temp.name) / "shutdown-custom-prompts.json",
+            style_presets_path=Path(self.temp.name) / "shutdown-style-presets.json",
+            anima_tools_dir=Path(self.temp.name) / "tools",
+            shutdown_token="secret-token",
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            self.assertEqual(
+                (await client.post("/api/launcher-shutdown", json={"token": "wrong"})).status,
+                403,
+            )
+            self.assertEqual(
+                (await client.post("/api/launcher-shutdown", json={})).status,
+                403,
+            )
+            with mock.patch("anima_webui.server.os._exit") as exit_mock:
+                ok = await client.post("/api/launcher-shutdown", json={"token": "secret-token"})
+                self.assertEqual(ok.status, 200)
+                await asyncio.sleep(0.7)
+                exit_mock.assert_called_once_with(0)
+        finally:
+            await client.close()
 
 
 if __name__ == "__main__":

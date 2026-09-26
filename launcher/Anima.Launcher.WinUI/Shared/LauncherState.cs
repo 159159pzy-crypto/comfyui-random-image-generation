@@ -353,9 +353,100 @@ internal sealed class LauncherState : IDisposable
         }
     }
 
+    /// <summary>Set while a bundled upgrade waits for the workbench to go idle.</summary>
+    public bool UpgradePending { get; private set; }
+
+    /// <summary>Config AppRoot points at a live source checkout, not an extracted bundle.</summary>
+    public bool DevAppRoot => !PathUnderVersionsRoot(Config.AppRoot);
+
+    private static bool PathUnderVersionsRoot(string path)
+    {
+        try
+        {
+            var root = Path.GetFullPath(Path.Combine(Program.StateDir, "versions")).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    private static bool SamePath(string a, string b)
+    {
+        try { return Path.GetFullPath(a).Equals(Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
+    }
+
+    /// <summary>True while the running workbench has an active batch or a non-empty queue.</summary>
+    public async Task<bool> IsWorkbenchBusyAsync(CancellationToken ct)
+    {
+        var current = await ServiceManager.Json(Config.WebUrl + "/api/batches/current", ct);
+        if (current is null || current.Value.ValueKind != JsonValueKind.Object) return false;
+        if (current.Value.TryGetProperty("batch", out var batch) && batch.ValueKind == JsonValueKind.Object) return true;
+        return current.Value.TryGetProperty("queue", out var queue) && queue.ValueKind == JsonValueKind.Array && queue.GetArrayLength() > 0;
+    }
+
+    /// <summary>
+    /// Move the workbench onto the version bundled in this EXE (or restart a stale
+    /// running instance) before services start. Skips dev-mode appRoots outside the
+    /// versions tree; defers while a batch is running; refuses when the port is held
+    /// by something that is not one of our snapshots.
+    /// </summary>
+    /// <summary>Returns true when a stale running instance had to be stopped (a restart is appropriate).</summary>
+    public async Task<bool> EnsureCurrentVersionAsync(CancellationToken ct)
+    {
+        if (!Config.SetupComplete || DevAppRoot) return false;
+        var health = await ServiceManager.PortOpen(Config.WebPort) ? await ServiceManager.Json(Config.WebUrl + "/api/launcher-health", ct) : null;
+        var runningOurs = ServiceManager.IsWorkbenchHealth(health);
+        var runningDir = runningOurs && health!.Value.TryGetProperty("app_dir", out var dir) && dir.ValueKind == JsonValueKind.String ? dir.GetString()! : "";
+        if (runningDir.Length > 0 && SamePath(runningDir, Program.AppRoot))
+        {
+            // The port already serves the bundled build (e.g. config was stale); just repoint.
+            if (!SamePath(Config.AppRoot, Program.AppRoot))
+            {
+                AppendLog("运行中的工作台已是最新版本，正在修正配置。");
+                Config.AppRoot = Program.AppRoot;
+                Save();
+                Reloaded();
+            }
+            return false;
+        }
+        var stoppedStale = false;
+        // A stale workbench instance (ours but an old app dir) holds the port.
+        if (runningOurs)
+        {
+            AppendLog("检测到旧版本工作台实例：" + runningDir);
+            if (await IsWorkbenchBusyAsync(ct))
+            {
+                UpgradePending = true;
+                SetStatus("检测到工作台新版本；当前有生成任务，本次继续使用旧版，下次启动自动切换。");
+                AppendLog("工作台忙，版本切换延后到下次启动。");
+                return false;
+            }
+            if (!await Services.TryStopWebUiAsync(Config, Path.Combine(Program.StateDir, "versions"), ct))
+                throw new InvalidOperationException("旧版本工作台无法停止（可能正在生成或为外部进程）；请先停止该实例后重试。");
+            stoppedStale = true;
+        }
+        // A foreign service may still hold the port — leave that to the conflict
+        // flow — but switch the config now so the new instance runs the bundled build.
+        if (!SamePath(Config.AppRoot, Program.AppRoot)) SwitchAppRoot();
+        return stoppedStale;
+    }
+
+    /// <summary>Point config at the bundled app dir, keeping the previous root for rollback.</summary>
+    private void SwitchAppRoot()
+    {
+        var previous = JsonSerializer.Deserialize<LauncherConfig>(JsonSerializer.Serialize(Config, JsonFile.Options), JsonFile.Options)!;
+        JsonFile.Write(Path.Combine(Program.StateDir, "launcher.previous.json"), previous);
+        Config.AppRoot = Program.AppRoot;
+        Save();
+        UpgradePending = false;
+        AppendLog("工作台版本已切换到内嵌版本：" + Program.AppRoot);
+        Reloaded();
+    }
+
     /// <summary>Start everything, handle port conflicts (bounded retries), open the workbench, hide unless forced.</summary>
     public async Task StartServicesAsync(CancellationToken ct)
     {
+        await EnsureCurrentVersionAsync(ct);
         // A second conflict is common when both ports are taken, or a freed port is raced;
         // offer auto-assign up to three times instead of failing on the second conflict.
         for (var attempt = 0; ; attempt++)
@@ -468,18 +559,21 @@ internal sealed class LauncherState : IDisposable
 
     public async Task ApplyBundledVersionAsync(CancellationToken ct)
     {
-        if (await ServiceManager.PortOpen(Config.WebPort)) throw new IOException("请先停止工作台服务再更新；ComfyUI 无需停止。");
-        if (Config.AppRoot == Program.AppRoot) { SetStatus("当前已经是此 EXE 内置版本。"); return; }
-        var previous = JsonSerializer.Deserialize<LauncherConfig>(JsonSerializer.Serialize(Config, JsonFile.Options), JsonFile.Options)!;
-        JsonFile.Write(Path.Combine(Program.StateDir, "launcher.previous.json"), previous);
-        Config.AppRoot = Program.AppRoot;
+        if (SamePath(Config.AppRoot, Program.AppRoot)) { SetStatus("当前已经是此 EXE 内置版本。"); return; }
+        if (await ServiceManager.PortOpen(Config.WebPort))
+        {
+            if (await IsWorkbenchBusyAsync(ct)) throw new IOException("工作台正在生成，请等待批次结束后再应用新版本。");
+            if (!await Services.TryStopWebUiAsync(Config, Path.Combine(Program.StateDir, "versions"), ct)) throw new IOException("请先停止占用工作台端口的程序再更新。");
+        }
+        var previousRoot = Config.AppRoot;
+        SwitchAppRoot();
         try
         {
             await Services.Start(Config, Program.Runtime, ct);
             Save();
             SetStatus("新版本健康检查通过；旧应用资源和用户数据已保留。");
         }
-        catch { Config.AppRoot = previous.AppRoot; Save(); throw; }
+        catch { Config.AppRoot = previousRoot; Save(); throw; }
     }
 
     public async Task RollbackVersionAsync(CancellationToken ct)
@@ -517,10 +611,10 @@ internal sealed class LauncherState : IDisposable
 
     public void OfferUpgradeIfNeeded()
     {
-        if (Config.SetupComplete && Config.AppRoot != Program.AppRoot && !upgradeOffered)
+        if (Config.SetupComplete && !DevAppRoot && !SamePath(Config.AppRoot, Program.AppRoot) && !upgradeOffered)
         {
             upgradeOffered = true;
-            SetStatus("检测到工作台新版本，可在设置中主动应用；现有版本继续保留。");
+            SetStatus("检测到工作台新版本；服务空闲时将自动切换到内嵌版本。");
         }
     }
 

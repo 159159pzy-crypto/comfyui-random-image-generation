@@ -28,6 +28,13 @@ public sealed partial class SettingsPage : LauncherPage
         WebPortBox.Value = Math.Clamp(c.WebPort, 1024, 65535);
         ThemeBox.SelectedIndex = c.Theme == "dark" ? 2 : c.Theme == "light" ? 1 : 0;
         CredHostBox.SelectedIndex = 0;
+        var current = Path.GetFileName(c.AppRoot.TrimEnd(Path.DirectorySeparatorChar));
+        var bundled = Path.GetFileName(Program.AppRoot.TrimEnd(Path.DirectorySeparatorChar));
+        VersionText.Text = State.DevAppRoot
+            ? $"当前：{c.AppRoot}（源码目录模式）；内嵌：{bundled}"
+            : current == bundled
+                ? $"当前版本：{current}（与内嵌一致）"
+                : $"当前版本：{current}；内嵌版本：{bundled}（空闲时将自动切换）";
     }
 
     public void SyncConfig()

@@ -1,0 +1,366 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Anima Random Studio — 让每一次生成，都充满惊喜</title>
+<style>
+:root{--bg:#f4f4f6;--ink:#0c0d12;--ink-2:rgba(12,13,18,.56);--ink-3:rgba(12,13,18,.36);--line:rgba(12,13,18,.08);--line-2:rgba(12,13,18,.14);--glass:rgba(255,255,255,.6);--glass-strong:rgba(255,255,255,.78);--solid:#fbfbfd;--accent:#0a84ff;--violet:#5e5ce6;--accent-soft:rgba(10,132,255,.1);--dark:rgba(12,13,18,.92);--edge:rgba(255,255,255,.85);--ease:cubic-bezier(.32,.72,0,1);--mono:"SFMono-Regular",Consolas,"Courier New",monospace}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:Inter,-apple-system,"SF Pro Text","PingFang SC","Segoe UI","Microsoft YaHei UI",sans-serif;font-size:14px;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0 0 55% 0;z-index:-1;pointer-events:none;background-image:linear-gradient(rgba(12,13,18,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(12,13,18,.03) 1px,transparent 1px);background-size:56px 56px;mask-image:linear-gradient(180deg,#000 0%,transparent 100%)}
+.wrap{max-width:1280px;margin:0 auto;padding:0 40px}
+.kicker{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
+.mono{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--ink-3)}
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .6s var(--ease),transform .6s var(--ease)}
+.reveal.in{opacity:1;transform:none}
+.d1{transition-delay:.07s}.d2{transition-delay:.14s}.d3{transition-delay:.21s}.d4{transition-delay:.28s}
+.topbar{position:sticky;top:0;z-index:40;background:var(--glass);backdrop-filter:blur(28px) saturate(180%);-webkit-backdrop-filter:blur(28px) saturate(180%);border-bottom:1px solid var(--line)}
+.topbar-in{max-width:1280px;margin:0 auto;padding:0 40px;height:62px;display:flex;align-items:center;gap:24px}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink)}
+.logo-mark{width:34px;height:34px;border-radius:9px;flex:none;background:linear-gradient(160deg,#5e9eff,#0a84ff);display:grid;place-items:center;color:#fff;font-family:Georgia,serif;font-size:18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 5px 14px -5px rgba(10,132,255,.55)}
+.brand b{font-size:14px;font-weight:650;letter-spacing:-.01em}
+.topnav{display:flex;gap:4px;margin-left:auto}
+.topnav a{font-size:13px;color:var(--ink-2);text-decoration:none;padding:8px 14px;border-radius:999px;transition:color .2s,background .2s}
+.topnav a:hover{color:var(--ink);background:rgba(12,13,18,.05)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;font-weight:650;font-size:14px;text-decoration:none;cursor:pointer;border:none;font-family:inherit;min-height:46px;padding:0 26px;transition:transform .45s var(--ease),box-shadow .45s var(--ease),background .25s,color .25s}
+.btn-dark{background:var(--dark);color:#fff;box-shadow:0 14px 34px -12px rgba(12,13,18,.45)}
+.btn-dark:hover{transform:translateY(-1px);box-shadow:0 20px 44px -12px rgba(12,13,18,.5)}
+.btn-dark:active{transform:scale(.97)}
+.btn-ghost{background:transparent;color:var(--ink);border:1px solid var(--line-2)}
+.btn-ghost:hover{transform:translateY(-1px);border-color:var(--ink)}
+.btn-ghost:active{transform:scale(.97)}
+.btn-light{background:#fff;color:var(--ink)}
+.btn-light:hover{transform:translateY(-1px)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.topbar .btn{min-height:38px;padding:0 18px;font-size:13px}
+.topbar .btn-ghost{border-color:transparent;color:var(--ink-2)}
+.topbar .btn-ghost:hover{color:var(--ink);border-color:var(--line-2)}
+.hero{padding:96px 0 0;position:relative}
+.hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
+.hero .kicker{display:block;margin-bottom:26px}
+.hero h1{font-size:clamp(52px,6.8vw,96px);line-height:1.0;font-weight:700;letter-spacing:-.045em}
+.hero h1 .grad{background:linear-gradient(100deg,var(--accent),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{margin:26px 0 0;max-width:460px;font-size:16.5px;line-height:1.75;color:var(--ink-2)}
+.hero-cta{margin-top:38px;display:flex;gap:12px;flex-wrap:wrap}
+.hero-art{position:relative}
+.shot{position:relative;transform:rotate(1.5deg);border-radius:22px;border:1px solid var(--line);background:var(--glass-strong);backdrop-filter:blur(28px) saturate(180%);-webkit-backdrop-filter:blur(28px) saturate(180%);box-shadow:inset 0 1px 0 var(--edge),0 44px 90px -28px rgba(12,13,18,.35);overflow:hidden}
+.shot-bar{display:flex;align-items:center;gap:7px;padding:11px 16px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.4)}
+.shot-bar i{width:10px;height:10px;border-radius:50%;background:rgba(12,13,18,.12)}
+.shot-bar .t{margin-left:8px;font-size:11.5px;color:var(--ink-3)}
+.shot-body{display:grid;grid-template-columns:1fr 130px;min-height:400px}
+.shot-panel{padding:16px;border-right:1px solid var(--line)}
+.dim{background:rgba(255,255,255,.72);border:1px solid var(--line);border-radius:14px;padding:11px 13px;margin-bottom:9px;box-shadow:inset 0 1px 0 var(--edge),0 6px 18px -8px rgba(12,13,18,.18)}
+.dim-head{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.dim-icon{width:28px;height:28px;border-radius:8px;background:linear-gradient(160deg,#5e9eff,#0a84ff);display:grid;place-items:center;flex:none}
+.dim-icon svg{width:14px;height:14px;stroke:#fff;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.dim-name{font-size:12.5px;font-weight:650}
+.seg{display:flex;background:rgba(120,120,128,.1);border-radius:9px;padding:3px;gap:2px}
+.seg span{flex:1;text-align:center;font-size:11px;font-weight:550;color:var(--ink-3);padding:4px 0;border-radius:7px}
+.seg span.on{background:var(--solid);color:var(--ink);font-weight:650;box-shadow:inset 0 1px 0 var(--edge),0 2px 6px -2px rgba(12,13,18,.22)}
+.shot-gal{padding:14px;display:grid;grid-template-columns:1fr;gap:8px;align-content:start}
+.shot-cell{border-radius:10px;border:1px solid var(--line);height:78px;position:relative}
+.shot-cell em{position:absolute;left:7px;bottom:5px;font-style:normal;font-family:var(--mono);font-size:9px;color:var(--ink-3);background:rgba(255,255,255,.8);padding:1px 6px;border-radius:999px}
+.hero-foot{border-top:1px solid var(--line);margin-top:88px;padding:18px 0;display:flex;justify-content:space-between;align-items:center}
+.scroll-hint{display:flex;align-items:center;gap:8px}
+.scroll-hint svg{width:14px;height:14px;stroke:var(--ink-3);fill:none;stroke-width:2;stroke-linecap:round;animation:hint 2s var(--ease) infinite}
+@keyframes hint{0%,100%{transform:translateY(0)}50%{transform:translateY(4px)}}
+.w1{background:linear-gradient(160deg,#dbe9fb,#a9ccf2)}
+.w2{background:linear-gradient(160deg,#e6e1fa,#c7b9ef)}
+.w3{background:linear-gradient(160deg,#fdeee4,#f3d0b5)}
+.w4{background:linear-gradient(160deg,#dff0fc,#b6dbf2)}
+.w5{background:linear-gradient(160deg,#eae4fb,#cebef3)}
+.w6{background:linear-gradient(160deg,#fbe9e5,#f0cabc)}
+.w7{background:linear-gradient(160deg,#d9e9f9,#aed1f0)}
+.w8{background:linear-gradient(160deg,#ece6fd,#d3c5f6)}
+.w9{background:linear-gradient(160deg,#f8eee2,#ecd6b8)}
+.w10{background:linear-gradient(160deg,#e2f1fd,#c2ddf5)}
+.w11{background:linear-gradient(160deg,#e9e3f9,#c9bcee)}
+.w12{background:linear-gradient(160deg,#faede4,#f0cfba)}
+.band{background:var(--dark);color:#fff}
+.band-in{max-width:1280px;margin:0 auto;padding:56px 40px;display:grid;grid-template-columns:repeat(4,1fr);gap:32px}
+.stat .num{font-family:var(--mono);font-weight:600;font-size:clamp(44px,4.6vw,60px);letter-spacing:-.02em;line-height:1}
+.stat .num small{font-size:.5em;color:rgba(255,255,255,.55);font-weight:500}
+.stat .lbl{margin-top:10px;font-size:12.5px;color:rgba(255,255,255,.55)}
+section{padding:110px 0}
+.sec-head{margin-bottom:56px;max-width:640px}
+.sec-head h2{margin-top:16px;font-size:clamp(36px,4.6vw,58px);font-weight:700;letter-spacing:-.04em;line-height:1.05}
+.sec-head p{margin-top:14px;font-size:15px;line-height:1.7;color:var(--ink-2)}
+.masonry{columns:4;column-gap:16px}
+.mtile{break-inside:avoid;margin-bottom:16px;border-radius:18px;position:relative;overflow:hidden;border:1px solid var(--line);transition:transform .5s var(--ease),box-shadow .5s var(--ease)}
+.mtile:hover{transform:translateY(-4px);box-shadow:0 22px 50px -16px rgba(12,13,18,.3)}
+.mtile .img{width:100%}
+.mtile .cap{position:absolute;left:0;right:0;bottom:0;padding:14px 16px;background:linear-gradient(180deg,rgba(255,255,255,0),rgba(255,255,255,.92) 55%)}
+.mtile .cap b{display:block;font-size:13px;font-weight:650}
+.mtile .cap small{font-size:11px;color:var(--ink-3)}
+.h-a{height:280px}.h-b{height:200px}.h-c{height:340px}.h-d{height:240px}
+.edit-tag{position:absolute;top:16px;right:-8px;z-index:2;background:var(--dark);color:#fff;border-radius:12px;padding:10px 16px;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;box-shadow:0 14px 34px -10px rgba(12,13,18,.5);transform:rotate(2deg)}
+.edit-tag b{display:block;font-size:12px;letter-spacing:.02em;margin-top:3px;font-family:Inter,sans-serif}
+.map{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start}
+.mnodes{position:relative;padding-left:26px}
+.mnodes::before{content:"";position:absolute;left:7px;top:20px;bottom:20px;width:1px;background:var(--line-2)}
+.mnode{display:block;width:100%;text-align:left;font-family:inherit;cursor:pointer;position:relative;background:transparent;border:none;border-radius:16px;padding:18px 20px;margin-bottom:6px;color:var(--ink);transition:transform .45s var(--ease),background .3s,color .3s,box-shadow .45s var(--ease)}
+.mnode::before{content:"";position:absolute;left:-23px;top:26px;width:9px;height:9px;border-radius:50%;background:var(--bg);border:2px solid var(--ink-3);transition:border-color .25s,background .25s}
+.mnode:hover{transform:translateX(4px)}
+.mnode.active{background:var(--dark);color:#fff;box-shadow:0 20px 50px -18px rgba(12,13,18,.5)}
+.mnode.active::before{background:var(--accent);border-color:var(--accent)}
+.mnode .mono{display:block;color:inherit;opacity:.5}
+.mnode h3{margin-top:8px;font-size:16px;font-weight:700;letter-spacing:-.01em}
+.mnode p{margin-top:5px;font-size:12.5px;line-height:1.6;opacity:.65}
+.mnode:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.mdetail{position:sticky;top:96px;border-radius:22px;padding:34px 32px;color:#fff;background:var(--dark);border:1px solid rgba(255,255,255,.08);box-shadow:0 34px 80px -26px rgba(12,13,18,.5);min-height:320px}
+.mdetail .badge{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink);background:#fff;border-radius:999px;padding:6px 14px;font-weight:600}
+.mdetail h3{margin-top:20px;font-size:26px;font-weight:700;letter-spacing:-.03em}
+.mdetail p{margin-top:12px;font-size:14px;line-height:1.8;color:rgba(255,255,255,.68)}
+.mdetail ul{list-style:none;margin-top:22px;display:flex;flex-direction:column;gap:10px}
+.mdetail li{display:flex;gap:10px;align-items:baseline;font-size:13px;color:rgba(255,255,255,.82)}
+.mdetail li::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+.mdetail .anim{animation:swap .45s var(--ease)}
+@keyframes swap{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.feat{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.frow{background:var(--glass-strong);border:1px solid var(--line);border-radius:18px;padding:26px;box-shadow:inset 0 1px 0 var(--edge),0 10px 26px -14px rgba(12,13,18,.22);transition:transform .5s var(--ease),box-shadow .5s var(--ease)}
+.frow:hover{transform:translateY(-3px);box-shadow:inset 0 1px 0 var(--edge),0 20px 44px -16px rgba(12,13,18,.3)}
+.frow .dim-icon{width:40px;height:40px;border-radius:11px;transition:transform .45s var(--ease)}
+.frow .dim-icon svg{width:19px;height:19px}
+.frow:hover .dim-icon{transform:rotate(-4deg) scale(1.06)}
+.frow h3{margin-top:18px;font-size:15.5px;font-weight:700;letter-spacing:-.01em}
+.frow p{margin-top:7px;font-size:13px;line-height:1.65;color:var(--ink-2)}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.step{position:relative;border-radius:18px;border:1px solid var(--line);background:var(--glass-strong);padding:30px 26px;overflow:hidden;box-shadow:inset 0 1px 0 var(--edge),0 10px 26px -14px rgba(12,13,18,.22)}
+.step .big{position:absolute;top:-14px;right:14px;font-family:var(--mono);font-size:96px;font-weight:700;color:rgba(12,13,18,.05);line-height:1;pointer-events:none}
+.step .num{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--accent);font-weight:600}
+.step h3{margin-top:12px;font-size:17px;font-weight:700;letter-spacing:-.01em}
+.step p{margin-top:8px;font-size:13px;line-height:1.7;color:var(--ink-2)}
+.cta{border-radius:26px;background:var(--dark);color:#fff;padding:72px 56px;text-align:center;position:relative;overflow:hidden}
+.cta::after{content:"";position:absolute;inset:auto -10% -60% -10%;height:80%;background:radial-gradient(50% 60% at 50% 100%,rgba(10,132,255,.35),transparent 70%)}
+.cta h2{font-size:clamp(34px,4.4vw,54px);font-weight:700;letter-spacing:-.035em;position:relative;z-index:1}
+.cta p{margin:16px auto 0;max-width:440px;font-size:15px;line-height:1.7;color:rgba(255,255,255,.6);position:relative;z-index:1}
+.cta .hero-cta{position:relative;z-index:1}
+footer{padding:44px 0}
+.foot{border-top:1px solid var(--line);padding-top:24px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+.foot nav{display:flex;gap:20px}
+.foot nav a{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);text-decoration:none;transition:color .2s}
+.foot nav a:hover{color:var(--accent)}
+@media(max-width:900px){
+  .wrap,.topbar-in{padding:0 20px}
+  .topnav{display:none}
+  .hero-grid{grid-template-columns:1fr;gap:40px}
+  .shot{transform:rotate(.8deg)}
+  .band-in{grid-template-columns:1fr 1fr;padding:40px 24px}
+  .masonry{columns:2}
+  .map{grid-template-columns:1fr}
+  .mdetail{position:static}
+  .feat{grid-template-columns:1fr}
+  .steps{grid-template-columns:1fr}
+  .cta{padding:52px 26px}
+  section{padding:72px 0}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation:none !important;transition-duration:.001s !important}
+  .reveal{opacity:1;transform:none}
+}
+</style>
+</head>
+<body>
+<div class="topbar" data-od-id="nav"><div class="topbar-in">
+  <a class="brand" href="#"><span class="logo-mark">A</span><b>Anima Random Studio</b></a>
+  <div class="topnav"><a href="#gallery">样片</a><a href="#map">能力</a><a href="#features">特性</a><a href="#flow">工作流</a></div>
+  <a class="btn btn-ghost" href="#" data-od-id="nav-github">GitHub</a>
+  <a class="btn btn-dark" href="#download" data-od-id="nav-download">下载</a>
+</div></div>
+
+<header class="hero wrap" data-od-id="hero">
+  <div class="hero-grid">
+    <div>
+      <span class="kicker reveal">Anima Random Studio · ComfyUI 本地工作台</span>
+      <h1 class="reveal d1">让每一次生成，<br>都充满<span class="grad">惊喜</span></h1>
+      <p class="reveal d2">Anima 把提示词池、批量抽卡、LoRA、高清修复和收藏树收进一个本地 WebUI。</p>
+      <div class="hero-cta reveal d3">
+        <a class="btn btn-dark" href="#download" data-od-id="cta-download">下载 Windows 版</a>
+        <a class="btn btn-ghost" href="#gallery" data-od-id="cta-look">先看看样片</a>
+      </div>
+    </div>
+    <div class="hero-art reveal d2">
+      <div class="shot" data-od-id="product-shot" aria-hidden="true">
+        <div class="shot-bar"><i></i><i></i><i></i><span class="t">随机生成</span></div>
+        <div class="shot-body">
+          <div class="shot-panel">
+            <div class="dim"><div class="dim-head"><span class="dim-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg></span><span class="dim-name">角色</span></div><div class="seg"><span class="on">随机</span><span>固定</span><span>关闭</span></div></div>
+            <div class="dim"><div class="dim-head"><span class="dim-icon"><svg viewBox="0 0 24 24"><path d="M6 3l3 4-2 14h10L15 7l3-4"/></svg></span><span class="dim-name">服装</span></div><div class="seg"><span class="on">随机</span><span>固定</span><span>关闭</span></div></div>
+            <div class="dim"><div class="dim-head"><span class="dim-icon"><svg viewBox="0 0 24 24"><path d="M12 3v18M5 8l7-5 7 5M7 21h10"/></svg></span><span class="dim-name">姿势</span></div><div class="seg"><span>随机</span><span class="on">固定</span><span>关闭</span></div></div>
+            <div class="dim"><div class="dim-head"><span class="dim-icon"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg></span><span class="dim-name">背景</span></div><div class="seg"><span class="on">随机</span><span>固定</span><span>关闭</span></div></div>
+            <div class="dim"><div class="dim-head"><span class="dim-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 10h.01M15.5 10h.01M8 15c1.2 1.4 2.6 2 4 2s2.8-.6 4-2"/></svg></span><span class="dim-name">表情</span></div><div class="seg"><span class="on">随机</span><span>固定</span><span>关闭</span></div></div>
+          </div>
+          <div class="shot-gal">
+            <div class="shot-cell w1"><em>#4821</em></div>
+            <div class="shot-cell w2"><em>#4822</em></div>
+            <div class="shot-cell w7"><em>#4823</em></div>
+            <div class="shot-cell w5"><em>#4824</em></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="hero-foot">
+    <span class="mono">SCROLL — 001/005</span>
+    <span class="scroll-hint mono">向下探索 <svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></span>
+  </div>
+</header>
+
+<div class="band" data-od-id="stat-band">
+  <div class="band-in">
+    <div class="stat reveal"><div class="num" data-count="5">0</div><div class="lbl">提示词池 · 五类独立策略</div></div>
+    <div class="stat reveal d1"><div class="num" data-count="4">0</div><div class="lbl">Detailer · 独立修复开关</div></div>
+    <div class="stat reveal d2"><div class="num"><small>×</small>∞</div><div class="lbl">批量队列 · 自动排队</div></div>
+    <div class="stat reveal d3"><div class="num" data-count="1000"><small>1–</small>0</div><div class="lbl">高清修复 · 放大比例 %</div></div>
+  </div>
+</div>
+<section class="wrap" id="gallery" data-od-id="collage-section" style="scroll-margin-top:80px">
+  <div class="sec-head reveal">
+    <span class="kicker">Gallery / 12 frames</span>
+    <h2>无限可能的<br>创作空间</h2>
+    <p>五类提示词池自由组合，每一抽都是新的构图。</p>
+  </div>
+  <div class="masonry">
+    <div class="mtile reveal"><div class="img w1 h-c"></div><div class="cap"><b>霓虹夜行</b><small>city · neon</small></div></div>
+    <div class="mtile reveal d1"><div class="img w2 h-b"></div><div class="cap"><b>星轨之下</b><small>sky</small></div></div>
+    <div class="mtile reveal d2"><div class="img w3 h-d"></div><div class="cap"><b>黄昏站台</b><small>station</small></div></div>
+    <div class="mtile reveal d3"><div class="img w4 h-a"></div><div class="cap"><b>深海回响</b><small>underwater</small></div><div class="edit-tag">EDITOR'S PICK<b>本期限定风格</b></div></div>
+    <div class="mtile reveal"><div class="img w5 h-d"></div><div class="cap"><b>花信</b><small>portrait</small></div></div>
+    <div class="mtile reveal d1"><div class="img w6 h-c"></div><div class="cap"><b>旧巷炉火</b><small>alley</small></div></div>
+    <div class="mtile reveal d2"><div class="img w7 h-b"></div><div class="cap"><b>雨后天台</b><small>rooftop</small></div></div>
+    <div class="mtile reveal d3"><div class="img w8 h-a"></div><div class="cap"><b>图书馆午后</b><small>interior</small></div></div>
+    <div class="mtile reveal"><div class="img w9 h-b"></div><div class="cap"><b>糖果街道</b><small>street</small></div></div>
+    <div class="mtile reveal d1"><div class="img w10 h-d"></div><div class="cap"><b>苔原温室</b><small>greenhouse</small></div></div>
+    <div class="mtile reveal d2"><div class="img w11 h-c"></div><div class="cap"><b>夏野</b><small>field</small></div></div>
+    <div class="mtile reveal d3"><div class="img w12 h-b"></div><div class="cap"><b>赤霄</b><small>dramatic</small></div></div>
+  </div>
+</section>
+
+<section class="wrap" id="map" data-od-id="map-section" style="scroll-margin-top:80px;padding-top:0">
+  <div class="sec-head reveal">
+    <span class="kicker">Capability map · click to explore</span>
+    <h2>一张能力地图</h2>
+    <p>从提示词到收藏，生成是一条循环。点击节点查看细节。</p>
+  </div>
+  <div class="map">
+    <div class="mnodes reveal" data-od-id="map-nodes">
+      <button class="mnode active" data-od-id="node-pool" data-key="pool"><span class="mono">01 / INPUT</span><h3>提示词池</h3><p>五类词条库，随机 / 固定 / 关闭 / 搜索 / 分类</p></button>
+      <button class="mnode" data-od-id="node-batch" data-key="batch"><span class="mono">02 / GENERATE</span><h3>批量生成</h3><p>一键抽卡 + 队列 + 实时采样预览</p></button>
+      <button class="mnode" data-od-id="node-refine" data-key="refine"><span class="mono">03 / REFINE</span><h3>修复放大</h3><p>高清修复 1–1000% + 四个 Detailer</p></button>
+      <button class="mnode" data-od-id="node-collect" data-key="collect"><span class="mono">04 / COLLECT</span><h3>收藏回放</h3><p>收藏树 + 历史四种重跑</p></button>
+    </div>
+    <div class="mdetail reveal d1" id="detailPanel" data-od-id="map-detail">
+      <span class="badge anim" id="dBadge">01 / INPUT</span>
+      <h3 class="anim" id="dTitle">提示词池</h3>
+      <p class="anim" id="dDesc">角色、服装、姿势、背景、表情五类词条各自成池，每一类独立设置随机 / 固定 / 关闭，支持池内搜索与分类筛选。</p>
+      <ul class="anim" id="dList">
+        <li>五类池独立开关与随机策略</li>
+        <li>词条搜索与分类筛选</li>
+        <li>与风格预设联动，一键换整套组合</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" id="features" data-od-id="features-section" style="scroll-margin-top:80px;padding-top:0">
+  <div class="sec-head reveal">
+    <span class="kicker">Features</span>
+    <h2>细节，也被照顾到</h2>
+  </div>
+  <div class="feat">
+    <div class="frow reveal" data-od-id="feature-batch"><span class="dim-icon"><svg viewBox="0 0 24 24"><path d="M4 6h13M4 12h13M4 18h9"/><circle cx="19" cy="18" r="2.5"/></svg></span><h3>批量生成与队列</h3><p>一键抽卡，运行中追加批次自动排队，进度实时预览。</p></div>
+    <div class="frow reveal d1" data-od-id="feature-lora"><span class="dim-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg></span><h3>LoRA 管理</h3><p>可视化卡片选择器，触发词管理与强度调节。</p></div>
+    <div class="frow reveal d2" data-od-id="feature-hires"><span class="dim-icon"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-8 8M3 21l8-8"/></svg></span><h3>高清修复</h3><p>独立开关 + 放大模型 + 1–1000% 缩放比例。</p></div>
+    <div class="frow reveal" data-od-id="feature-detailer"><span class="dim-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span><h3>四个 Detailer</h3><p>手部、NSFW、面部、眼睛独立开关。</p></div>
+    <div class="frow reveal d1" data-od-id="feature-preset"><span class="dim-icon"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.4L19 10l-5.1 1.6L12 17l-1.9-5.4L5 10l5.1-1.6z"/></svg></span><h3>风格预设</h3><p>模型 + LoRA + 尺寸 + 步数 + 修复整套存取。</p></div>
+    <div class="frow reveal d2" data-od-id="feature-fav"><span class="dim-icon"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><h3>收藏树</h3><p>Finder 式任意层级分组，批量收藏跨页选择。</p></div>
+  </div>
+</section>
+<section class="wrap" id="flow" data-od-id="workflow-section" style="scroll-margin-top:80px;padding-top:0">
+  <div class="sec-head reveal"><span class="kicker">Workflow</span><h2>三步一轮</h2></div>
+  <div class="steps">
+    <div class="step reveal" data-od-id="step-config"><span class="big">01</span><span class="num">STEP 01</span><h3>配置提示词</h3><p>词池组合 + LoRA + 预设，设定批量数量。</p></div>
+    <div class="step reveal d1" data-od-id="step-generate"><span class="big">02</span><span class="num">STEP 02</span><h3>批量生成</h3><p>实时预览采样进度，追加批次自动排队。</p></div>
+    <div class="step reveal d2" data-od-id="step-collect"><span class="big">03</span><span class="num">STEP 03</span><h3>管理收藏</h3><p>拖入收藏树，或按原种子 / 换种子 / 按类别重抽。</p></div>
+  </div>
+</section>
+
+<section class="wrap" id="download" style="scroll-margin-top:80px;padding-top:0">
+  <div class="cta reveal" data-od-id="cta-band">
+    <h2>现在就开始抽卡</h2>
+    <p>本地运行，数据不出机。需要本机已安装并运行 ComfyUI。</p>
+    <div class="hero-cta" style="justify-content:center">
+      <a class="btn btn-light" href="#" data-od-id="cta-download-2">下载 Windows 版</a>
+      <a class="btn" href="#" data-od-id="cta-github" style="border:1px solid rgba(255,255,255,.3);color:#fff">在 GitHub 查看</a>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap" data-od-id="footer">
+  <div class="foot">
+    <span class="mono">Anima Random Studio · v1.0 · 需配合 ComfyUI</span>
+    <nav><a href="#" data-od-id="link-github">GitHub</a><a href="#" data-od-id="link-docs">文档</a><a href="#" data-od-id="link-download">下载</a></nav>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var els=document.querySelectorAll('.reveal');
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){
+      es.forEach(function(en){if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target);}});
+    },{threshold:.12,rootMargin:'0px 0px -32px 0px'});
+    els.forEach(function(e){io.observe(e)});
+  }else{els.forEach(function(e){e.classList.add('in')})}
+
+  /* counters */
+  var nums=document.querySelectorAll('.num[data-count]');
+  if('IntersectionObserver' in window && !reduced){
+    var cio=new IntersectionObserver(function(es){
+      es.forEach(function(en){
+        if(!en.isIntersecting)return;
+        cio.unobserve(en.target);
+        var el=en.target,target=+el.dataset.count,suffix=el.querySelector('small');
+        var prefix=suffix?suffix.outerHTML:'';
+        var t0=null,dur=1100;
+        function tick(t){
+          if(!t0)t0=t;var p=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-p,3);
+          el.innerHTML=prefix+Math.round(target*e);
+          if(p<1)requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+      });
+    },{threshold:.5});
+    nums.forEach(function(n){cio.observe(n)});
+  }else{
+    nums.forEach(function(n){var s=n.querySelector('small');n.innerHTML=(s?s.outerHTML:'')+n.dataset.count});
+  }
+
+  /* map */
+  var DATA={
+    pool:{b:'01 / INPUT',t:'提示词池',d:'角色、服装、姿势、背景、表情五类词条各自成池，每一类独立设置随机 / 固定 / 关闭，支持池内搜索与分类筛选。',l:['五类池独立开关与随机策略','词条搜索与分类筛选','与风格预设联动，一键换整套组合']},
+    batch:{b:'02 / GENERATE',t:'批量生成与队列',d:'设定数量后一键开抽，采样进度实时预览；运行中追加的新批次自动进入队列，不打断当前任务。',l:['批量抽卡，实时预览采样进度','追加批次自动排队','随时插队或取消']},
+    refine:{b:'03 / REFINE',t:'修复与放大',d:'出图与修复分离：低分辨率快速试抽，满意后开高清修复放大。手部、NSFW、面部、眼睛四个 Detailer 独立开关。',l:['高清修复独立开关 + 放大模型','1–1000% 缩放比例','四个 Detailer 独立启用']},
+    collect:{b:'04 / COLLECT',t:'收藏与回放',d:'Finder 式任意层级收藏树，批量收藏支持跨页多选。历史回放四种模式，好结果回到词池，形成循环。',l:['任意层级收藏分组','历史回放四种模式','回放结果回到词池，开始下一轮']}
+  };
+  var nodes=document.querySelectorAll('.mnode'),
+      dB=document.getElementById('dBadge'),dT=document.getElementById('dTitle'),
+      dD=document.getElementById('dDesc'),dL=document.getElementById('dList');
+  nodes.forEach(function(n){
+    n.addEventListener('click',function(){
+      nodes.forEach(function(x){x.classList.remove('active')});
+      n.classList.add('active');
+      var d=DATA[n.dataset.key];
+      dB.textContent=d.b;dT.textContent=d.t;dD.textContent=d.d;
+      dL.innerHTML=d.l.map(function(s){return '<li>'+s+'</li>'}).join('');
+      [dB,dT,dD,dL].forEach(function(el){el.classList.remove('anim');void el.offsetWidth;el.classList.add('anim')});
+    });
+  });
+})();
+</script>
+</body>
+</html>

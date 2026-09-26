@@ -183,6 +183,16 @@ Check(!ServiceManager.IsOurWebUi(JsonDocument.Parse("{}").RootElement, fakeConfi
 Check(!ServiceManager.IsOurWebUi(JsonDocument.Parse("{\"app_dir\":null,\"comfy_url\":null}").RootElement, fakeConfig), "null fields rejected without throwing");
 Check(!ServiceManager.IsOurWebUi(JsonDocument.Parse("[]").RootElement, fakeConfig), "non-object health rejected");
 
+// Version switching helpers: workbench identification + owned-process records.
+Check(ServiceManager.IsWorkbenchHealth(JsonDocument.Parse("{\"app\":\"anima-random-studio\",\"app_dir\":\"x\",\"data_dir\":\"y\",\"comfy_url\":\"z\"}").RootElement), "workbench health identified by app field");
+Check(!ServiceManager.IsWorkbenchHealth(JsonDocument.Parse("{\"app\":\"comfyui\"}").RootElement), "foreign app rejected");
+Check(!ServiceManager.IsWorkbenchHealth(null), "missing health not ours");
+Check(!ServiceManager.IsWorkbenchHealth(goodHealth), "health without app field is not identified as workbench");
+var legacyOwned = JsonFile.Read<OwnedProcess[]>(WriteJson(work, "owned-legacy.json", "[{\"pid\":123,\"startTimeUtcTicks\":456,\"executable\":\"python.exe\",\"role\":\"WebUI\"}]"));
+Check(legacyOwned.Single().ShutdownToken is null, "legacy process record without token deserializes");
+var tokenOwned = JsonFile.Read<OwnedProcess[]>(WriteJson(work, "owned-token.json", "[{\"pid\":123,\"startTimeUtcTicks\":456,\"executable\":\"python.exe\",\"role\":\"WebUI\",\"shutdownToken\":\"abc\"}]"));
+Check(tokenOwned.Single().ShutdownToken == "abc", "shutdown token round-trips");
+
 var cmd = Commands.Find("cmd.exe");
 if (cmd is not null) await Throws(async () => { await Commands.Run(cmd, ["/c", "ping", "-n", "30", "127.0.0.1"], work, null, CancellationToken.None, timeout: TimeSpan.FromMilliseconds(500)); }, "command timeout kills hung process");
 
@@ -227,6 +237,8 @@ if (args.Contains("--live"))
     Check(await ServiceManager.PortOpen(config.ComfyPort) == !args.Contains("--owned"), "ComfyUI ownership respected on shutdown");
 }
 Console.WriteLine($"{count} checks passed; artifacts: {work}");
+
+static string WriteJson(string dir, string name, string content) { var path = Path.Combine(dir, name); File.WriteAllText(path, content); return path; }
 
 sealed class FakeHandler : HttpMessageHandler
 {

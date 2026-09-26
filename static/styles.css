@@ -461,6 +461,7 @@ input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
 
 .switch-list { display: grid; gap: 7px; }
 .field + .switch-list, select + .switch-list { margin-top: 12px; }
+.repair-toggle-list { margin-top: 12px; }
 .switch-row { min-height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; background: var(--surface-muted); border: 1px solid transparent; border-radius: 14px; cursor: pointer; transition: background-color .3s ease, border-color .3s ease; }
 .switch-row:has(input:checked) { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 24%, transparent); }
 .switch-row > span { min-width: 0; display: grid; gap: 2px; }
@@ -716,6 +717,91 @@ dialog::backdrop { background: rgba(0, 0, 0, .32); backdrop-filter: blur(8px); }
 .selection-summary > div { display: grid; gap: 7px; margin-top: 8px; }
 .selection-summary > div > span { display: grid; grid-template-columns: 45px 1fr; gap: 8px; color: var(--text); font-size: 10.5px; }
 .selection-summary b { color: var(--text-secondary); font-weight: 500; }
+.detail-layout figure img[role="button"] { cursor: zoom-in; }
+.detail-layout figure img:focus-visible, .image-preview-image:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+/* ---------- 全尺寸图片预览 ---------- */
+html.image-preview-open { overflow: hidden; }
+html.image-preview-open #detailImage { visibility: hidden; }
+.image-preview-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.image-preview-dialog[open] { animation: none; }
+.image-preview-dialog::backdrop { background: transparent; backdrop-filter: blur(18px) saturate(165%); -webkit-backdrop-filter: blur(18px) saturate(165%); }
+.image-preview-dialog .dialog-close {
+  z-index: 3;
+  top: max(13px, env(safe-area-inset-top));
+  right: max(13px, env(safe-area-inset-right));
+}
+.image-preview-veil {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background: color-mix(in srgb, var(--chrome-heavy) 54%, rgba(0, 0, 0, .46));
+  cursor: zoom-out;
+}
+.image-preview-stage {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  overflow: hidden;
+  pointer-events: none;
+}
+.image-preview-image {
+  flex: none;
+  position: relative;
+  z-index: 2;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(92vw, calc(100vw - 48px));
+  max-height: min(92dvh, calc(100dvh - 48px));
+  object-fit: contain;
+  border-radius: var(--r-md);
+  box-shadow: inset 0 1px 0 var(--edge), var(--shadow-lg);
+  cursor: zoom-in;
+  user-select: none;
+  -webkit-user-drag: none;
+  touch-action: none;
+  pointer-events: auto;
+  transform-origin: center;
+}
+.image-preview-dialog[open] .image-preview-image { will-change: transform; }
+.image-preview-image.is-zoomed { cursor: grab; }
+.image-preview-image.is-interacting { cursor: grabbing; }
+.image-preview-status {
+  z-index: 2;
+  margin: 0;
+  padding: 8px 13px;
+  color: var(--text);
+  background: var(--chrome-heavy);
+  border: 1px solid var(--separator);
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+  font-size: 11px;
+  pointer-events: none;
+}
 
 #toast {
   position: fixed;
@@ -836,6 +922,8 @@ dialog::backdrop { background: rgba(0, 0, 0, .32); backdrop-filter: blur(8px); }
 
 @media (prefers-reduced-transparency: reduce) {
   .glass, .topbar, .mobile-tabs, .pool-drawer, .command-deck, dialog, #toast { background: var(--chrome-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .image-preview-veil { background: var(--chrome-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .image-preview-dialog::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
   .ambient { display: none; }
 }
 

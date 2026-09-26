@@ -88,7 +88,8 @@
                     <TextBlock Text="工作台版本" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
                 </Expander.Header>
                 <StackPanel Spacing="8" Margin="0,8,0,0">
-                    <launch:Card Header="应用内置新版" Description="健康检查通过后才切换；旧资源保留">
+                    <TextBlock x:Name="VersionText" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <launch:Card Header="应用内置新版" Description="空闲时启动会自动切换；此处可手动立即应用">
                         <launch:Card.ActionContent>
                             <Button Content="应用内置新版" Click="ApplyVersion_Click" />
                         </launch:Card.ActionContent>

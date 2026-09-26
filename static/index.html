@@ -14,7 +14,7 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260814-regeneration-ui">
+  <link rel="stylesheet" href="/static/styles.css?v=20260919-image-preview">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -111,7 +111,7 @@
           <div class="details-content">
             <label class="field"><span>主模型</span><select id="model_name"><option value="">正在读取模型...</option></select></label>
             <div id="resourceWarning" class="resource-warning" hidden></div>
-            <div class="switch-list">
+            <div class="switch-list repair-toggle-list">
               <label class="switch-row"><span><strong>高清修复</strong><small>使用放大模型增强细节</small></span><input id="hires_enabled" type="checkbox"></label>
             </div>
             <div id="hiresFields" class="repair-parameters">
@@ -367,7 +367,7 @@
   <dialog id="detailDialog" class="detail-dialog">
     <button id="closeDialog" class="dialog-close" type="button" title="关闭" aria-label="关闭">×</button>
     <div class="detail-layout">
-      <figure><img id="detailImage" alt="生成结果"></figure>
+      <figure><img id="detailImage" tabindex="0" role="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="imagePreviewDialog" aria-label="展开全尺寸图片预览" title="点击查看全尺寸图片" alt="生成结果"></figure>
       <div class="detail-copy">
         <span id="detailMeta" class="kicker"></span>
         <h2>生成详情</h2>
@@ -412,7 +412,18 @@
     </div>
   </dialog>
 
+  <dialog id="imagePreviewDialog" class="image-preview-dialog" aria-labelledby="imagePreviewTitle">
+    <div id="imagePreviewVeil" class="image-preview-veil" aria-hidden="true"></div>
+    <button id="closeImagePreview" class="dialog-close" type="button" title="关闭图片预览" aria-label="关闭图片预览">×</button>
+    <div class="image-preview-stage" id="imagePreviewStage">
+      <h2 id="imagePreviewTitle" class="sr-only">全尺寸图片预览</h2>
+      <img id="imagePreviewImage" class="image-preview-image" alt="全尺寸生成结果" draggable="false" tabindex="0" aria-describedby="imagePreviewHelp" hidden>
+      <p id="imagePreviewStatus" class="image-preview-status" role="status"></p>
+      <p id="imagePreviewHelp" class="sr-only">滚轮或双指缩放，放大后拖动查看；双击或双触切换适配大小与两倍大小。加减键缩放，0 恢复适配，方向键移动。按 Esc 关闭预览。</p>
+    </div>
+  </dialog>
+
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260814-regeneration-ui" defer></script>
+  <script src="/static/app.js?v=20260919-image-preview" defer></script>
 </body>
 </html>

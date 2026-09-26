@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import json
 import logging
+import os
 import threading
 import webbrowser
 from pathlib import Path
@@ -123,6 +125,7 @@ def create_app(
     trusted_hostnames: set[str] | frozenset[str] | None = None,
     data_dir: str | Path | None = None,
     resource_paths: dict[str, str] | None = None,
+    shutdown_token: str | None = None,
 ) -> web.Application:
     root = Path(app_dir)
     storage = Path(data_dir) if data_dir is not None else root / "data"
@@ -801,7 +804,23 @@ def create_app(
             "comfy_url": getattr(client, "base_url", "local"),
         })
 
+    async def launcher_shutdown(request: web.Request) -> web.Response:
+        # 未配置 token 时端点不存在,旧版本天然返回 404 —— 启动器据此探测能力。
+        if shutdown_token is None:
+            raise web.HTTPNotFound()
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        candidate = body.get("token") if isinstance(body, dict) else None
+        if not isinstance(candidate, str) or not hmac.compare_digest(candidate, shutdown_token):
+            raise web.HTTPForbidden()
+        # 先让响应发出,再整体退出;升级路径只在空闲时调用,可跳过 on_cleanup。
+        asyncio.get_running_loop().call_later(0.5, os._exit, 0)
+        return web.json_response({"stopping": True})
+
     app.router.add_get("/api/launcher-health", launcher_health)
+    app.router.add_post("/api/launcher-shutdown", launcher_shutdown)
     app.router.add_get("/api/config", config)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/loras", loras)
@@ -912,6 +931,7 @@ def main() -> None:
         help="额外允许的反向代理主机名；可重复指定",
     )
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--shutdown-token", default=None, help="启动器下发的停机令牌;未提供则关闭停机端点")
     args = parser.parse_args()
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("WebUI 只允许监听本机地址")
@@ -922,6 +942,7 @@ def main() -> None:
         trusted_hostnames=set(args.trusted_host),
         data_dir=args.data_dir,
         resource_paths=json.loads(Path(args.resource_paths).read_text(encoding="utf-8")) if args.resource_paths else None,
+        shutdown_token=args.shutdown_token,
     )
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(f"http://127.0.0.1:{args.port}")).start()
