@@ -1087,14 +1087,28 @@ let submitInFlight = false;
 function renderBatchPayload(payload) {
   renderBatch(payload.batch, payload.queue || []);
 }
+let queuePanelCloseTimer = null;
+function setQueuePanelOpen(open) {
+  if (!ui.queuePanel) return;
+  clearTimeout(queuePanelCloseTimer);
+  if (open) {
+    ui.queuePanel.hidden = false;
+    // Force a frame so the transition plays from the collapsed style.
+    ui.queuePanel.getBoundingClientRect();
+    ui.queuePanel.classList.add("open");
+  } else {
+    ui.queuePanel.classList.remove("open");
+    queuePanelCloseTimer = setTimeout(() => { ui.queuePanel.hidden = true; }, 320);
+  }
+}
+
 function renderQueue(queue) {
   currentQueue = queue;
   if (!ui.queueBadge || !ui.queuePanel) return;
   ui.queueBadge.hidden = queue.length === 0;
   ui.queueBadge.textContent = `队列 ${queue.length}`;
   if (queue.length === 0) {
-    ui.queuePanel.hidden = true;
-    ui.queueBadge.setAttribute("aria-expanded", "false");
+    setQueuePanelOpen(false);
   }
   ui.queuePanel.replaceChildren(
     ...queue.map((entry) => {
@@ -1294,6 +1308,18 @@ function animateImagePreview(from, to, duration, onFinish = () => {}) {
   }).catch(() => {}); // Reversing/closing during an animation is expected.
 }
 
+// Fade the veil from its live opacity so interrupting a fade never jumps.
+function animateImagePreviewVeil(toOpacity, duration, onFinish = () => {}) {
+  const veil = ui.imagePreviewVeil;
+  const from = getComputedStyle(veil).opacity;
+  veil.getAnimations().forEach(animation => animation.cancel());
+  const animation = veil.animate([{ opacity: from }, { opacity: toOpacity }], {
+    duration: imagePreviewReducedMotion() ? 120 : duration, fill: "both",
+  });
+  animation.finished.then(onFinish).catch(() => {});
+  return animation;
+}
+
 function liveImagePreviewFrame() {
   const style = getComputedStyle(ui.imagePreviewImage);
   return { transform: style.transform, clipPath: style.clipPath, opacity: style.opacity };
@@ -1356,7 +1382,30 @@ function imagePreviewSourceFrame() {
 
 async function openImagePreview(event) {
   event?.stopPropagation(); // Preserve any expanded replay/variant controls underneath.
-  if (!selectedRecord || !ui.detailImage.getAttribute("src") || imagePreview.phase !== "closed") return;
+  if (!selectedRecord || !ui.detailImage.getAttribute("src")) return;
+
+  // Reverse-reopen: if the exit animation is still in flight, bounce back from
+  // the live frame instead of ignoring the click (previously felt like a hang).
+  if (imagePreview.phase === "closing") {
+    ++imagePreview.token; // Cancel the pending finishImagePreviewClose callback.
+    if (!ui.imagePreviewDialog.open) {
+      // The dialog got closed before we could intercept; restart cleanly.
+      imagePreview.phase = "closed";
+      return openImagePreview(event);
+    }
+    imagePreview.phase = "opening";
+    const from = liveImagePreviewFrame();
+    imagePreview.zoom = 1;
+    imagePreview.x = imagePreview.y = 0;
+    applyImagePreviewTransform();
+    animateImagePreviewVeil(1, 260);
+    animateImagePreview(from, imagePreviewFrame(), 320, () => {
+      if (imagePreview.phase === "opening") imagePreview.phase = "open";
+    });
+    return;
+  }
+  if (imagePreview.phase !== "closed") return;
+
   const token = ++imagePreview.token;
   imagePreview.phase = "loading";
   imagePreview.zoom = 1;
@@ -1371,16 +1420,20 @@ async function openImagePreview(event) {
   ui.imagePreviewDialog.showModal();
   ui.detailImage.setAttribute("aria-expanded", "true");
   ui.closeImagePreview.focus({ preventScroll: true });
-  ui.imagePreviewVeil.getAnimations().forEach(animation => animation.cancel());
-  ui.imagePreviewVeil.animate([{ opacity: 0 }, { opacity: 1 }], { duration: imagePreviewReducedMotion() ? 120 : 420, fill: "both" });
+  animateImagePreviewVeil(1, 420);
   try {
     await ui.imagePreviewImage.decode();
     if (token !== imagePreview.token || !ui.detailDialog.open) return;
+    // If a close was requested while decoding, keep the image hidden and let
+    // the in-flight close animation finish instead of starting a new entry.
+    if (imagePreview.phase === "closing") return;
     ui.imagePreviewStatus.hidden = true;
     ui.imagePreviewImage.hidden = false;
     layoutImagePreview();
-    imagePreview.phase = "open";
-    animateImagePreview(imagePreviewSourceFrame(), imagePreviewFrame(), 500);
+    imagePreview.phase = "opening";
+    animateImagePreview(imagePreviewSourceFrame(), imagePreviewFrame(), 500, () => {
+      if (imagePreview.phase === "opening") imagePreview.phase = "open";
+    });
   } catch {
     if (token !== imagePreview.token) return;
     imagePreview.phase = "error";
@@ -1398,6 +1451,7 @@ function finishImagePreviewClose(restoreFocus = true) {
   ui.imagePreviewImage.classList.remove("is-interacting", "is-zoomed");
   ui.imagePreviewImage.hidden = true;
   ui.imagePreviewImage.removeAttribute("src");
+  ui.imagePreviewStatus.hidden = true;
   document.documentElement.classList.remove("image-preview-open");
   ui.detailImage.setAttribute("aria-expanded", "false");
   if (ui.imagePreviewDialog.open) ui.imagePreviewDialog.close();
@@ -1411,15 +1465,11 @@ function closeImagePreview({ immediate = false, restoreFocus = true } = {}) {
   ++imagePreview.token; // Invalidate an in-flight decode before starting the exit.
   const hasImage = !ui.imagePreviewImage.hidden;
   imagePreview.phase = "closing";
-  const veilOpacity = getComputedStyle(ui.imagePreviewVeil).opacity;
-  ui.imagePreviewVeil.getAnimations().forEach(animation => animation.cancel());
-  const veil = ui.imagePreviewVeil.animate([{ opacity: veilOpacity }, { opacity: 0 }], {
-    duration: imagePreviewReducedMotion() ? 120 : 300, fill: "both",
-  });
   if (hasImage) {
+    animateImagePreviewVeil(0, 300);
     animateImagePreview(liveImagePreviewFrame(), imagePreviewSourceFrame(), 300, () => finishImagePreviewClose(restoreFocus));
   } else {
-    veil.finished.then(() => finishImagePreviewClose(restoreFocus)).catch(() => {});
+    animateImagePreviewVeil(0, 300, () => finishImagePreviewClose(restoreFocus));
   }
 }
 
@@ -1455,6 +1505,12 @@ function beginImagePreviewGesture() {
 }
 
 function imagePreviewPointerDown(event) {
+  if (imagePreview.phase === "closing" && (event.pointerType !== "mouse" || event.button === 0)) {
+    openImagePreview(); // reverse-reopen from the live frame
+    return;
+  }
+  // During the entry animation, let it settle: grabbing mid-entry would snap
+  // the pan offset through clamp logic and look like a jump.
   if (imagePreview.phase !== "open" || (event.pointerType === "mouse" && event.button !== 0)) return;
   // Continue from the presentation transform if a double-click zoom was still settling.
   const current = new DOMMatrixReadOnly(getComputedStyle(ui.imagePreviewImage).transform);
@@ -1522,10 +1578,19 @@ function imagePreviewWheel(event) {
   setImagePreviewZoom(imagePreview.zoom * Math.exp(-clampPreview(delta, -500, 500) * .0015), { x: event.clientX, y: event.clientY });
 }
 
+function collapseRegenerationDrawer(drawer) {
+  if (drawer.hidden || drawer.classList.contains("closing")) return;
+  drawer.classList.add("closing");
+  setTimeout(() => {
+    drawer.hidden = true;
+    drawer.classList.remove("closing");
+  }, 200);
+}
+
 function closeRegenerationDrawers(restoreFocus = true) {
   const hadOpen = !ui.replayDrawer.hidden || !ui.variantDrawer.hidden;
-  ui.replayDrawer.hidden = true;
-  ui.variantDrawer.hidden = true;
+  collapseRegenerationDrawer(ui.replayDrawer);
+  collapseRegenerationDrawer(ui.variantDrawer);
   ui.reproduceImage.setAttribute("aria-expanded", "false");
   ui.variantButton.setAttribute("aria-expanded", "false");
   if (restoreFocus && hadOpen && regenerationTrigger && document.contains(regenerationTrigger))
@@ -1584,13 +1649,14 @@ async function loadRegenerationOptions() {
 
 async function openRegenerationDrawer(kind, trigger) {
   const drawer = kind === "replay" ? ui.replayDrawer : ui.variantDrawer;
-  const wasOpen = !drawer.hidden;
+  const wasOpen = !drawer.hidden || drawer.classList.contains("closing");
   closeRegenerationDrawers(false);
   if (wasOpen) {
     trigger.focus({ preventScroll: true });
     return;
   }
   regenerationTrigger = trigger;
+  drawer.classList.remove("closing");
   drawer.hidden = false;
   trigger.setAttribute("aria-expanded", "true");
   await loadRegenerationOptions();
@@ -1606,10 +1672,33 @@ function selectedRedrawSections() {
   return [...ui.redrawSections.querySelectorAll("input:checked")].map((input) => input.value);
 }
 
+let redrawSectionsAnim = null;
+function setRedrawSectionsVisible(visible) {
+  const el = ui.redrawSections;
+  // No-op when the requested state already matches; importantly this avoids
+  // cancelling an in-flight entry/exit animation on repeated redraws.
+  if (visible === !el.hidden) return;
+  redrawSectionsAnim?.cancel();
+  redrawSectionsAnim = null;
+  if (visible) {
+    el.hidden = false;
+    redrawSectionsAnim = el.animate(
+      [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }],
+      { duration: imagePreviewReducedMotion() ? 60 : 200, easing: "cubic-bezier(.2,.8,.2,1)", fill: "both" },
+    );
+  } else {
+    redrawSectionsAnim = el.animate(
+      [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(-6px)" }],
+      { duration: imagePreviewReducedMotion() ? 60 : 160, easing: "cubic-bezier(.4,0,1,1)", fill: "both" },
+    );
+    redrawSectionsAnim.finished.then(() => { el.hidden = true; }).catch(() => {});
+  }
+}
+
 function updateVariantDrawer() {
   const mode = selectedRegenerationMode();
   const sections = selectedRedrawSections();
-  ui.redrawSections.hidden = mode !== "content_redraw";
+  setRedrawSectionsVisible(mode === "content_redraw");
   const labels = {
     prompt_variant: "生成同提示词变体",
     content_redraw: "重新抽取所选内容",
@@ -1740,6 +1829,8 @@ async function openPool(section) {
   ui.poolDrawer.removeAttribute("inert");
   ui.poolDrawer.classList.add("open");
   ui.poolDrawer.setAttribute("aria-hidden", "false");
+  clearTimeout(backdropCloseTimer);
+  ui.drawerBackdrop.classList.remove("closing");
   ui.drawerBackdrop.hidden = false;
   ui.poolTitle.textContent = `${SECTION_META[section].label}池`;
   ui.poolKicker.textContent = "PROMPT POOL";
@@ -1752,13 +1843,23 @@ async function openPool(section) {
   await loadPool();
   schedulePersist();
 }
+let backdropCloseTimer = null;
+function hideDrawerBackdrop() {
+  clearTimeout(backdropCloseTimer);
+  ui.drawerBackdrop.classList.add("closing");
+  backdropCloseTimer = setTimeout(() => {
+    ui.drawerBackdrop.hidden = true;
+    ui.drawerBackdrop.classList.remove("closing");
+  }, 300);
+}
+
 function closePool() {
   currentView().scrollTop = ui.poolGrid.scrollTop;
   setPoolSidebarOpen(false);
   ui.poolDrawer.classList.remove("open");
   ui.poolDrawer.setAttribute("aria-hidden", "true");
   ui.poolDrawer.setAttribute("inert", "");
-  ui.drawerBackdrop.hidden = true;
+  hideDrawerBackdrop();
   if (drawerTrigger && document.contains(drawerTrigger)) drawerTrigger.focus({ preventScroll: true });
   drawerTrigger = null;
   schedulePersist();
@@ -1943,11 +2044,60 @@ function focusFavoriteTreeRow(groupId) {
     row.focus();
   });
 }
+// Rows belonging to a group's descendant set, looked up pre-render.
+function treeRowsForGroups(ids) {
+  return [...ui.poolSidebar.querySelectorAll(".favorite-tree-row[data-group-id]")]
+    .filter((row) => ids.has(row.dataset.groupId));
+}
+function animateTreeRowsIn(rows) {
+  if (imagePreviewReducedMotion()) return;
+  rows.forEach((row, index) => {
+    row.animate(
+      [{ opacity: 0, transform: "translateX(-8px)" }, { opacity: 1, transform: "none" }],
+      { duration: 240, delay: Math.min(index * 30, 150), easing: "cubic-bezier(.32,.72,0,1)", fill: "both" },
+    );
+  });
+}
+function animateTreeRowsOut(rows, done) {
+  if (!rows.length || imagePreviewReducedMotion()) return done();
+  let remaining = rows.length;
+  const finish = () => { if (--remaining <= 0) done(); };
+  rows.forEach((row) => {
+    row.animate(
+      [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateX(-8px)" }],
+      { duration: 160, easing: "cubic-bezier(.4,0,1,1)", fill: "both" },
+    ).finished.then(finish).catch(finish);
+  });
+}
+// Re-render the sidebar and play an entry animation on rows that did not exist
+// before the render (i.e. freshly expanded children).
+function renderPoolSidebarAnimated(enteredIds = new Set()) {
+  const before = new Set(
+    [...ui.poolSidebar.querySelectorAll(".favorite-tree-row[data-group-id]")].map((row) => row.dataset.groupId),
+  );
+  renderPoolSidebar();
+  const fresh = enteredIds.size
+    ? treeRowsForGroups(enteredIds).filter((row) => !before.has(row.dataset.groupId))
+    : [];
+  animateTreeRowsIn(fresh);
+}
+
 function toggleFavoriteTreeGroup(groupId, restoreFocus = false) {
   const collapsed = collapsedFavoriteGroups[activeSection];
-  collapsed.has(groupId) ? collapsed.delete(groupId) : collapsed.add(groupId);
+  const collapsing = !collapsed.has(groupId);
+  const descendants = favoriteDescendantIds(groupId);
+  if (collapsing) {
+    collapsed.add(groupId);
+    persistFavoriteTree();
+    animateTreeRowsOut(treeRowsForGroups(descendants), () => {
+      renderPoolSidebar();
+      if (restoreFocus) focusFavoriteTreeRow(groupId);
+    });
+    return;
+  }
+  collapsed.delete(groupId);
   persistFavoriteTree();
-  renderPoolSidebar();
+  renderPoolSidebarAnimated(descendants);
   if (restoreFocus) focusFavoriteTreeRow(groupId);
 }
 function focusCustomTreeRow(groupId) {
@@ -1963,9 +2113,20 @@ function focusCustomTreeRow(groupId) {
 }
 function toggleCustomTreeGroup(groupId, restoreFocus = false) {
   const collapsed = collapsedCustomGroups[activeSection];
-  collapsed.has(groupId) ? collapsed.delete(groupId) : collapsed.add(groupId);
+  const collapsing = !collapsed.has(groupId);
+  const descendants = customDescendantIds(groupId);
+  if (collapsing) {
+    collapsed.add(groupId);
+    persistCustomTree();
+    animateTreeRowsOut(treeRowsForGroups(descendants), () => {
+      renderPoolSidebar();
+      if (restoreFocus) focusCustomTreeRow(groupId);
+    });
+    return;
+  }
+  collapsed.delete(groupId);
   persistCustomTree();
-  renderPoolSidebar();
+  renderPoolSidebarAnimated(descendants);
   if (restoreFocus) focusCustomTreeRow(groupId);
 }
 function renderFavoriteTree(container, view) {
@@ -3502,9 +3663,34 @@ ui.stopButton.addEventListener("click", async () => {
     toast(error.message);
   }
 });
+// Animated collapse for <details> sections: intercept the toggle, play the
+// reverse of the `disclose` entry animation, then flip `open` off.
+for (const details of document.querySelectorAll("details.advanced-section, details.artist-favorites-section")) {
+  const summary = details.querySelector("summary");
+  const content = details.querySelector(".details-content, .artist-favorites-content, summary + *");
+  if (!summary || !content) continue;
+  summary.addEventListener("click", (event) => {
+    if (!details.open || details.dataset.collapsing) return;
+    event.preventDefault();
+    details.dataset.collapsing = "1";
+    const animation = content.animate(
+      [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(-6px)" }],
+      { duration: imagePreviewReducedMotion() ? 60 : 180, easing: "cubic-bezier(.4,0,1,1)", fill: "both" },
+    );
+    animation.finished.then(() => {
+      details.open = false;
+      delete details.dataset.collapsing;
+      animation.cancel(); // release the fill so CSS takes over cleanly
+    }).catch(() => {
+      details.open = false;
+      delete details.dataset.collapsing;
+    });
+  });
+}
+
 ui.queueBadge?.addEventListener("click", () => {
-  const open = ui.queuePanel.hidden && currentQueue.length > 0;
-  ui.queuePanel.hidden = !open;
+  const open = !ui.queuePanel.classList.contains("open") && currentQueue.length > 0;
+  setQueuePanelOpen(open);
   ui.queueBadge.setAttribute("aria-expanded", String(open));
 });
 ui.reproduceImage?.addEventListener("click", () => openRegenerationDrawer("replay", ui.reproduceImage));
@@ -3582,7 +3768,10 @@ ui.imagePreviewDialog.addEventListener("cancel", (event) => {
   closeImagePreview();
 });
 ui.imagePreviewDialog.addEventListener("close", () => {
-  if (!ui.imagePreviewDialog.open && imagePreview.phase !== "closed") finishImagePreviewClose();
+  if (ui.imagePreviewDialog.open || imagePreview.phase === "closed") return;
+  // External close (e.g. detail dialog closing) while opening/open: reset now
+  // rather than letting a half-finished entry animation keep the veil alive.
+  finishImagePreviewClose(false);
 });
 ui.detailDialog.addEventListener("close", () => closeImagePreview({ immediate: true, restoreFocus: false }));
 new ResizeObserver(() => {

@@ -322,6 +322,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .section-heading h2 { margin: 0; font-size: 14.5px; font-weight: 620; letter-spacing: -.01em; }
 .section-heading span, .section-heading output { color: var(--text-secondary); font-size: 10.5px; }
 .stepper-grid, .parameter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.parameter-grid { align-items: start; }
+.parameter-grid .field { margin-top: 0; }
+.parameter-grid .field > span { min-height: 17px; line-height: 17px; }
 .stepper { min-width: 0; display: grid; grid-template-columns: 1fr 56px; align-items: center; gap: 8px; padding: 10px 10px 10px 13px; color: var(--text-secondary); background: var(--surface-muted); border: 0; border-radius: 14px; font-size: 11px; }
 .stepper input { width: 100%; height: 34px; text-align: center; font-size: 15px; font-weight: 650; }
 .field { display: grid; gap: 6px; margin-top: 12px; color: var(--text-secondary); font-size: 11px; }
@@ -377,6 +380,7 @@ input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
 .advanced-section summary:hover i { background: var(--surface-pressed); }
 .advanced-section[open] summary i, .artist-favorites-section[open] summary i { transform: rotate(45deg); }
 .advanced-section[open] .details-content { animation: disclose .45s var(--spring); }
+.artist-favorites-section[open] .artist-favorites-body { animation: disclose .45s var(--spring); }
 .details-content { padding-bottom: 19px; }
 .details-content .field:first-child { margin-top: 0; }
 .summary-value { min-width: 0; margin-left: auto; margin-right: 10px; overflow: hidden; color: var(--text-tertiary); text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 500; }
@@ -526,6 +530,7 @@ input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---------- 词池抽屉 ---------- */
 .drawer-backdrop { position: fixed; z-index: 45; inset: 0; background: rgba(0, 0, 0, .3); backdrop-filter: blur(6px); animation: veil-in .35s ease both; }
+.drawer-backdrop.closing { animation: veil-out .28s ease both; }
 .pool-drawer {
   position: fixed;
   z-index: 46;
@@ -833,6 +838,8 @@ html.image-preview-open #detailImage { visibility: hidden; }
 @keyframes pill-in { from { opacity: 0; transform: translate(-50%, 24px) scale(.94); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
 @keyframes rise-in { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
 @keyframes veil-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes veil-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes regeneration-out { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(-5px) scale(.985); } }
 @keyframes shimmer { from { transform: translateX(-110%); } to { transform: translateX(340%); } }
 @keyframes breathe { 0%, 100% { opacity: .55; transform: scale(1); } 50% { opacity: 1; transform: scale(1.3); } }
 
@@ -940,7 +947,10 @@ html.image-preview-open #detailImage { visibility: hidden; }
 .progress-track.sample { height: 2px; margin-top: 3px; opacity: .75; }
 .queue-badge { padding: 1px 9px; color: var(--accent); background: var(--accent-soft); border: none; border-radius: 999px; font-size: 10px; font-weight: 600; cursor: pointer; }
 .queue-badge:hover { filter: brightness(1.08); }
-.queue-panel { position: fixed; z-index: 44; bottom: 86px; left: 50%; transform: translateX(-50%); min-width: 250px; max-width: 380px; display: grid; gap: 4px; padding: 10px; background: var(--chrome-heavy); backdrop-filter: blur(var(--blur)) saturate(190%); -webkit-backdrop-filter: blur(var(--blur)) saturate(190%); border: 1px solid var(--separator); border-radius: 16px; box-shadow: inset 0 1px 0 var(--edge), var(--shadow-lg); }
+.queue-panel { position: fixed; z-index: 44; bottom: 86px; left: 50%; transform: translate(-50%, 8px) scale(.97); opacity: 0; pointer-events: none; min-width: 250px; max-width: 380px; display: grid; gap: 4px; padding: 10px; background: var(--chrome-heavy); backdrop-filter: blur(var(--blur)) saturate(190%); -webkit-backdrop-filter: blur(var(--blur)) saturate(190%); border: 1px solid var(--separator); border-radius: 16px; box-shadow: inset 0 1px 0 var(--edge), var(--shadow-lg); }
+.queue-panel.open { transform: translate(-50%, 0) scale(1); opacity: 1; pointer-events: auto; transition: opacity .28s ease, transform .32s var(--spring); }
+.queue-panel:not(.open) { transition: opacity .22s ease, transform .26s cubic-bezier(.4, 0, 1, 1); }
+.queue-panel[hidden] { display: none; }
 .queue-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 6px; border-radius: 10px; font-size: 11px; }
 .queue-row:hover { background: var(--surface-muted); }
 .reproduce-actions { gap: 8px; }
@@ -948,6 +958,7 @@ html.image-preview-open #detailImage { visibility: hidden; }
 .variant-group input { width: 64px; }
 .regeneration-drawer { position: relative; display: grid; gap: 12px; margin: 2px 0 12px; padding: 14px; border: 1px solid var(--separator); border-radius: 18px; background: color-mix(in srgb, var(--chrome-heavy) 92%, transparent); box-shadow: inset 0 1px 0 var(--edge), var(--shadow-sm); transform-origin: top left; animation: regeneration-in .2s cubic-bezier(.2,.8,.2,1) both; }
 .regeneration-drawer[hidden] { display: none; }
+.regeneration-drawer.closing { animation: regeneration-out .18s cubic-bezier(.4, 0, 1, 1) both; pointer-events: none; }
 .variant-drawer { transform-origin: top right; }
 .regeneration-drawer header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .regeneration-drawer h3 { margin: 3px 0 0; color: var(--text); font-size: 15px; line-height: 1.2; letter-spacing: -.01em; }
