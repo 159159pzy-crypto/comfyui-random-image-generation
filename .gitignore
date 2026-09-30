@@ -41,3 +41,8 @@ dist/
 launcher/**/bin/
 launcher/**/obj/
 launcher/payload.zip
+
+# Agent session dumps
+.dsh-session-dump.txt
+*.dsh-session*
+dsh-session-dump*
