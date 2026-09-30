@@ -46,3 +46,12 @@ launcher/payload.zip
 .dsh-session-dump.txt
 *.dsh-session*
 dsh-session-dump*
+
+# Agent tool local state (sync across machines)
+.codex-local/
+.claude/
+
+# Local-only project dirs
+anima_natural/
+anima_studio/
+tools/
