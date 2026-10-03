@@ -47,6 +47,8 @@ PRESET_SETTING_KEYS = (
     "cfg",
     "sampler_name",
     "scheduler",
+    "cfg_zero_star",
+    "second_sampler",
 )
 MAX_PRESETS = 256
 

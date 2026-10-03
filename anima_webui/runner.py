@@ -163,6 +163,23 @@ class BatchManager:
                 ("sampler", "Sampler", settings["sampler_name"], resources.get("samplers", [])),
                 ("scheduler", "Scheduler", settings["scheduler"], resources.get("schedulers", [])),
             ]
+            if settings["second_sampler"]["enabled"]:
+                checks.extend(
+                    [
+                        (
+                            "second_sampler",
+                            "2ndSampler Sampler",
+                            settings["second_sampler"]["sampler_name"],
+                            resources.get("samplers", []),
+                        ),
+                        (
+                            "second_scheduler",
+                            "2ndSampler Scheduler",
+                            settings["second_sampler"]["scheduler"],
+                            resources.get("schedulers", []),
+                        ),
+                    ]
+                )
             if settings["hires"]["enabled"]:
                 checks.append(
                     (
@@ -211,6 +228,12 @@ class BatchManager:
                     raise WorkflowError(f"Sampler 不可用: {settings['sampler_name']}")
                 if settings["scheduler"] not in resources.get("schedulers", []):
                     raise WorkflowError(f"Scheduler 不可用: {settings['scheduler']}")
+                if settings["second_sampler"]["enabled"]:
+                    second_sampler = settings["second_sampler"]
+                    if second_sampler["sampler_name"] not in resources.get("samplers", []):
+                        raise WorkflowError(f"2ndSampler Sampler 不可用: {second_sampler['sampler_name']}")
+                    if second_sampler["scheduler"] not in resources.get("schedulers", []):
+                        raise WorkflowError(f"2ndSampler Scheduler 不可用: {second_sampler['scheduler']}")
             if self.active():
                 # 有批次在跑:进入队列,当前批次结束后自动接续。
                 if len(self.queue) >= MAX_QUEUE:

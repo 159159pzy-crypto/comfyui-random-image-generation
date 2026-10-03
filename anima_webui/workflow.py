@@ -17,6 +17,14 @@ DEFAULT_LORAS: list[dict[str, Any]] = []
 DEFAULT_MODEL = "miaomiaoHarem_anima14.safetensors"
 DEFAULT_SAMPLER = "er_sde"
 DEFAULT_SCHEDULER = "simple"
+DEFAULT_SECOND_SAMPLER = {
+    "enabled": False,
+    "steps": 16,
+    "cfg": 4.0,
+    "sampler_name": DEFAULT_SAMPLER,
+    "scheduler": DEFAULT_SCHEDULER,
+    "denoise": 0.2,
+}
 DEFAULT_HIRES = {
     "enabled": True,
     "model_name": "4x_foolhardy_Remacri.pth",
@@ -82,6 +90,8 @@ DEFAULT_SETTINGS = {
     "cfg": 4.0,
     "sampler_name": DEFAULT_SAMPLER,
     "scheduler": DEFAULT_SCHEDULER,
+    "cfg_zero_star": False,
+    "second_sampler": DEFAULT_SECOND_SAMPLER,
 }
 
 MAX_SAMPLE_SEED = 1125899906842624
@@ -92,6 +102,10 @@ NEGATIVE_ID = 45
 HIRES_SCALE_ID = 51
 HIRES_MODEL_ID = 61
 HIRES_UPSCALE_ID = 62
+CFG_ZERO_STAR_ID = 49
+SECOND_SAMPLER_ID = 25
+SAM_LOADER_ID = 7
+DETAILER_PIPE_ID = 18
 REMOVED_NODE_IDS = {3, 4}
 
 # 模板必需节点总表:构造 WorkflowTemplates 时一次性校验。
@@ -324,6 +338,47 @@ def _validate_detailers(value: Any) -> dict[str, bool]:
     return {name: _boolean(f"detailers.{name}", merged[name]) for name in DETAILER_ORDER}
 
 
+def _validate_second_sampler(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise WorkflowError("second_sampler 必须是对象")
+    unknown = set(value) - set(DEFAULT_SECOND_SAMPLER)
+    if unknown:
+        raise WorkflowError(f"未知二次采样参数: {', '.join(sorted(unknown))}")
+    merged = {**DEFAULT_SECOND_SAMPLER, **value}
+    enabled = _boolean("second_sampler.enabled", merged["enabled"])
+    steps = _integer("second_sampler.steps", merged["steps"], 1, 150)
+    cfg = merged["cfg"]
+    if isinstance(cfg, bool) or not isinstance(cfg, (int, float)):
+        raise WorkflowError("second_sampler.cfg 必须是数字")
+    if not math.isfinite(float(cfg)):
+        raise WorkflowError("second_sampler.cfg 必须是有限数字")
+    cfg = float(cfg)
+    if not 0.1 <= cfg <= 30:
+        raise WorkflowError("second_sampler.cfg 必须在 0.1-30 之间")
+    sampler_name = _text("second_sampler.sampler_name", merged["sampler_name"])
+    scheduler = _text("second_sampler.scheduler", merged["scheduler"])
+    if not sampler_name:
+        raise WorkflowError("second_sampler.sampler_name 不能为空")
+    if not scheduler:
+        raise WorkflowError("second_sampler.scheduler 不能为空")
+    denoise = merged["denoise"]
+    if isinstance(denoise, bool) or not isinstance(denoise, (int, float)):
+        raise WorkflowError("second_sampler.denoise 必须是数字")
+    if not math.isfinite(float(denoise)):
+        raise WorkflowError("second_sampler.denoise 必须是有限数字")
+    denoise = float(denoise)
+    if not 0 <= denoise <= 1:
+        raise WorkflowError("second_sampler.denoise 必须在 0-1 之间")
+    return {
+        "enabled": enabled,
+        "steps": steps,
+        "cfg": cfg,
+        "sampler_name": sampler_name,
+        "scheduler": scheduler,
+        "denoise": denoise,
+    }
+
+
 def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     overrides = overrides or {}
     unknown = set(overrides) - set(DEFAULT_SETTINGS)
@@ -385,6 +440,8 @@ def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]
     )
     settings["hires"] = _validate_hires(settings["hires"])
     settings["detailers"] = _validate_detailers(settings["detailers"])
+    settings["cfg_zero_star"] = _boolean("cfg_zero_star", settings["cfg_zero_star"])
+    settings["second_sampler"] = _validate_second_sampler(settings["second_sampler"])
 
     if settings["character_detail"] not in {"trigger", "trigger_tags"}:
         raise WorkflowError("character_detail 必须是 trigger 或 trigger_tags")
@@ -708,6 +765,23 @@ def _set_ui_mode(ui: dict[str, Any], node_id: int, enabled: bool) -> None:
     _visual_node(ui, node_id)["mode"] = 0 if enabled else 4
 
 
+def _disconnect_ui_input(ui: dict[str, Any], node_id: int, input_name: str) -> None:
+    node = _visual_node(ui, node_id)
+    input_spec = next((item for item in node.get("inputs", []) if item.get("name") == input_name), None)
+    if not isinstance(input_spec, dict):
+        return
+    link_id = input_spec.get("link")
+    input_spec["link"] = None
+    if link_id is None:
+        return
+    ui["links"] = [link for link in ui.get("links", []) if int(link[0]) != int(link_id)]
+    for candidate in ui.get("nodes", []):
+        for output in candidate.get("outputs", []):
+            links = output.get("links")
+            if isinstance(links, list):
+                output["links"] = [value for value in links if int(value) != int(link_id)] or None
+
+
 def _ui_widgets(ui: dict[str, Any], node_id: int) -> list[Any]:
     return list(_visual_node(ui, node_id).get("widgets_values") or [])
 
@@ -806,6 +880,65 @@ def render_workflows(
     api = copy.deepcopy(api_template)
     ui = copy.deepcopy(ui_template)
     api["1"]["inputs"]["unet_name"] = settings["model_name"]
+    cfg_zero_star = settings["cfg_zero_star"]
+    model_ref: list[Any] = [str(CFG_ZERO_STAR_ID), 0] if cfg_zero_star else ["2", 0]
+    if cfg_zero_star:
+        api[str(CFG_ZERO_STAR_ID)] = {
+            "inputs": {"model": ["2", 0]},
+            "class_type": "CFGZeroStar",
+            "_meta": {"title": "CFGZeroStar"},
+        }
+    else:
+        api.pop(str(CFG_ZERO_STAR_ID), None)
+    api["5"]["inputs"]["model"] = model_ref
+    if "26" in api:
+        api["26"]["inputs"]["model"] = model_ref
+
+    second_sampler = settings["second_sampler"]
+    if second_sampler["enabled"]:
+        api[str(SECOND_SAMPLER_ID)] = {
+            "inputs": {
+                "seed": ["37", 0],
+                "steps": second_sampler["steps"],
+                "cfg": second_sampler["cfg"],
+                "sampler_name": second_sampler["sampler_name"],
+                "scheduler": second_sampler["scheduler"],
+                "denoise": second_sampler["denoise"],
+                "model": model_ref,
+                "positive": [str(POSITIVE_ID), 0],
+                "negative": [str(NEGATIVE_ID), 0],
+                "latent_image": ["5", 0],
+            },
+            "class_type": "KSampler",
+            "_meta": {"title": "2ndSampler"},
+        }
+        api["48"]["inputs"]["samples"] = [str(SECOND_SAMPLER_ID), 0]
+    else:
+        api.pop(str(SECOND_SAMPLER_ID), None)
+        api["48"]["inputs"]["samples"] = ["5", 0]
+
+    # The SAM loader is only needed when at least one detailer is active.
+    sam_enabled = any(settings["detailers"].values())
+    if sam_enabled:
+        if str(SAM_LOADER_ID) not in api:
+            raise WorkflowError("工作流缺少 SAMLoader 节点 7")
+        detailer_pipe = api.get(str(DETAILER_PIPE_ID))
+        if not isinstance(detailer_pipe, dict) or not isinstance(detailer_pipe.get("inputs"), dict):
+            raise WorkflowError("工作流缺少 ToDetailerPipe 节点 18")
+        detailer_pipe["inputs"]["sam_model_opt"] = [str(SAM_LOADER_ID), 0]
+    else:
+        api.pop(str(SAM_LOADER_ID), None)
+        detailer_pipe = api.get(str(DETAILER_PIPE_ID))
+        if isinstance(detailer_pipe, dict) and isinstance(detailer_pipe.get("inputs"), dict):
+            detailer_pipe["inputs"].pop("sam_model_opt", None)
+
+    _set_ui_mode(ui, CFG_ZERO_STAR_ID, cfg_zero_star)
+    _set_ui_mode(ui, SECOND_SAMPLER_ID, second_sampler["enabled"])
+    _set_ui_mode(ui, SAM_LOADER_ID, sam_enabled)
+    if not sam_enabled:
+        _disconnect_ui_input(ui, DETAILER_PIPE_ID, "sam_model_opt")
+    if second_sampler["enabled"]:
+        _disconnect_ui_input(ui, SECOND_SAMPLER_ID, "cfg")
     _set_ui_widget(ui, 1, settings["model_name"], 0)
     lora_node = api.get("2")
     if not isinstance(lora_node, dict) or not isinstance(lora_node.get("inputs"), dict):
@@ -945,6 +1078,12 @@ def render_workflows(
     _set_ui_widget(ui, 37, sample_seed, 0)
     _set_ui_widget(ui, 5, settings["sampler_name"], 4)
     _set_ui_widget(ui, 5, settings["scheduler"], 5)
+    _set_ui_widget(ui, SECOND_SAMPLER_ID, sample_seed, 0)
+    _set_ui_widget(ui, SECOND_SAMPLER_ID, second_sampler["steps"], 2)
+    _set_ui_widget(ui, SECOND_SAMPLER_ID, second_sampler["cfg"], 3)
+    _set_ui_widget(ui, SECOND_SAMPLER_ID, second_sampler["sampler_name"], 4)
+    _set_ui_widget(ui, SECOND_SAMPLER_ID, second_sampler["scheduler"], 5)
+    _set_ui_widget(ui, SECOND_SAMPLER_ID, second_sampler["denoise"], 6)
     return api, ui
 
 

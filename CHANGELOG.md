@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.4.0 - 2026-10-03
+
+### 新增
+
+- 新增 CFGZeroStar 可选开关，并支持配置第二次采样的步数、CFG、Sampler、Scheduler 与 Denoise；第二次采样复用当前图片的主 seed。
+- Detailer 开关现在会自动联动 SAM Loader，关闭全部 Detailer 时从提交的工作流中移除 SAM Loader。
+- 新增 2ndSampler 与 CFGZeroStar 的资源校验、工作流渲染、设置持久化和测试覆盖。
+- README 增加 v7 工作台界面预览截图。
+
 ## 0.3.0 - 2026-09-26
 
 ### Windows 启动器

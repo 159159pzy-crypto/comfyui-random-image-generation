@@ -2,6 +2,10 @@
 
 基于 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 和 [Anima Tools](https://github.com/nregret/Comfyui-Anima-Tools) 的本地随机生图工作台。它把提示词池、批量生成、LoRA、模型与修复、收藏树、风格预设和历史记录集中在一个轻量 WebUI 中，并默认只连接本机服务。
 
+## 界面预览
+
+![Anima Random Studio v7 工作台界面](docs/screenshots/anima-studio-v7.png)
+
 ## 项目适合谁
 
 - 已经在本机运行 ComfyUI，希望批量抽取 Anima 提示词并生成图片。
@@ -27,6 +31,7 @@
 - 角色、服装、姿势、背景、表情五类提示词池。
 - 每个池支持随机、固定、关闭、搜索、分类/特征筛选、手动选择和排除项。
 - 女性人数、男性人数、每类抽取数量、宽高、步数、CFG、Sampler、Scheduler、正负提示词和画师均可独立设置。
+- 采样参数支持独立启用 CFGZeroStar；可选的 2ndSampler 抽屉支持步数、CFG、Sampler、Scheduler 和 Denoise，第二次采样复用当前图片的主 seed。
 - 全部提示词字段支持安全的 Anima Tag 自动规范：整理分隔符、大小写、下划线、`score_*`、年份、画师前缀与重复项，同时保留自然语言、权重语法和原有顺序。
 - 支持本地维护精确的“原词 → 规范词”替换规则，并按正向、负向、LoRA 三种范围启停；字段失焦时自动应用并可撤销。
 - 生成链保持现有模型、LoRA、采样器、CLIP、VAE、Detailer 和 SaveImage 结构。
@@ -40,6 +45,7 @@
 - 每个 LoRA 的触发词可以在 WebUI 中新增、修改、清空或恢复管理器原值；覆盖按完整相对路径全局保存在本机，不会修改 LoRA Manager 缓存。
 - 高清修复支持开关、放大模型和高清输出比例（1–1000%，默认 45%）；该比例控制放大模型输出的最终缩放。
 - 手部、NSFW、面部、眼睛四个 Detailer 独立开关；关闭的模块不会进入提交到 ComfyUI 的 API 工作流。
+- Use SAM Loader 随 Detailer 自动联动：任一 Detailer 开启时保留 SAMLoader，全部关闭时自动移除 SAMLoader。
 - 批次启动前校验主模型、高清模型和 LoRA。缺失资源会显示具体文件名和原因。
 - 主 Sampler 与 Scheduler 从当前 ComfyUI 的 KSampler 动态读取，默认保持工作流原值 `er_sde` 与 `simple`；它们只控制主生成链，不覆盖 Detailer 的独立采样参数。
 

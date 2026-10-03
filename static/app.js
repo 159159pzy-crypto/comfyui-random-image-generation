@@ -71,6 +71,14 @@ const ui = Object.fromEntries(
     "height",
     "steps",
     "cfg",
+    "cfg_zero_star",
+    "second_sampler_enabled",
+    "secondSamplerDrawer",
+    "second_sampler_steps",
+    "second_sampler_cfg",
+    "second_sampler_name",
+    "second_scheduler",
+    "second_sampler_denoise",
     "gallery",
     "emptyState",
     "historyCount",
@@ -586,6 +594,18 @@ function normalizeSettings(raw) {
     ...(defaults?.detailers || { hand: false, nsfw: false, face: false, eyes: false }),
     ...(raw?.detailers || {}),
   };
+  merged.cfg_zero_star = Boolean(raw?.cfg_zero_star ?? defaults?.cfg_zero_star ?? false);
+  merged.second_sampler = {
+    ...(defaults?.second_sampler || {
+      enabled: false,
+      steps: 16,
+      cfg: 4,
+      sampler_name: defaults?.sampler_name || "",
+      scheduler: defaults?.scheduler || "",
+      denoise: 0.2,
+    }),
+    ...(raw?.second_sampler || {}),
+  };
   merged.manual_artist = canonicalArtists(merged.manual_artist);
   return merged;
 }
@@ -599,6 +619,15 @@ function applySettings(raw) {
   ensureSelectValue(ui.model_name, settings.model_name);
   ensureSelectValue(ui.sampler_name, settings.sampler_name);
   ensureSelectValue(ui.scheduler, settings.scheduler);
+  ui.cfg_zero_star.checked = Boolean(settings.cfg_zero_star);
+  ui.second_sampler_enabled.checked = Boolean(settings.second_sampler.enabled);
+  ui.second_sampler_steps.value = Number(settings.second_sampler.steps) || 16;
+  ui.second_sampler_cfg.value = Number(settings.second_sampler.cfg) || 4;
+  ensureSelectValue(ui.second_sampler_name, settings.second_sampler.sampler_name);
+  ensureSelectValue(ui.second_scheduler, settings.second_sampler.scheduler);
+  ui.second_sampler_denoise.value = Number.isFinite(Number(settings.second_sampler.denoise))
+    ? Number(settings.second_sampler.denoise)
+    : 0.2;
   ensureSelectValue(ui.hires_model_name, settings.hires.model_name);
   ui.hires_enabled.checked = Boolean(settings.hires.enabled);
   ui.hires_percent.value = Number(settings.hires.percent) || INTERNAL_HIRES_PERCENT;
@@ -643,6 +672,15 @@ function readSettings() {
     cfg: Number(ui.cfg.value),
     sampler_name: ui.sampler_name.value,
     scheduler: ui.scheduler.value,
+    cfg_zero_star: ui.cfg_zero_star.checked,
+    second_sampler: {
+      enabled: ui.second_sampler_enabled.checked,
+      steps: Number(ui.second_sampler_steps.value),
+      cfg: Number(ui.second_sampler_cfg.value),
+      sampler_name: ui.second_sampler_name.value,
+      scheduler: ui.second_scheduler.value,
+      denoise: Number(ui.second_sampler_denoise.value),
+    },
     pools: clone(draft.pools),
     loras: clone(draft.loras),
     lora_managed_triggers: clone(draft.managedTriggers || []),
@@ -3464,16 +3502,22 @@ async function loadResources() {
   const selectedUpscaler = ui.hires_model_name.value || defaults?.hires?.model_name || "";
   const selectedSampler = ui.sampler_name.value || defaults?.sampler_name || "";
   const selectedScheduler = ui.scheduler.value || defaults?.scheduler || "";
+  const selectedSecondSampler = ui.second_sampler_name.value || defaults?.second_sampler?.sampler_name || selectedSampler;
+  const selectedSecondScheduler = ui.second_scheduler.value || defaults?.second_sampler?.scheduler || selectedScheduler;
   resourcesLoaded = false;
   resourceError = "";
   ui.model_name.disabled = true;
   ui.hires_model_name.disabled = true;
   ui.sampler_name.disabled = true;
   ui.scheduler.disabled = true;
+  ui.second_sampler_name.disabled = true;
+  ui.second_scheduler.disabled = true;
   ui.model_name.replaceChildren(new Option("正在读取模型...", ""));
   ui.hires_model_name.replaceChildren(new Option("正在读取放大模型...", ""));
   ui.sampler_name.replaceChildren(new Option("正在读取 Sampler...", ""));
   ui.scheduler.replaceChildren(new Option("正在读取 Scheduler...", ""));
+  ui.second_sampler_name.replaceChildren(new Option("正在读取 Sampler...", ""));
+  ui.second_scheduler.replaceChildren(new Option("正在读取 Scheduler...", ""));
   updateRepairControls();
   try {
     const payload = await request("/api/resources");
@@ -3488,6 +3532,8 @@ async function loadResources() {
     populateResourceSelect(ui.hires_model_name, resources.upscale_models, selectedUpscaler, "没有可用放大模型");
     populateResourceSelect(ui.sampler_name, resources.samplers, selectedSampler, "没有可用 Sampler");
     populateResourceSelect(ui.scheduler, resources.schedulers, selectedScheduler, "没有可用 Scheduler");
+    populateResourceSelect(ui.second_sampler_name, resources.samplers, selectedSecondSampler, "没有可用 Sampler");
+    populateResourceSelect(ui.second_scheduler, resources.schedulers, selectedSecondScheduler, "没有可用 Scheduler");
     ui.model_name.disabled = resources.models.length === 0;
     ui.sampler_name.disabled = resources.samplers.length === 0;
     ui.scheduler.disabled = resources.schedulers.length === 0;
@@ -3498,9 +3544,22 @@ async function loadResources() {
     populateResourceSelect(ui.hires_model_name, [], selectedUpscaler, "放大模型资源离线");
     populateResourceSelect(ui.sampler_name, [], selectedSampler, "Sampler 资源离线");
     populateResourceSelect(ui.scheduler, [], selectedScheduler, "Scheduler 资源离线");
+    populateResourceSelect(ui.second_sampler_name, [], selectedSecondSampler, "Sampler 资源离线");
+    populateResourceSelect(ui.second_scheduler, [], selectedSecondScheduler, "Scheduler 资源离线");
     ui.model_name.disabled = true;
   }
   updateRepairControls();
+}
+function updateSecondSamplerControls() {
+  const enabled = ui.second_sampler_enabled.checked;
+  ui.secondSamplerDrawer.hidden = !enabled;
+  for (const control of [
+    ui.second_sampler_steps,
+    ui.second_sampler_cfg,
+    ui.second_sampler_name,
+    ui.second_scheduler,
+    ui.second_sampler_denoise,
+  ]) control.disabled = !enabled || (control.tagName === "SELECT" && !resourcesLoaded);
 }
 function updateRepairControls() {
   const detailerCount = [ui.detailer_hand, ui.detailer_nsfw, ui.detailer_face, ui.detailer_eyes].filter(
@@ -3510,6 +3569,7 @@ function updateRepairControls() {
   ui.hiresFields.classList.toggle("disabled", !ui.hires_enabled.checked);
   ui.hires_model_name.disabled = !ui.hires_enabled.checked || !resourcesLoaded;
   ui.hires_percent.disabled = !ui.hires_enabled.checked;
+  updateSecondSamplerControls();
   const settings = readSettings();
   const warnings = [];
   if (resourceError) warnings.push(resourceError);
@@ -3525,6 +3585,10 @@ function updateRepairControls() {
     warnings.push(`Sampler 不可用：${settings.sampler_name}`);
   if (resourcesLoaded && !resources.schedulers.includes(settings.scheduler))
     warnings.push(`Scheduler 不可用：${settings.scheduler}`);
+  if (resourcesLoaded && settings.second_sampler.enabled && !resources.samplers.includes(settings.second_sampler.sampler_name))
+    warnings.push(`2ndSampler Sampler 不可用：${settings.second_sampler.sampler_name}`);
+  if (resourcesLoaded && settings.second_sampler.enabled && !resources.schedulers.includes(settings.second_sampler.scheduler))
+    warnings.push(`2ndSampler Scheduler 不可用：${settings.second_sampler.scheduler}`);
   const missingLoras = settings.loras.filter((item) => !loraItem(item.filename)).map((item) => item.filename);
   if (loraInventoryLoaded && missingLoras.length) warnings.push(`LoRA 不可用：${missingLoras.join("、")}`);
   ui.resourceWarning.hidden = warnings.length === 0;
@@ -3547,6 +3611,8 @@ const PRESET_SETTING_KEYS = [
   "cfg",
   "sampler_name",
   "scheduler",
+  "cfg_zero_star",
+  "second_sampler",
 ];
 function presetSnapshot() {
   const settings = readSettings();
@@ -4296,6 +4362,13 @@ for (const control of [
   ui.detailer_nsfw,
   ui.detailer_face,
   ui.detailer_eyes,
+  ui.cfg_zero_star,
+  ui.second_sampler_enabled,
+  ui.second_sampler_steps,
+  ui.second_sampler_cfg,
+  ui.second_sampler_name,
+  ui.second_scheduler,
+  ui.second_sampler_denoise,
 ])
   control.addEventListener("change", () => {
     updateRepairControls();

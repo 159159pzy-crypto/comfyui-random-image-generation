@@ -170,8 +170,14 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="promptRuleDialog"', index_html)
         self.assertIn('id="sampler_name"', index_html)
         self.assertIn('id="scheduler"', index_html)
+        self.assertIn('id="cfg_zero_star"', index_html)
+        self.assertIn('id="second_sampler_enabled"', index_html)
+        self.assertIn('id="secondSamplerDrawer"', index_html)
+        self.assertIn('id="second_sampler_denoise"', index_html)
         self.assertIn('sampler_name: ui.sampler_name.value', app_js)
         self.assertIn('scheduler: ui.scheduler.value', app_js)
+        self.assertIn('cfg_zero_star: ui.cfg_zero_star.checked', app_js)
+        self.assertIn('second_sampler:', app_js)
         self.assertIn("normalizePromptFields", app_js)
         self.assertIn('id="deleteGroupAll"', index_html)
         self.assertIn('value="exclusive"', index_html)
@@ -309,6 +315,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_config_has_empty_default_loras(self):
         payload = await (await self.client.get("/api/config")).json()
         self.assertEqual(payload["defaults"]["loras"], [])
+        self.assertFalse(payload["defaults"]["cfg_zero_star"])
+        self.assertEqual(payload["defaults"]["second_sampler"]["steps"], 16)
+        self.assertFalse(payload["defaults"]["second_sampler"]["enabled"])
 
     async def test_resources_and_style_preset_crud(self):
         resources = await (await self.client.get("/api/resources")).json()
@@ -652,6 +661,26 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["random_character_count"], 2)
         self.assertEqual(saved["fixed_character"], "hero")
         self.assertEqual(saved["random_clothing_count"], 5)
+
+    async def test_optional_sampling_settings_are_submitted_and_persisted(self):
+        settings = {
+            **DEFAULT_SETTINGS,
+            "count": 1,
+            "cfg_zero_star": True,
+            "second_sampler": {**DEFAULT_SETTINGS["second_sampler"], "enabled": True},
+        }
+        response = await self.client.post("/api/batches", json=settings)
+        self.assertEqual(response.status, 201)
+        await self.client.server.app[MANAGER_KEY].wait()
+        prompt = self.comfy.submissions[-1]["prompt"]
+        self.assertIn("49", prompt)
+        self.assertIn("25", prompt)
+        self.assertEqual(prompt["25"]["inputs"]["seed"], ["37", 0])
+        self.assertEqual(prompt["48"]["inputs"]["samples"], ["25", 0])
+        history = await (await self.client.get("/api/history")).json()
+        saved = history["items"][0]["settings"]
+        self.assertTrue(saved["cfg_zero_star"])
+        self.assertTrue(saved["second_sampler"]["enabled"])
 
     async def test_batch_submission_normalizes_settings_and_resolved_prompt(self):
         settings = {

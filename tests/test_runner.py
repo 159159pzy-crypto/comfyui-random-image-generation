@@ -456,6 +456,49 @@ class BatchManagerTests(unittest.IsolatedAsyncioTestCase):
             await self.manager.start(DEFAULT_SETTINGS)
         self.assertIsNone(self.manager.state)
 
+    async def test_second_sampler_resources_are_checked_when_enabled(self):
+        settings = {
+            **DEFAULT_SETTINGS,
+            "second_sampler": {
+                **DEFAULT_SETTINGS["second_sampler"],
+                "enabled": True,
+                "sampler_name": "euler",
+                "scheduler": "karras",
+            },
+        }
+        issues = await self.manager.resource_issues(settings)
+        self.assertEqual(
+            {(item["type"], item["name"]) for item in issues},
+            {("second_sampler", "euler"), ("second_scheduler", "karras")},
+        )
+        self.comfy.available_samplers.append("euler")
+        self.comfy.available_schedulers.append("karras")
+        self.assertEqual(await self.manager.resource_issues(settings), [])
+
+    async def test_missing_second_sampler_resources_are_rejected_only_when_enabled(self):
+        settings = {
+            **DEFAULT_SETTINGS,
+            "second_sampler": {
+                **DEFAULT_SETTINGS["second_sampler"],
+                "enabled": True,
+                "sampler_name": "euler",
+                "scheduler": "karras",
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "2ndSampler Sampler 不可用"):
+            await self.manager.start(settings)
+        self.assertIsNone(self.manager.state)
+
+        self.comfy.available_samplers.append("euler")
+        with self.assertRaisesRegex(ValueError, "2ndSampler Scheduler 不可用"):
+            await self.manager.start(settings)
+        self.assertIsNone(self.manager.state)
+
+        self.comfy.available_schedulers.append("karras")
+        await self.manager.start(settings)
+        await self.manager.wait()
+        self.assertEqual(self.comfy.submissions[-1]["settings"]["second_sampler"]["enabled"], True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261002-preview-nav-icons7">
+  <link rel="stylesheet" href="/static/styles.css?v=20261003-cfgzero-2ndsampler1">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -137,6 +137,20 @@
             <label class="field"><span>CFG</span><input id="cfg" type="number" min="0.1" max="30" step="0.1"></label>
             <label class="field"><span>Sampler</span><select id="sampler_name"><option value="">正在读取 Sampler...</option></select></label>
             <label class="field"><span>Scheduler</span><select id="scheduler"><option value="">正在读取 Scheduler...</option></select></label>
+            <div class="sampling-switches">
+              <label class="switch-row"><span><strong>CFGZeroStar</strong><small>使用 CFGZeroStar 模型修补</small></span><input id="cfg_zero_star" type="checkbox"></label>
+              <label class="switch-row"><span><strong>2ndSampler</strong><small>主采样后再执行一次采样</small></span><input id="second_sampler_enabled" type="checkbox"></label>
+            </div>
+            <div id="secondSamplerDrawer" class="second-sampler-drawer" hidden>
+              <div class="second-sampler-heading"><span>2ndSampler 参数</span><small>第二次采样复用主 seed</small></div>
+              <div class="parameter-grid compact-parameter-grid">
+                <label class="field"><span>步数</span><input id="second_sampler_steps" type="number" min="1" max="150" step="1"></label>
+                <label class="field"><span>CFG</span><input id="second_sampler_cfg" type="number" min="0.1" max="30" step="0.1"></label>
+                <label class="field"><span>Sampler</span><select id="second_sampler_name"><option value="">正在读取 Sampler...</option></select></label>
+                <label class="field"><span>Scheduler</span><select id="second_scheduler"><option value="">正在读取 Scheduler...</option></select></label>
+                <label class="field"><span>Denoise</span><input id="second_sampler_denoise" type="number" min="0" max="1" step="0.01"></label>
+              </div>
+            </div>
           </div>
         </details>
       </form>
@@ -427,6 +441,6 @@
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20261002-preview-nav-icons5" defer></script>
+  <script src="/static/app.js?v=20261003-cfgzero-2ndsampler1" defer></script>
 </body>
 </html>

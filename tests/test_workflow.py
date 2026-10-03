@@ -287,6 +287,82 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(modes[29], 0)
         self.assertEqual(modes[28], 4)
 
+    def test_cfg_zero_star_and_second_sampler_chain_are_optional(self):
+        second = {
+            **DEFAULT_SETTINGS["second_sampler"],
+            "enabled": True,
+            "steps": 12,
+            "cfg": 5.5,
+            "sampler_name": "euler",
+            "scheduler": "karras",
+            "denoise": 0.35,
+        }
+        settings = {
+            **DEFAULT_SETTINGS,
+            "cfg_zero_star": True,
+            "second_sampler": second,
+            "hires": {**DEFAULT_SETTINGS["hires"], "enabled": False},
+        }
+        api, ui = render_workflows(self.api, self.ui, settings, 123, 456, "test")
+        self.assertEqual(api["49"]["class_type"], "CFGZeroStar")
+        self.assertEqual(api["49"]["inputs"]["model"], ["2", 0])
+        self.assertEqual(api["5"]["inputs"]["model"], ["49", 0])
+        self.assertEqual(api["26"]["inputs"]["model"], ["49", 0])
+        self.assertEqual(api["25"]["inputs"], {
+            "seed": ["37", 0],
+            "steps": 12,
+            "cfg": 5.5,
+            "sampler_name": "euler",
+            "scheduler": "karras",
+            "denoise": 0.35,
+            "model": ["49", 0],
+            "positive": ["42", 0],
+            "negative": ["45", 0],
+            "latent_image": ["5", 0],
+        })
+        self.assertEqual(api["48"]["inputs"]["samples"], ["25", 0])
+        ui_nodes = {node["id"]: node for node in ui["nodes"]}
+        self.assertEqual(ui_nodes[49]["mode"], 0)
+        self.assertEqual(ui_nodes[25]["mode"], 0)
+        self.assertEqual(ui_nodes[25]["widgets_values"][0], 123)
+        self.assertEqual(ui_nodes[25]["widgets_values"][2:7], [12, 5.5, "euler", "karras", 0.35])
+        self.assertIsNone(next(item for item in ui_nodes[25]["inputs"] if item["name"] == "cfg")["link"])
+        self.assertNotIn(82, [int(link[0]) for link in ui["links"]])
+
+        disabled_api, disabled_ui = render_workflows(
+            self.api,
+            self.ui,
+            {**DEFAULT_SETTINGS, "hires": {**DEFAULT_SETTINGS["hires"], "enabled": False}},
+            123,
+            456,
+            "test",
+        )
+        self.assertNotIn("49", disabled_api)
+        self.assertNotIn("25", disabled_api)
+        self.assertEqual(disabled_api["5"]["inputs"]["model"], ["2", 0])
+        self.assertEqual(disabled_api["48"]["inputs"]["samples"], ["5", 0])
+        disabled_nodes = {node["id"]: node for node in disabled_ui["nodes"]}
+        self.assertEqual(disabled_nodes[49]["mode"], 4)
+        self.assertEqual(disabled_nodes[25]["mode"], 4)
+
+    def test_sam_loader_follows_detailer_state(self):
+        no_detailer, no_detailer_ui = render_workflows(self.api, self.ui, DEFAULT_SETTINGS, 1, 2, "test")
+        self.assertNotIn("7", no_detailer)
+        self.assertNotIn("sam_model_opt", no_detailer["18"]["inputs"])
+        no_detailer_nodes = {node["id"]: node for node in no_detailer_ui["nodes"]}
+        self.assertEqual(no_detailer_nodes[7]["mode"], 4)
+        self.assertIsNone(next(item for item in no_detailer_nodes[18]["inputs"] if item["name"] == "sam_model_opt")["link"])
+
+        detailer_settings = {
+            **DEFAULT_SETTINGS,
+            "detailers": {**DEFAULT_SETTINGS["detailers"], "face": True},
+        }
+        detailer, detailer_ui = render_workflows(self.api, self.ui, detailer_settings, 1, 2, "test")
+        self.assertIn("7", detailer)
+        self.assertEqual(detailer["18"]["inputs"]["sam_model_opt"], ["7", 0])
+        detailer_nodes = {node["id"]: node for node in detailer_ui["nodes"]}
+        self.assertEqual(detailer_nodes[7]["mode"], 0)
+
     def test_hires_settings_keep_save_connected(self):
         settings = {
             **DEFAULT_SETTINGS,
@@ -387,6 +463,11 @@ class WorkflowTests(unittest.TestCase):
             {"height": 5000},
             {"steps": 0},
             {"cfg": 31},
+            {"cfg_zero_star": "yes"},
+            {"second_sampler": {**DEFAULT_SETTINGS["second_sampler"], "steps": 0}},
+            {"second_sampler": {**DEFAULT_SETTINGS["second_sampler"], "cfg": 30.1}},
+            {"second_sampler": {**DEFAULT_SETTINGS["second_sampler"], "denoise": 1.1}},
+            {"second_sampler": {**DEFAULT_SETTINGS["second_sampler"], "sampler_name": ""}},
             {"sampler_name": ""},
             {"sampler_name": 1},
             {"scheduler": ""},
