@@ -82,10 +82,14 @@ const ui = Object.fromEntries(
     "detailImage",
     "imagePreviewDialog",
     "closeImagePreview",
+    "imagePreviewPrevious",
+    "imagePreviewNext",
     "imagePreviewStage",
+    "imagePreviewTitle",
     "imagePreviewImage",
     "imagePreviewVeil",
     "imagePreviewStatus",
+    "imagePreviewAnnouncement",
     "detailMeta",
     "detailStats",
     "detailSelection",
@@ -335,12 +339,15 @@ let selectedRecord = null;
 const imagePreview = {
   phase: "closed", token: 0, zoom: 1, x: 0, y: 0, width: 0, height: 0,
   animation: null, pointers: new Map(), gesture: null, tap: null, backdropPointer: null,
+  navigationRequest: 0, preloaded: new Map(), swipe: null,
 };
 let regenerationOptions = null;
 let regenerationRequest = 0;
 let regenerationTrigger = null;
 let historyPage = 1;
 let historyPages = 1;
+let historyItems = [];
+const historyCache = new Map();
 let lastTerminalBatch = "";
 let toastTimer = null;
 let persistTimer = null;
@@ -1221,43 +1228,69 @@ async function pollBatch() {
 }
 function card(record, index) {
   const article = document.createElement("article");
-  article.className = "image-card";
+  article.className = "image-card is-loading";
   article.style.animationDelay = `${Math.min(index * 25, 250)}ms`;
   const button = document.createElement("button");
   button.type = "button";
-  button.innerHTML = `<img loading="lazy" src="/api/images/${record.id}" alt="Anima 生成结果"><div class="card-copy"><strong>${escapeHtml(record.filename)}</strong><span>#${record.sequence} · Seed ${record.sample_seed}</span></div>`;
+  button.setAttribute("aria-label", `查看 ${record.filename || "生成结果"}`);
+  button.innerHTML = `<img loading="lazy" decoding="async" fetchpriority="low" src="/api/images/${record.id}" alt="Anima 生成结果"><span class="image-failure" hidden>图片加载失败</span><div class="card-copy"><strong>${escapeHtml(record.filename)}</strong><span>#${record.sequence} · Seed ${record.sample_seed}</span></div>`;
   button.addEventListener("click", () => openDetail(record));
-  button.querySelector("img").addEventListener("error", (event) => event.target.classList.add("image-failed"));
+  const image = button.querySelector("img");
+  const markLoaded = () => {
+    article.classList.remove("is-loading");
+    image.classList.add("image-loaded");
+  };
+  image.addEventListener("load", markLoaded, { once: true });
+  const markFailed = (event) => {
+    article.classList.remove("is-loading");
+    event?.target?.classList.add("image-failed");
+    button.querySelector(".image-failure").hidden = false;
+  };
+  image.addEventListener("error", markFailed, { once: true });
+  if (image.complete) {
+    if (image.naturalWidth) markLoaded();
+    else markFailed({ target: image });
+  }
   article.append(button);
   return article;
 }
 let historyRequest = 0;
+function cacheHistoryPage(data) {
+  if (!data || !Number.isFinite(Number(data.page))) return;
+  historyCache.set(Number(data.page), data);
+}
+
+function renderHistoryPage(data) {
+  historyPage = Number(data.page) || 1;
+  historyPages = Number(data.pages) || 1;
+  historyItems = Array.isArray(data.items) ? data.items : [];
+  cacheHistoryPage(data);
+  ui.gallery.replaceChildren(...historyItems.map(card));
+  ui.emptyState.hidden = historyItems.length > 0;
+  ui.pageLabel.textContent = `${historyPage} / ${historyPages}`;
+  ui.prevPage.disabled = historyPage <= 1;
+  ui.nextPage.disabled = historyPage >= historyPages;
+  ui.historyCount.textContent = `${data.total || 0} 张图片`;
+  updatePreviewNavigation();
+}
+
 async function loadHistory(page = historyPage) {
   // 与 loadPool 相同的竞态守卫:快速翻页时丢弃乱序到达的旧响应。
   const requestId = ++historyRequest;
   try {
     const data = await request(`/api/history?page=${page}&limit=24`);
     if (requestId !== historyRequest) return;
-    historyPage = data.page;
-    historyPages = data.pages;
-    ui.gallery.replaceChildren(...data.items.map(card));
-    ui.emptyState.hidden = data.items.length > 0;
-    ui.pageLabel.textContent = `${historyPage} / ${historyPages}`;
-    ui.prevPage.disabled = historyPage <= 1;
-    ui.nextPage.disabled = historyPage >= historyPages;
-    ui.historyCount.textContent = `${data.total} 张图片`;
+    renderHistoryPage(data);
   } catch (error) {
     if (requestId !== historyRequest) return;
     toast(error.message);
   }
 }
-function openDetail(record) {
-  closeImagePreview({ immediate: true, restoreFocus: false });
-  selectedRecord = record;
-  regenerationOptions = null;
-  closeRegenerationDrawers(false);
+
+function renderDetail(record) {
   const settings = normalizeSettings(record.settings || {});
   ui.detailImage.src = `/api/images/${record.id}`;
+  ui.detailImage.alt = record.filename ? `生成结果：${record.filename}` : "生成结果";
   ui.detailMeta.textContent = `${record.created_at || ""} · ${record.filename || ""}`;
   ui.detailPositive.value = record.positive_prompt || record.resolved_prompt || "";
   ui.detailNegative.value = record.negative_prompt || "";
@@ -1277,12 +1310,257 @@ function openDetail(record) {
     ? activeLoras.map((item) => `${escapeHtml(item.filename)} × ${escapeHtml(item.strength)}`).join("、")
     : "未使用";
   ui.detailSelection.innerHTML = `<span class="kicker">ACTUAL DRAW</span><div>${SECTIONS.map((section) => `<span><b>${SECTION_META[section].label}</b>${(selected[section] || []).map((item) => escapeHtml(item.title)).join("、") || "未使用"}</span>`).join("")}<span><b>LoRA</b>${loraText}</span></div>`;
+}
+
+function openDetail(record) {
+  closeImagePreview({ immediate: true, restoreFocus: false });
+  selectedRecord = record;
+  regenerationOptions = null;
+  closeRegenerationDrawers(false);
+  renderDetail(record);
+  updatePreviewNavigation();
   ui.detailDialog.showModal();
 }
 
 const IMAGE_PREVIEW_MAX_ZOOM = 4;
 const imagePreviewReducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 const clampPreview = (value, min, max) => Math.min(max, Math.max(min, value));
+const previewMotion = (name, fallback) => {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const duration = Number.parseFloat(value);
+  return Number.isFinite(duration) ? duration : fallback;
+};
+
+function previewRecordIndex(record, items = historyItems) {
+  if (!record || !Array.isArray(items)) return -1;
+  return items.findIndex((item) => String(item.id) === String(record.id));
+}
+
+function selectedHistoryLocation() {
+  const currentIndex = previewRecordIndex(selectedRecord);
+  if (currentIndex >= 0) return { page: historyPage, items: historyItems, index: currentIndex };
+  for (const [page, data] of historyCache) {
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const index = previewRecordIndex(selectedRecord, items);
+    if (index >= 0) return { page, items, index };
+  }
+  return { page: historyPage, items: historyItems, index: -1 };
+}
+
+function previewNeighborAvailable(direction) {
+  const location = selectedHistoryLocation();
+  if (location.index >= 0 && location.index + direction >= 0 && location.index + direction < location.items.length) return true;
+  const targetPage = location.page + (direction > 0 ? 1 : -1);
+  return targetPage >= 1 && targetPage <= historyPages;
+}
+
+function updatePreviewNavigation() {
+  const active = Boolean(selectedRecord && imagePreview.phase !== "closed");
+  const locked = ["loading", "switching", "closing"].includes(imagePreview.phase);
+  const previousAvailable = active && previewNeighborAvailable(-1);
+  const nextAvailable = active && previewNeighborAvailable(1);
+  ui.imagePreviewPrevious.disabled = locked || !previousAvailable;
+  ui.imagePreviewNext.disabled = locked || !nextAvailable;
+  ui.imagePreviewDialog.classList.toggle("has-navigation", active && (previousAvailable || nextAvailable));
+}
+
+function announcePreview(message) {
+  ui.imagePreviewAnnouncement.textContent = message;
+}
+
+function previewPositionLabel(record = selectedRecord) {
+  const location = previewRecordIndex(record) >= 0
+    ? { page: historyPage, items: historyItems, index: previewRecordIndex(record) }
+    : selectedHistoryLocation();
+  if (location.index < 0) return record?.filename || "当前图片";
+  const total = Number(ui.historyCount.textContent.match(/\d+/)?.[0] || 0);
+  let position = (location.page - 1) * 24 + location.index + 1;
+  let priorPagesAreCached = true;
+  let cachedBefore = 0;
+  for (let page = 1; page < location.page; page += 1) {
+    const data = historyCache.get(page);
+    if (!data || !Array.isArray(data.items)) {
+      priorPagesAreCached = false;
+      break;
+    }
+    cachedBefore += data.items.length;
+  }
+  if (priorPagesAreCached) position = cachedBefore + location.index + 1;
+  return `${record?.filename || "当前图片"}，第 ${position} 张${total ? `，共 ${total} 张` : ""}`;
+}
+
+function preloadRecord(record) {
+  if (!record) return Promise.resolve(null);
+  const key = String(record.id);
+  const cached = imagePreview.preloaded.get(key);
+  if (cached) return cached;
+  const image = new Image();
+  image.decoding = "async";
+  image.src = `/api/images/${record.id}`;
+  const promise = image.decode()
+    .then(() => image)
+    .catch(() => {
+      imagePreview.preloaded.delete(key);
+      return null;
+    });
+  imagePreview.preloaded.set(key, promise);
+  return promise;
+}
+
+function preloadPreviewNeighbors() {
+  const location = selectedHistoryLocation();
+  if (location.index < 0) return;
+  for (const direction of [-1, 1]) {
+    const neighbor = location.items[location.index + direction];
+    if (neighbor) preloadRecord(neighbor);
+  }
+}
+
+async function loadHistoryPageForPreview(page) {
+  const cached = historyCache.get(page);
+  if (cached) return cached;
+  const data = await request(`/api/history?page=${page}&limit=24`);
+  cacheHistoryPage(data);
+  return data;
+}
+
+function previewNeighbor(direction, location = selectedHistoryLocation()) {
+  const index = location.index + direction;
+  if (location.index >= 0 && index >= 0 && index < location.items.length) {
+    return { record: location.items[index], page: location.page, data: null };
+  }
+  const targetPage = location.page + (direction > 0 ? 1 : -1);
+  if (targetPage < 1 || targetPage > historyPages) return null;
+  return { record: null, page: targetPage, data: null };
+}
+
+function playPreviewAnimation(from, to, duration) {
+  cancelImagePreviewAnimation();
+  const reduce = imagePreviewReducedMotion();
+  const animation = ui.imagePreviewImage.animate(
+    reduce ? [from, to] : [from, to],
+    { duration: reduce ? 120 : duration, easing: getComputedStyle(document.documentElement).getPropertyValue("--spring").trim(), fill: "both" },
+  );
+  imagePreview.animation = animation;
+  return animation.finished.then(() => {
+    if (imagePreview.animation === animation) {
+      animation.commitStyles();
+      animation.cancel();
+      imagePreview.animation = null;
+    }
+    return true;
+  }).catch(() => false);
+}
+
+async function switchPreviewImage(record, requestId) {
+  const previousRecord = selectedRecord;
+  const previousSrc = ui.imagePreviewImage.currentSrc || ui.imagePreviewImage.src;
+  const image = await preloadRecord(record);
+  if (!image || requestId !== imagePreview.navigationRequest || imagePreview.phase !== "switching") return false;
+  const fadeOut = await playPreviewAnimation(liveImagePreviewFrame(), { ...liveImagePreviewFrame(), opacity: 0 }, previewMotion("--motion-fast", 150));
+  if (!fadeOut || requestId !== imagePreview.navigationRequest || imagePreview.phase !== "switching") return false;
+
+  selectedRecord = record;
+  renderDetail(record);
+  ui.imagePreviewImage.src = `/api/images/${record.id}`;
+  ui.imagePreviewImage.alt = `生成结果全尺寸预览：${record.filename || "当前图片"}`;
+  ui.imagePreviewImage.hidden = false;
+  ui.imagePreviewImage.style.opacity = "0";
+  imagePreview.zoom = 1;
+  imagePreview.x = imagePreview.y = 0;
+  let decoded = true;
+  try {
+    await ui.imagePreviewImage.decode();
+  } catch {
+    decoded = false;
+  }
+  if (!decoded && requestId === imagePreview.navigationRequest && imagePreview.phase === "switching") {
+    selectedRecord = previousRecord;
+    renderDetail(previousRecord);
+    ui.imagePreviewImage.src = previousSrc;
+    ui.imagePreviewImage.alt = `生成结果全尺寸预览：${previousRecord?.filename || "当前图片"}`;
+    ui.imagePreviewImage.hidden = false;
+    ui.imagePreviewImage.style.opacity = "1";
+    imagePreview.zoom = 1;
+    imagePreview.x = imagePreview.y = 0;
+    await ui.imagePreviewImage.decode().catch(() => null);
+    layoutImagePreview();
+    ui.imagePreviewTitle.textContent = previousRecord?.filename || "全尺寸图片预览";
+  }
+  if (requestId !== imagePreview.navigationRequest || imagePreview.phase !== "switching") return false;
+  layoutImagePreview();
+  const target = imagePreviewFrame();
+  const enter = { ...target, opacity: 0, transform: `${target.transform} scale(.985)` };
+  imagePreview.phase = "opening";
+  await playPreviewAnimation(enter, target, previewMotion("--motion-medium", 240));
+  if (requestId !== imagePreview.navigationRequest) return false;
+  imagePreview.phase = "open";
+  ui.imagePreviewTitle.textContent = record.filename || "全尺寸图片预览";
+  announcePreview(previewPositionLabel(record));
+  updatePreviewNavigation();
+  ui.imagePreviewDialog.classList.remove("is-navigating");
+  preloadPreviewNeighbors();
+  return true;
+}
+
+async function navigatePreview(direction, focusTarget = null) {
+  const restoreFocus = () => {
+    if (!focusTarget?.isConnected) return;
+    if (!focusTarget.disabled) focusTarget.focus({ preventScroll: true });
+    else ui.imagePreviewImage.focus({ preventScroll: true });
+  };
+  if (imagePreview.phase !== "open") return;
+  const requestId = ++imagePreview.navigationRequest;
+  ui.imagePreviewDialog.classList.add("is-navigating");
+  const location = selectedHistoryLocation();
+  let target = previewNeighbor(direction, location);
+  if (!target) {
+    announcePreview(direction < 0 ? "已经是第一张图片" : "已经是最后一张图片");
+    ui.imagePreviewDialog.classList.remove("is-navigating");
+    updatePreviewNavigation();
+    restoreFocus();
+    return;
+  }
+  if (!target.record) {
+    imagePreview.phase = "switching";
+    announcePreview("正在加载相邻图片…");
+    try {
+      target.data = await loadHistoryPageForPreview(target.page);
+      const items = Array.isArray(target.data.items) ? target.data.items : [];
+      target.record = items[direction > 0 ? 0 : items.length - 1];
+    } catch (error) {
+      imagePreview.phase = "open";
+      ui.imagePreviewDialog.classList.remove("is-navigating");
+      updatePreviewNavigation();
+      announcePreview(error.message || "相邻图片加载失败");
+      restoreFocus();
+      return;
+    }
+    if (!target.record || requestId !== imagePreview.navigationRequest) {
+      if (requestId === imagePreview.navigationRequest) {
+        imagePreview.phase = "open";
+        ui.imagePreviewDialog.classList.remove("is-navigating");
+        updatePreviewNavigation();
+        restoreFocus();
+      }
+      return;
+    }
+    cacheHistoryPage(target.data);
+  } else {
+    imagePreview.phase = "switching";
+  }
+  updatePreviewNavigation();
+  const switched = await switchPreviewImage(target.record, requestId);
+  if (switched && target.data) renderHistoryPage(target.data);
+  if (switched) restoreFocus();
+  if (!switched && requestId === imagePreview.navigationRequest && imagePreview.phase === "switching") {
+    imagePreview.phase = "open";
+    ui.imagePreviewDialog.classList.remove("is-navigating");
+    announcePreview("图片加载失败，请重试");
+    updatePreviewNavigation();
+    restoreFocus();
+  }
+}
 
 function imagePreviewFrame() {
   return { transform: ui.imagePreviewImage.style.transform || "none", clipPath: "inset(0px round 18px)", opacity: 1 };
@@ -1398,8 +1676,8 @@ async function openImagePreview(event) {
     imagePreview.zoom = 1;
     imagePreview.x = imagePreview.y = 0;
     applyImagePreviewTransform();
-    animateImagePreviewVeil(1, 260);
-    animateImagePreview(from, imagePreviewFrame(), 320, () => {
+    animateImagePreviewVeil(1, previewMotion("--motion-medium", 240));
+    animateImagePreview(from, imagePreviewFrame(), previewMotion("--motion-medium", 240), () => {
       if (imagePreview.phase === "opening") imagePreview.phase = "open";
     });
     return;
@@ -1411,16 +1689,21 @@ async function openImagePreview(event) {
   imagePreview.zoom = 1;
   imagePreview.x = imagePreview.y = 0;
   imagePreview.tap = null;
+  // Keep the decoded bitmap between openings. Clearing src here forced a
+  // multi-megabyte refetch and decode on every click after the first close.
   ui.imagePreviewImage.hidden = true;
   ui.imagePreviewStatus.hidden = false;
   ui.imagePreviewStatus.textContent = "正在加载原图…";
   ui.imagePreviewImage.src = ui.detailImage.currentSrc || ui.detailImage.src;
-  ui.imagePreviewImage.alt = "生成结果全尺寸预览";
+  ui.imagePreviewImage.alt = `生成结果全尺寸预览：${selectedRecord.filename || "当前图片"}`;
+  ui.imagePreviewTitle.textContent = selectedRecord.filename || "全尺寸图片预览";
   document.documentElement.classList.add("image-preview-open");
   ui.imagePreviewDialog.showModal();
   ui.detailImage.setAttribute("aria-expanded", "true");
   ui.closeImagePreview.focus({ preventScroll: true });
-  animateImagePreviewVeil(1, 420);
+  updatePreviewNavigation();
+  announcePreview(`正在打开${previewPositionLabel(selectedRecord)}`);
+  animateImagePreviewVeil(1, previewMotion("--motion-slow", 360));
   try {
     await ui.imagePreviewImage.decode();
     if (token !== imagePreview.token || !ui.detailDialog.open) return;
@@ -1431,8 +1714,13 @@ async function openImagePreview(event) {
     ui.imagePreviewImage.hidden = false;
     layoutImagePreview();
     imagePreview.phase = "opening";
-    animateImagePreview(imagePreviewSourceFrame(), imagePreviewFrame(), 500, () => {
-      if (imagePreview.phase === "opening") imagePreview.phase = "open";
+    animateImagePreview(imagePreviewSourceFrame(), imagePreviewFrame(), previewMotion("--motion-slow", 360), () => {
+      if (imagePreview.phase === "opening") {
+        imagePreview.phase = "open";
+        updatePreviewNavigation();
+        announcePreview(previewPositionLabel(selectedRecord));
+        preloadPreviewNeighbors();
+      }
     });
   } catch {
     if (token !== imagePreview.token) return;
@@ -1446,12 +1734,14 @@ function finishImagePreviewClose(restoreFocus = true) {
   imagePreview.phase = "closed";
   cancelImagePreviewAnimation();
   imagePreview.pointers.clear();
-  imagePreview.gesture = imagePreview.tap = imagePreview.backdropPointer = null;
+  imagePreview.gesture = imagePreview.tap = imagePreview.backdropPointer = imagePreview.swipe = null;
+  imagePreview.navigationRequest++;
   ui.imagePreviewVeil.getAnimations().forEach(animation => animation.cancel());
   ui.imagePreviewImage.classList.remove("is-interacting", "is-zoomed");
   ui.imagePreviewImage.hidden = true;
-  ui.imagePreviewImage.removeAttribute("src");
   ui.imagePreviewStatus.hidden = true;
+  ui.imagePreviewAnnouncement.textContent = "";
+  ui.imagePreviewDialog.classList.remove("has-navigation", "is-navigating");
   document.documentElement.classList.remove("image-preview-open");
   ui.detailImage.setAttribute("aria-expanded", "false");
   if (ui.imagePreviewDialog.open) ui.imagePreviewDialog.close();
@@ -1466,10 +1756,10 @@ function closeImagePreview({ immediate = false, restoreFocus = true } = {}) {
   const hasImage = !ui.imagePreviewImage.hidden;
   imagePreview.phase = "closing";
   if (hasImage) {
-    animateImagePreviewVeil(0, 300);
-    animateImagePreview(liveImagePreviewFrame(), imagePreviewSourceFrame(), 300, () => finishImagePreviewClose(restoreFocus));
+    animateImagePreviewVeil(0, previewMotion("--motion-medium", 240));
+    animateImagePreview(liveImagePreviewFrame(), imagePreviewSourceFrame(), previewMotion("--motion-medium", 240), () => finishImagePreviewClose(restoreFocus));
   } else {
-    animateImagePreviewVeil(0, 300, () => finishImagePreviewClose(restoreFocus));
+    animateImagePreviewVeil(0, previewMotion("--motion-medium", 240), () => finishImagePreviewClose(restoreFocus));
   }
 }
 
@@ -1521,6 +1811,7 @@ function imagePreviewPointerDown(event) {
   applyImagePreviewTransform();
   ui.imagePreviewImage.setPointerCapture(event.pointerId);
   imagePreview.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, time: performance.now(), moved: false });
+  imagePreview.swipe = event.pointerType === "mouse" ? null : { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };
   if (imagePreview.pointers.size > 1) {
     imagePreview.tap = null;
     imagePreview.pointers.forEach(point => { point.moved = true; });
@@ -1557,7 +1848,22 @@ function imagePreviewPointerMove(event) {
 function imagePreviewPointerUp(event) {
   const point = imagePreview.pointers.get(event.pointerId);
   if (!point) return;
+  const deltaX = point.x - point.startX;
+  const deltaY = point.y - point.startY;
+  const isSwipe = event.type === "pointerup"
+    && event.pointerType !== "mouse"
+    && imagePreview.zoom <= 1.01
+    && Math.abs(deltaX) >= 56
+    && Math.abs(deltaX) > Math.abs(deltaY) * 1.25;
   imagePreview.pointers.delete(event.pointerId);
+  if (isSwipe && imagePreview.pointers.size === 0) {
+    imagePreview.tap = null;
+    imagePreview.gesture = null;
+    imagePreview.swipe = null;
+    ui.imagePreviewImage.classList.remove("is-interacting");
+    navigatePreview(deltaX < 0 ? 1 : -1);
+    return;
+  }
   if (event.type === "pointerup" && event.pointerType === "touch" && !point.moved && performance.now() - point.time < 300) {
     const previous = imagePreview.tap;
     if (previous && performance.now() - previous.time < 300 && Math.hypot(point.x - previous.x, point.y - previous.y) < 30) {
@@ -1568,6 +1874,7 @@ function imagePreviewPointerUp(event) {
   if (imagePreview.pointers.size) beginImagePreviewGesture();
   else {
     imagePreview.gesture = null;
+    imagePreview.swipe = null;
     ui.imagePreviewImage.classList.remove("is-interacting");
   }
 }
@@ -3720,6 +4027,8 @@ ui.detailImage.addEventListener("keydown", (event) => {
   openImagePreview();
 });
 ui.closeImagePreview.addEventListener("click", () => closeImagePreview());
+ui.imagePreviewPrevious.addEventListener("click", (event) => navigatePreview(-1, event.currentTarget));
+ui.imagePreviewNext.addEventListener("click", (event) => navigatePreview(1, event.currentTarget));
 ui.imagePreviewImage.addEventListener("pointerdown", imagePreviewPointerDown);
 ui.imagePreviewImage.addEventListener("pointermove", imagePreviewPointerMove);
 ui.imagePreviewImage.addEventListener("pointerup", imagePreviewPointerUp);
@@ -3756,6 +4065,11 @@ ui.imagePreviewDialog.addEventListener("keydown", (event) => {
     resetImagePreviewTransform();
   } else if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
     event.preventDefault();
+    if (imagePreview.zoom <= 1.01 && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      const navigationButton = event.target instanceof Element ? event.target.closest(".image-preview-nav") : null;
+      navigatePreview(event.key === "ArrowLeft" ? -1 : 1, navigationButton);
+      return;
+    }
     cancelImagePreviewAnimation();
     const amount = event.shiftKey ? 80 : 24;
     imagePreview.x += event.key === "ArrowLeft" ? amount * -1 : event.key === "ArrowRight" ? amount : 0;

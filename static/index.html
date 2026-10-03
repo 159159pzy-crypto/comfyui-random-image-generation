@@ -14,7 +14,7 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260919-image-preview">
+  <link rel="stylesheet" href="/static/styles.css?v=20261002-preview-nav-icons7">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
@@ -415,15 +415,18 @@
   <dialog id="imagePreviewDialog" class="image-preview-dialog" aria-labelledby="imagePreviewTitle">
     <div id="imagePreviewVeil" class="image-preview-veil" aria-hidden="true"></div>
     <button id="closeImagePreview" class="dialog-close" type="button" title="关闭图片预览" aria-label="关闭图片预览">×</button>
+    <button id="imagePreviewPrevious" class="image-preview-nav previous" type="button" title="上一张图片" aria-label="上一张图片">‹</button>
+    <button id="imagePreviewNext" class="image-preview-nav next" type="button" title="下一张图片" aria-label="下一张图片">›</button>
     <div class="image-preview-stage" id="imagePreviewStage">
       <h2 id="imagePreviewTitle" class="sr-only">全尺寸图片预览</h2>
       <img id="imagePreviewImage" class="image-preview-image" alt="全尺寸生成结果" draggable="false" tabindex="0" aria-describedby="imagePreviewHelp" hidden>
       <p id="imagePreviewStatus" class="image-preview-status" role="status"></p>
       <p id="imagePreviewHelp" class="sr-only">滚轮或双指缩放，放大后拖动查看；双击或双触切换适配大小与两倍大小。加减键缩放，0 恢复适配，方向键移动。按 Esc 关闭预览。</p>
+      <p id="imagePreviewAnnouncement" class="sr-only" role="status" aria-live="polite"></p>
     </div>
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260919-image-preview" defer></script>
+  <script src="/static/app.js?v=20261002-preview-nav-icons5" defer></script>
 </body>
 </html>
