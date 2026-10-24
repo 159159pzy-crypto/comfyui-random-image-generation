@@ -37,7 +37,7 @@ jobs:
         run: |
           python -m pip install pip-audit
           python scripts/audit_dependencies.py --output output/runtime-dependency-audit.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: runner.os == 'Linux' && matrix.python == '3.11' && always()
         with:
           name: runtime-dependency-audit
@@ -54,7 +54,7 @@ jobs:
         run: python -m pip install pip-audit
       - name: Audit source runtime including transitive dependencies
         run: python scripts/audit_dependencies.py --source --output source-dependency-audit.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: source-dependency-audit
