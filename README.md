@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **本项目已迁移并更名为 Comfy Image Atelier。**  
+> 新仓库：[comfy-Image-Atelier](https://github.com/159159pzy-crypto/comfy-Image-Atelier)  
+> 后续代码更新、版本下载和问题反馈请前往新仓库。本仓库保留历史代码和发行版。旧版用户请手动下载安装新仓库版本，后续更新将使用新仓库。  
+> [下载 Comfy Image Atelier 1.5.0 正式版](https://github.com/159159pzy-crypto/comfy-Image-Atelier/releases/tag/1.5.0)
+
 <p align="center">
   <img src="docs/readme/app-icon.png" width="96" alt="Anima Random Studio 软件图标">
 </p>
