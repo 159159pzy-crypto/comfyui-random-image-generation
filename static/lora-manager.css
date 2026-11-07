@@ -1,0 +1,321 @@
+/* Quick-add geometry and controls stay in styles.css. Both modes share one
+   material layer so settling the shell never swaps backdrop-filter owners. */
+.lm-compact-actions, .lm-header-actions { display: flex; align-items: flex-start; gap: 8px; flex: none; }
+#lmExpandCompact svg, #lmExpand svg { pointer-events: none; }
+#lmExpandCompact:hover:not(:active), #lmExpand:hover:not(:active), .lm-morph-toggle:hover:not(:active) { transform: none; }
+#loraDialog { --lm-shell-inset: -1px; isolation: isolate; overflow: visible; background: transparent; border-color: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+#lmShellSurface { position: absolute; inset: var(--lm-shell-inset); z-index: -1; pointer-events: none; border: 1px solid var(--separator); border-radius: inherit; background: var(--chrome-heavy); box-shadow: inset 0 1px 0 var(--edge), var(--shadow-lg); backdrop-filter: blur(calc(var(--blur) + 12px)) saturate(190%); -webkit-backdrop-filter: blur(calc(var(--blur) + 12px)) saturate(190%); }
+/* Keep the native dialog's viewport allowance, less its two border pixels.
+   Scrolling belongs to content; the material's outer shadow stays unclipped. */
+#lmCompactPane { max-height: calc(100dvh - 2em - 8px); overflow-y: auto; border-radius: inherit; }
+#lmExpandedPane { overflow: hidden; border-radius: inherit; }
+#loraDialog.lm-expanded { width: calc(100vw - 40px); height: calc(100dvh - 40px); max-width: none; max-height: none; padding: 0; }
+#loraDialog.lm-morphing > #lmCompactPane, #loraDialog.lm-morphing > #lmExpandedPane { position: absolute; left: 0; top: 0; }
+#loraDialog.lm-morphing #lmShellSurface { inset: auto; }
+#loraDialog.lm-morphing #lmExpandCompact, #loraDialog.lm-morphing #lmExpand { visibility: hidden; }
+.lm-shell { position: relative; height: 100%; display: flex; flex-direction: column; min-height: 0; isolation: isolate; }
+.lm-header { flex: none; align-items: flex-start; margin: 0; padding: 26px 26px 18px; }
+.lm-header h2 { margin: .4em 0 0; }
+.lm-toolbar { position: relative; z-index: 8; display: flex; align-items: center; gap: 8px; flex: none; padding: 0 26px 16px; }
+.lm-toolbar-actions { display: flex; align-items: center; gap: 7px; flex: none; min-width: 0; }
+.lm-sort-control { display: block; flex: none; }
+.lm-sort-control select { width: 108px; min-height: 33px; padding: 7px 10px; font-size: 11px; }
+.lm-search { display: block; min-width: 0; flex: 1; }
+.lm-search input { width: 100%; padding-right: 61px; }
+.lm-search kbd { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--text-tertiary); font: 10px/1.4 inherit; pointer-events: none; }
+.lm-pill, .lm-text-button, .lm-nav-item, .lm-selection-tools button, .lm-batch-bar > button:not(.button), .lm-view-switch button { color: var(--text-secondary); border: 0; background: transparent; font: inherit; cursor: pointer; }
+.lm-pill { min-height: 33px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; background: var(--surface-muted); border: 1px solid transparent; border-radius: 999px; font-size: 12px; font-weight: 570; white-space: nowrap; }
+.lm-pill:hover:not(:disabled), .lm-text-button:hover:not(:disabled) { color: var(--text); background: var(--surface-pressed); }
+.lm-icon { display: inline-grid; place-items: center; width: 33px; height: 33px; flex: none; padding: 0; border: 1px solid transparent; border-radius: 10px; color: var(--text-secondary); background: var(--surface-muted); font-size: 18px; }
+.lm-icon:hover:not(:disabled) { color: var(--text); background: var(--surface-pressed); }
+.lm-icon svg, .lm-view-switch svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.lm-text-button { padding: 6px 5px; border-radius: 7px; color: var(--accent); font-size: 11px; }
+.lm-text-button.danger { color: var(--danger); }
+:where(#lmExpandedPane, .lm-editor-dialog, .lm-binding-dialog) button:disabled { opacity: .4; cursor: not-allowed; }
+:where(#lmExpandedPane, .lm-editor-dialog, .lm-binding-dialog) button:active:not(:disabled) { transform: scale(.975); }
+.lm-view-switch { display: flex; padding: 3px; border: 1px solid var(--separator); border-radius: 11px; background: var(--surface-muted); }
+.lm-view-switch button { display: grid; place-items: center; width: 30px; height: 27px; border-radius: 8px; }
+.lm-view-switch button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px var(--separator); }
+.lm-pill[aria-pressed="true"], .lm-icon[aria-expanded="true"], #lmSelectToggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+
+/* Filters stay anchored to their trigger, without pushing the library down. */
+.lm-filters { position: absolute; top: calc(100% - 9px); right: 26px; z-index: 10; width: min(460px, calc(100vw - 72px)); max-height: min(620px, calc(100dvh - 190px)); overflow: auto; overscroll-behavior: contain; padding: 18px; border: 1px solid var(--separator); border-radius: var(--r-md); background: var(--chrome-solid); box-shadow: var(--shadow-lg); transform-origin: top right; }
+.lm-filter-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.lm-filter-heading strong { font-size: 13px; font-weight: 600; }
+.lm-filter-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; }
+.lm-filter-fields > label { display: grid; min-width: 0; gap: 5px; }
+.lm-filter-fields > label > span { font-size: 10.5px; color: var(--text-secondary); }
+.lm-filter-fields select { min-width: 0; width: 100%; font-size: 11.5px; }
+.lm-filter-fields > button { justify-self: start; }
+.lm-filter-tags { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--separator); }
+.lm-filter-tags .lm-search input { padding-right: 12px; }
+.lm-filter-tag-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.lm-filter-tag-columns fieldset { margin: 0; padding: 0; min-width: 0; border: 0; }
+.lm-filter-tag-columns legend { margin-bottom: 8px; padding: 0; color: var(--text-secondary); font-size: 11px; }
+.lm-tag-options { display: grid; align-content: start; gap: 3px; max-height: 185px; overflow: auto; overscroll-behavior: contain; }
+.lm-tag-options label { display: flex; align-items: center; gap: 7px; min-height: 31px; margin: 0; padding: 5px 7px; border-radius: 8px; color: var(--text-secondary); font-size: 11px; }
+.lm-tag-options label:hover { background: var(--surface-muted); }
+.lm-tag-options label:has(input:checked) { color: var(--accent); background: var(--accent-soft); }
+.lm-tag-options input { flex: none; width: 13px; height: 13px; margin: 0; padding: 0; accent-color: var(--accent); }
+.lm-tag-options label > span { min-width: 0; overflow-wrap: anywhere; }
+.lm-tag-options small { margin-left: auto; color: var(--text-tertiary); }
+.lm-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: none; padding: 0 26px 13px; }
+.lm-filter-chips button, .lm-filter-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 5px 9px; border: 0; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 10.5px; }
+.lm-filter-chips button:hover { background: var(--surface-pressed); }
+.lm-notice { flex: none; margin: 0 26px 12px; padding: 10px 12px; border-radius: 10px; color: var(--warning); background: color-mix(in srgb, var(--warning) 8%, transparent); font-size: 11px; overflow-wrap: anywhere; }
+.lm-notice > small { display: block; margin-top: 4px; color: var(--text-tertiary); }
+.lm-notice details { margin-top: 6px; color: var(--text-tertiary); font-size: 10px; }
+.lm-notice summary { cursor: pointer; }
+.lm-notice details p { max-height: 100px; overflow: auto; white-space: pre-wrap; margin: 6px 0 0; }
+
+/* Directory, library, and the optional detail share one structural surface. */
+.lm-body { position: relative; display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 0; flex: 1; overflow: hidden; border-top: 1px solid var(--separator); }
+.lm-detail-open .lm-body { grid-template-columns: 224px minmax(0, 1fr) 360px; }
+.lm-sidebar { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 18px 12px; border-right: 1px solid var(--separator); background: var(--sidebar); }
+.lm-nav-section + .lm-nav-section { margin-top: 24px; }
+.lm-section-label { display: block; padding: 0 9px; color: var(--text-tertiary); font-size: 10.5px; font-weight: 600; }
+.lm-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 7px; }
+.lm-section-heading .lm-icon { width: 25px; height: 25px; background: transparent; font-size: 17px; }
+.lm-nav-section > .lm-section-label { margin-bottom: 7px; }
+.lm-nav-item { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 34px; padding: 7px 10px; border-radius: 10px; text-align: left; font-size: 11.5px; }
+.lm-nav-item:hover { background: var(--surface-muted); }
+.lm-nav-item.active { color: var(--accent); background: var(--accent-soft); font-weight: 570; }
+.lm-nav-item > span:first-child { width: 15px; text-align: center; }
+.lm-star-color { color: var(--favorite); }
+.lm-sidebar-hint { margin: 7px 0 0; padding: 0 9px; color: var(--text-tertiary); font-size: 10.5px; }
+.lm-recursive { display: flex; align-items: center; gap: 4px; color: var(--text-tertiary); font-size: 9px; white-space: nowrap; }
+.lm-recursive input { width: 11px; height: 11px; margin: 0; accent-color: var(--accent); }
+.lm-tree-row { display: flex; align-items: center; gap: 2px; min-height: 32px; padding-left: min(calc(3px + var(--depth, 0) * 13px), 90px); border-radius: 9px; color: var(--text-secondary); }
+.lm-tree-row:hover { background: var(--surface-muted); }
+.lm-tree-row[aria-selected="true"] { color: var(--accent); background: var(--accent-soft); }
+.lm-tree-disclosure { flex: none; width: 19px; height: 28px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
+.lm-tree-disclosure span { display: inline-block; transition: transform var(--motion-fast) ease; }
+.lm-tree-disclosure svg { display: block; width: 12px; height: 12px; }
+.lm-tree-row[aria-expanded="true"] .lm-tree-disclosure span { transform: rotate(90deg); }
+.lm-tree-label { flex: 1; min-width: 0; padding: 8px 2px; overflow: hidden; border: 0; background: transparent; color: inherit; font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.lm-tree-label small { margin-left: 5px; color: var(--text-tertiary); font-size: 9px; }
+.lm-tree-label svg { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; }
+.lm-tree-edit { flex: none; width: 23px; height: 26px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; opacity: 0; }
+.lm-tree-row:hover .lm-tree-edit, .lm-tree-row:focus-within .lm-tree-edit { opacity: 1; }
+.lm-content { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.lm-results-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: 18px 22px 13px; }
+.lm-results-heading > div { min-width: 0; }
+.lm-results-heading h3 { margin: 0 0 4px; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.lm-results-heading h3 button, .lm-breadcrumb button { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; }
+#lmLocation { display: flex; align-items: center; gap: 6px; }
+.lm-breadcrumb { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+#lmLocation > button { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#lmLocation > span { flex: none; color: var(--text-tertiary); font-size: 11px; }
+#lmCatalogMeta { color: var(--text-tertiary); font-size: 10.5px; }
+.lm-selection-count { padding: 5px 9px; border-radius: 8px; color: var(--accent); background: var(--accent-soft); font-size: 10.5px; white-space: nowrap; }
+.lm-catalog-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 2px 22px 20px; }
+.lm-catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); align-content: start; gap: 14px; }
+.lm-card { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--separator); border-radius: 14px; background: var(--surface-muted); }
+.lm-card:hover { border-color: var(--separator-strong); }
+.lm-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.lm-card.detail-active { border-color: var(--accent); }
+.lm-card-open { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; }
+.lm-card-open:focus-visible { outline-offset: -3px; border-radius: inherit; }
+.lm-card-preview { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 4 / 5; overflow: hidden; background: var(--surface-muted); }
+.lm-card-preview::before { content: 'LoRA'; color: var(--text-tertiary); font-size: 17px; letter-spacing: .03em; }
+.lm-card-preview > svg { width: 34px; height: 34px; color: var(--text-tertiary); }
+.lm-card-preview:has(> svg)::before { display: none; }
+.lm-card-preview img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.lm-card-copy { display: block; min-width: 0; padding: 10px 11px 12px; }
+.lm-card-copy strong { display: -webkit-box; min-height: 32px; overflow: hidden; font-size: 11.5px; line-height: 16px; font-weight: 570; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.lm-card-copy small { display: block; margin-top: 4px; overflow: hidden; color: var(--text-tertiary); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.lm-card-controls { position: absolute; inset: 8px 8px auto; display: flex; justify-content: space-between; pointer-events: none; }
+.lm-card-controls button { display: grid; place-items: center; width: 29px; height: 29px; padding: 0; border: 1px solid rgba(255,255,255,.25); border-radius: 9px; background: rgba(25,25,28,.65); color: white; font-size: 17px; pointer-events: auto; }
+.lm-card-controls button.is-favorite { color: #ffd16a; }
+.lm-card-controls svg { display: block; width: 17px; height: 17px; }
+.lm-card-controls button.is-favorite svg { fill: currentColor; }
+.lm-card-controls button.is-configured { color: white; background: var(--accent); }
+.lm-card-controls button.is-configured:hover { background: var(--danger); }
+.lm-card-controls .lm-card-add { font-size: 19px; }
+.lm-card-select { position: absolute; left: 10px; bottom: 87px; z-index: 2; display: grid; place-items: center; width: 23px; height: 23px; border: 1.5px solid white; border-radius: 50%; background: rgba(0,0,0,.4); color: white; pointer-events: none; }
+.lm-card.selected .lm-card-select { background: var(--accent); border-color: var(--accent); }
+.lm-card-badge { position: absolute; right: 8px; bottom: 87px; max-width: calc(100% - 45px); padding: 3px 6px; border-radius: 6px; color: white; background: rgba(25,25,28,.65); font-size: 9px; pointer-events: none; }
+.lm-card.unavailable .lm-card-copy small { color: var(--warning); }
+.lm-catalog.lm-list-view { grid-template-columns: 1fr; gap: 7px; }
+.lm-list-view .lm-card { border-radius: 12px; }
+.lm-list-view .lm-card-open { display: grid; grid-template-columns: 52px minmax(0,1fr); align-items: center; gap: 11px; padding: 7px 88px 7px 7px; }
+.lm-list-view .lm-card-preview { width: 52px; height: 60px; aspect-ratio: auto; border-radius: 8px; }
+.lm-list-view .lm-card-preview::before { font-size: 10px; }
+.lm-list-view .lm-card-copy { padding: 0; }
+.lm-list-view .lm-card-copy strong { display: block; min-height: 0; white-space: nowrap; text-overflow: ellipsis; }
+.lm-list-view .lm-card-controls { inset: 0 12px 0 auto; align-items: center; gap: 8px; }
+.lm-list-view .lm-card-controls button { border-color: var(--separator); color: var(--text-secondary); background: var(--surface-muted); }
+.lm-list-view .lm-card-controls button.is-favorite { color: var(--favorite); }
+.lm-list-view .lm-card-controls button.is-configured { color: var(--accent); background: var(--accent-soft); }
+.lm-list-view .lm-card-controls button.is-configured:hover { color: var(--danger); background: var(--danger-soft); }
+.lm-list-view .lm-card-select { left: 21px; bottom: 26px; }
+.lm-list-view .lm-card-badge { display: none; }
+.lm-empty { padding: 56px 15px; text-align: center; }
+.lm-empty > span { color: var(--text-tertiary); font-size: 40px; }
+.lm-empty h3 { margin: 12px 0 5px; font-size: 14px; font-weight: 600; }
+.lm-empty p { margin-bottom: 18px; color: var(--text-tertiary); font-size: 11.5px; }
+.lm-selection-tools { display: flex; flex-wrap: wrap; gap: 14px; padding: 0 22px 12px; }
+.lm-selection-tools button { padding: 3px 0; color: var(--accent); font-size: 11px; }
+.lm-batch-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; flex: none; margin: 0 18px 13px; padding: 8px; border: 1px solid var(--separator); border-radius: 12px; background: var(--surface); }
+.lm-batch-bar > button:not(.button) { padding: 7px 8px; border-radius: 8px; font-size: 11px; }
+.lm-batch-bar > button:hover:not(.button) { background: var(--surface-muted); }
+.lm-job { margin: 0 22px 13px; padding: 12px; border-radius: 12px; background: var(--surface-muted); }
+.lm-job > div:first-child { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; }
+.lm-job strong { font-weight: 570; }
+.lm-job progress { display: block; width: 100%; height: 5px; margin: 9px 0; accent-color: var(--accent); }
+.lm-job-actions { display: flex; justify-content: space-between; gap: 10px; color: var(--danger); font-size: 10px; }
+.lm-job-actions button { padding: 0; font-size: 10px; }
+.lm-footer { display: flex; align-items: center; gap: 15px; flex: none; padding: 12px 22px; border-top: 1px solid var(--separator); }
+#lmFooterHint { flex: 1; color: var(--text-tertiary); font-size: 10.5px; }
+.lm-pagination { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 11px; }
+.lm-pagination .lm-icon { width: 27px; height: 27px; }
+
+/* Details enter as a reading surface; forms live in the explicit edit state. */
+.lm-detail { position: absolute; right: 0; top: 0; bottom: 0; z-index: 4; display: flex; flex-direction: column; width: 360px; min-height: 0; border-left: 1px solid var(--separator); background: var(--chrome-solid); }
+.lm-detail-open .lm-detail { position: relative; grid-column: 3; width: auto; }
+.lm-detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 18px 4px; flex: none; }
+.lm-detail-toolbar .lm-section-label { padding: 0; }
+.lm-detail-toolbar .lm-icon { background: transparent; }
+.lm-detail-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 22px 24px; }
+.lm-detail-preview { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 4/3; overflow: hidden; border: 1px solid var(--separator); border-radius: 12px; background: var(--surface-muted); color: var(--text-tertiary); font-size: 18px; }
+.lm-detail-preview img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.lm-detail-body .lm-detail-preview > svg { width: 34px; height: 34px; }
+.lm-detail-body h3 { margin: 16px 0 5px; font-size: 18px; line-height: 1.35; font-weight: 600; overflow-wrap: anywhere; }
+.lm-detail-path { margin: 0 0 14px; color: var(--text-tertiary); font-size: 10px; overflow-wrap: anywhere; }
+.lm-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.lm-detail-heading h3 { margin: 0; }
+.lm-detail-heading > div { min-width: 0; }
+.lm-detail-preview + .lm-detail-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 16px 0 8px; }
+.lm-detail-preview + .lm-detail-heading h3 { min-width: 0; }
+.lm-detail-preview + .lm-detail-heading > .button { white-space: nowrap; }
+.lm-detail-overview > .lm-detail-path { line-height: 1.6; margin-bottom: 16px; }
+.lm-detail-quick { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 18px; }
+.lm-detail-quick > .button { flex: 1; }
+.lm-read-section, .lm-detail-section { margin-top: 20px; padding-top: 17px; border-top: 1px solid var(--separator); }
+.lm-read-section h4, .lm-detail-section h4 { margin: 0 0 8px; font-size: 11.5px; font-weight: 600; }
+fieldset.lm-read-section { margin-inline: 0; padding-inline: 0; padding-bottom: 0; border-inline: 0; border-bottom: 0; }
+fieldset.lm-read-section legend { padding: 0 8px 0 0; font-size: 11.5px; font-weight: 600; }
+.lm-read-section p, .lm-detail-section p { margin: 6px 0; color: var(--text-secondary); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.lm-read-value { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.lm-read-tags, .lm-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.lm-read-tags > span, .lm-chip { padding: 4px 8px; border: 1px solid var(--separator); border-radius: 7px; color: var(--text-secondary); background: var(--surface-muted); font-size: 10px; }
+.lm-read-tag { display: inline-flex; align-items: center; padding: 4px 8px; border: 1px solid var(--separator); border-radius: 7px; color: var(--text-secondary); background: var(--surface-muted); font-size: 10px; }
+.lm-chip:has(input:checked) { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
+.lm-chip input { width: 12px; height: 12px; margin: 0 4px 0 0; accent-color: var(--accent); }
+.lm-chip button { padding: 0; border: 0; background: none; color: inherit; font: inherit; }
+#lmExpandedPane .lm-detail-body form { display: block; min-height: 0; padding: 0; }
+.lm-detail-body .field { margin-top: 15px; }
+.lm-detail-body textarea { min-height: 76px; resize: vertical; line-height: 1.6; }
+.lm-detail-body input[type="number"] { max-width: 110px; }
+.lm-detail-body input[type="checkbox"] { max-width: none; }
+.lm-detail-save { width: 100%; margin-top: 15px; }
+.lm-edit-footer { position: sticky; bottom: -24px; display: flex; justify-content: flex-end; gap: 8px; margin: 22px -22px -24px; padding: 13px 22px; border-top: 1px solid var(--separator); background: var(--chrome-solid); }
+.lm-resource-info { margin-top: 18px; color: var(--text-secondary); font-size: 11px; }
+.lm-resource-info summary { padding: 8px 0; cursor: pointer; font-weight: 570; }
+.lm-resource-info dl { display: grid; grid-template-columns: 62px minmax(0,1fr); gap: 8px 10px; margin: 7px 0 0; }
+.lm-resource-info dt { color: var(--text-tertiary); }
+.lm-resource-info dd { margin: 0; font-size: 10px; overflow-wrap: anywhere; }
+.lm-unsaved, #lmLeavePrompt { padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb,var(--warning) 8%,transparent); color: var(--warning); font-size: 11px; }
+#lmLeavePrompt { position: sticky; bottom: 0; z-index: 5; border: 1px solid var(--separator); background: var(--chrome-solid); box-shadow: var(--shadow-sm); }
+#lmLeavePrompt p { margin: 0 0 9px; color: var(--text-secondary); }
+#lmLeavePrompt button + button { margin-left: 6px; }
+.lm-muted { color: var(--text-tertiary); font-size: 11px; line-height: 1.6; }
+
+/* Small editors reuse the application's normal dialog and field components. */
+.lm-editor-dialog { width: min(480px, calc(100vw - 28px)); }
+.lm-editor-dialog .field { margin-top: 16px; }
+.lm-editor-actions { display: flex; align-items: center; gap: 9px; margin-top: 24px; }
+.lm-editor-actions > span:first-child { flex: 1; }
+.lm-inline-confirm { margin-top: 15px; padding: 13px; border-radius: 12px; background: var(--danger-soft); font-size: 11px; }
+.lm-editor-dialog .lm-chips { max-height: 230px; overflow: auto; margin: 16px 0; }
+.lm-binding-dialog { width: min(730px, calc(100vw - 28px)); max-height: calc(100dvh - 42px); overflow: hidden; }
+.lm-binding-shell { max-height: calc(100dvh - 44px); overflow: auto; padding: 26px; }
+.lm-binding-dialog .dialog-heading { margin-bottom: 10px; }
+.lm-binding-person { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px; margin-bottom: 12px; border-radius: 12px; background: var(--surface-muted); }
+.lm-binding-person strong { font-size: 14px; font-weight: 600; }
+.lm-binding-person small { display: block; margin-top: 3px; color: var(--text-tertiary); font-size: 10px; overflow-wrap: anywhere; }
+.lm-picker-results { display: grid; gap: 4px; max-height: 250px; overflow: auto; margin-top: 9px; }
+.lm-picker-item { display: flex; align-items: center; gap: 11px; width: 100%; min-width: 0; padding: 10px; border: 0; border-radius: 10px; background: var(--surface-muted); color: var(--text); text-align: left; }
+.lm-picker-item:hover { background: var(--accent-soft); }
+.lm-picker-item > span { flex: 1; min-width: 0; }
+.lm-picker-item strong { display: block; overflow: hidden; font-size: 12px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
+.lm-picker-item small { display: block; overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.lm-picker-item img { width: 35px; height: 42px; border-radius: 7px; object-fit: cover; }
+.lm-binding-row { display: grid; grid-template-columns: 18px minmax(0,1fr) 70px 23px 23px 25px; align-items: center; gap: 7px; margin-bottom: 7px; padding: 9px; border-radius: 12px; background: var(--surface-muted); }
+.lm-binding-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); }
+.lm-binding-row input[type="number"] { width: 70px; padding: 6px; border-radius: 8px; font-size: 12px; }
+.lm-binding-row strong { display: block; overflow: hidden; font-size: 11px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
+.lm-binding-row small { display: block; color: var(--text-tertiary); font-size: 9px; }
+.lm-binding-row button { padding: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); }
+.lm-binding-add { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--separator); }
+.lm-preview-dialog { width: fit-content; max-width: calc(100vw - 40px); max-height: calc(100dvh - 40px); overflow: hidden; background: var(--chrome-solid); }
+.lm-preview-dialog > img { display: block; max-width: calc(100vw - 42px); max-height: calc(100dvh - 42px); object-fit: contain; }
+.lm-preview-dialog > button { position: absolute; z-index: 1; top: 12px; right: 12px; background: var(--chrome-solid); }
+.lm-morph-toggle { z-index: 20; border-radius: 12px; }
+.lm-morph-toggle::before, .lm-morph-toggle::after { display: none !important; }
+.lm-morph-toggle svg { width: 17px; height: 17px; flex: none; }
+.lm-detail-body button svg { width: 18px; height: 18px; flex: none; }
+.lora-batch-notice, .lora-runtime-details { margin-top: 10px; padding: 10px 12px; border-radius: 12px; color: var(--text-secondary); background: var(--surface-muted); font-size: 12px; line-height: 1.6; }
+#lmSidebarToggle { display: none; }
+@media (hover: none) { .lm-tree-edit { opacity: 1; } }
+@media (min-width: 1700px) { .lm-catalog { grid-template-columns: repeat(auto-fill,minmax(185px,1fr)); } }
+@media (max-width: 1050px) {
+  #loraDialog.lm-expanded { width: calc(100vw - 24px); height: calc(100dvh - 24px); }
+  #lmSidebarToggle { display: inline-grid; }
+  .lm-body { grid-template-columns: minmax(0, 1fr); }
+  .lm-detail-open .lm-body { grid-template-columns: minmax(0, 1fr) 360px; }
+  .lm-detail-open .lm-detail { grid-column: 2; }
+  .lm-sidebar { position: absolute; z-index: 7; inset: 0 auto 0 0; display: none; width: 260px; background: var(--chrome-solid); box-shadow: var(--shadow-lg); }
+  .lm-sidebar.mobile-open, .lm-sidebar[data-motion-state="closing"] { display: block; }
+  .lm-search kbd { display: none; }
+  .lm-search input { padding-right: 12px; }
+}
+@media (max-width: 760px) {
+  .lm-detail-open .lm-body { grid-template-columns: minmax(0, 1fr); }
+  .lm-detail, .lm-detail-open .lm-detail { position: absolute; inset: 0; width: 100%; grid-column: auto; border-left: 0; }
+  .lm-sidebar { width: 100%; }
+  .lm-header { padding: 20px 18px 16px; }
+  .lm-toolbar { gap: 6px; padding: 0 18px 14px; flex-wrap: wrap; }
+  .lm-toolbar > .lm-search { order: -1; flex: 1 0 100%; }
+  .lm-toolbar-actions { flex: 1 0 100%; max-width: 100%; gap: 5px; overflow-x: auto; padding: 2px 0; scrollbar-width: thin; }
+  .lm-toolbar-actions > * { flex-shrink: 0; }
+  .lm-toolbar-actions #lmRefresh { margin-left: auto; }
+  .lm-toolbar-actions .lm-icon { width: 29px; height: 32px; }
+  .lm-toolbar-actions .lm-view-switch { padding: 2px; }
+  .lm-toolbar-actions .lm-view-switch button { width: 25px; height: 26px; }
+  .lm-toolbar-actions .button.compact { padding-inline: 9px; font-size: 11px; }
+  .lm-sort-control select { width: 86px; padding-inline: 7px; font-size: 10.5px; }
+  .lm-filter-chips { padding: 0 18px 12px; }
+  .lm-filters { right: 18px; width: calc(100% - 36px); max-height: calc(100dvh - 255px); }
+  .lm-notice { margin-inline: 18px; }
+  .lm-results-heading { padding: 16px 18px 12px; }
+  .lm-catalog-scroll { padding-inline: 18px; }
+  .lm-footer { padding: 11px 18px; gap: 10px; }
+  #lmFooterHint { font-size: 9.5px; }
+}
+@media (max-width: 620px) {
+  #loraDialog.lm-expanded { --lm-shell-inset: 0px; inset: 0; width: 100vw; height: 100dvh; max-height: none; margin: 0; border-radius: 0; border: 0; }
+  .lm-header-actions { gap: 5px; }
+  .lm-header h2 { font-size: 20px; }
+  .lm-catalog { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px 10px; }
+  .lm-catalog.lm-list-view { grid-template-columns: 1fr; }
+  .lm-filter-fields { gap: 10px; }
+  .lm-filters { padding: 15px; }
+  .lm-batch-bar { margin-inline: 12px; }
+  .lm-selection-tools { padding-inline: 18px; gap: 12px; }
+  .lm-detail-body { padding-inline: 20px; }
+  .lm-binding-shell { padding: 20px; }
+  .lm-binding-row { grid-template-columns: 16px minmax(0,1fr) 60px 23px 23px 23px; gap: 3px; }
+  .lm-binding-row input[type="number"] { width: 60px; }
+  .lm-binding-dialog { max-height: calc(100dvh - 20px); }
+  .lm-binding-shell { max-height: calc(100dvh - 22px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #lmExpandedPane *, .lm-editor-dialog *, .lm-binding-dialog * { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+  :where(#lmExpandedPane, .lm-editor-dialog, .lm-binding-dialog) button:active:not(:disabled) { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  #lmShellSurface, #loraDialog.lm-morphing #lmShellSurface, .lm-sidebar, .lm-detail, .lm-batch-bar { background: var(--chrome-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  #loraDialog.lm-expanded, #loraDialog.lm-expanded::backdrop, #loraDialog.lm-morphing::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .lm-card { border-color: var(--separator-strong); }
+}
