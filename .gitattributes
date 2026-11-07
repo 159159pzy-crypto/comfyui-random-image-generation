@@ -38,6 +38,7 @@
 /docs/guide.md -export-ignore
 /docs/dependencies.md -export-ignore
 /docs/readme -export-ignore
+/docs/readme/app-icon.png -export-ignore
 /docs/readme/random-workbench.png -export-ignore
 /docs/readme/prompt-pool.png -export-ignore
 /docs/readme/lora-manager.png -export-ignore

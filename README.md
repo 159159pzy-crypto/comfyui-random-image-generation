@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="static/favicon.svg" width="96" alt="Anima Random WebUI 图标">
+  <img src="docs/readme/app-icon.png" width="96" alt="Anima Random WebUI 图标">
 </p>
 
 <h1 align="center">Anima Random WebUI</h1>
