@@ -1,0 +1,103 @@
+/* Quiet controls, anchored surfaces, and a single reversible motion runtime. */
+.history-heading-actions { min-width: 0; flex-wrap: wrap; }
+.artwork-toolbar { display: block; box-sizing: border-box; min-width: 0; padding-block: 12px 2px; overflow-anchor: none; }
+.artwork-toolbar-layout { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-width: 0; }
+/* Geometry has one owner. This also prevents the global reduced-motion duration
+   override from activating an implicit transition: all on these flex wrappers. */
+.artwork-toolbar, .artwork-toolbar-layout, .artwork-browser, .artwork-folder-reveal, .artwork-folder-strip, .artwork-selection-actions { transition: none; }
+.artwork-toolbar.is-layout-moving { overflow: clip; }
+.artwork-browser { display: flex; align-items: center; flex: 1; min-width: 0; }
+.artwork-folder-toggle, .artwork-folder-chip, .artwork-action, .artwork-manage, .artwork-mini-action { border: 0; color: var(--text-secondary); background: transparent; font: inherit; font-size: 12px; font-weight: 550; min-height: 44px; border-radius: 12px; cursor: pointer; }
+.artwork-folder-toggle { flex: 0 0 104px; width: 104px; padding: 0 10px; color: var(--text); white-space: nowrap; }
+.artwork-folder-toggle::after { content: "›"; display: inline-block; margin-left: 8px; color: var(--text-tertiary); transform: rotate(0); transition: transform 160ms ease; }
+.artwork-folder-toggle[aria-expanded="true"]::after { transform: rotate(90deg); }
+.artwork-folder-reveal { flex: 0 0 auto; width: 0; min-width: 0; overflow: hidden; opacity: 0; }
+.artwork-folder-reveal.is-expanded { flex: 1; width: auto; opacity: 1; }
+.artwork-folder-strip { display: flex; align-items: center; gap: 4px; min-width: 0; margin-left: 4px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--separator-strong) transparent; }
+.artwork-folder-chip { padding: 0 12px; white-space: nowrap; flex: 0 0 auto; min-width: 44px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.artwork-folder-chip.is-active { color: var(--accent); background: var(--accent-soft); }
+.artwork-folder-empty { font-size: 12px; color: var(--text-tertiary); white-space: nowrap; padding-inline: 8px; }
+.artwork-manage { flex: 0 0 44px; min-width: 44px; margin-left: 4px; padding: 0 8px; font-size: 22px; letter-spacing: 1px; }
+.artwork-selection-actions { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 4px; min-width: 0; max-width: 100%; }
+.artwork-selection-summary { font-size: 12px; line-height: 1.5; color: var(--text-secondary); font-variant-numeric: tabular-nums; padding-inline: 6px; }
+.artwork-action { padding: 0 12px; white-space: nowrap; }
+.artwork-action-primary { color: var(--accent); background: var(--accent-soft); }
+.artwork-toolbar.is-selecting .artwork-toolbar-layout { flex-wrap: wrap; }
+.artwork-toolbar.is-selecting .artwork-browser { flex-basis: 100%; }
+.artwork-toolbar.is-selecting .artwork-selection-actions { margin-left: auto; flex-wrap: wrap; }
+.artwork-star { display: inline-flex; justify-content: center; align-items: center; width: 44px; height: 44px; min-width: 44px; flex: 0 0 44px; padding: 11px; border: 0; border-radius: 50%; color: var(--text-tertiary); background: transparent; cursor: pointer; touch-action: manipulation; }
+.artwork-star svg { display: block; width: 22px; height: 22px; fill: transparent; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; transition: fill 140ms ease, color 140ms ease; }
+.artwork-star.is-favorite { color: var(--favorite); }
+.artwork-star.is-favorite svg { fill: currentColor; }
+.image-card { position: relative; }
+.image-card > .artwork-card-star { position: absolute; right: 9px; bottom: 9px; width: 44px; padding: 11px; text-align: center; background: transparent; }
+.image-card:not(.is-artwork-selecting) .card-copy { padding-right: 48px; }
+.image-card .artwork-selection-mark { position: absolute; right: 17px; top: 17px; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.8); background: rgba(25,25,29,.28); box-shadow: 0 1px 6px rgba(0,0,0,.16); color: white; opacity: 0; transform: scale(.9); pointer-events: none; font-size: 16px; font-weight: 650; transition: opacity 140ms ease-out, transform 160ms cubic-bezier(.2,.8,.2,1), border-color 140ms ease-out, background-color 140ms ease-out; }
+.image-card.is-artwork-selecting .artwork-selection-mark { opacity: 1; transform: scale(1); }
+.artwork-selection-check { display: block; opacity: 0; transform: scale(.75); transition: opacity 120ms ease-out, transform 160ms cubic-bezier(.2,.8,.2,1); }
+.image-card.is-artwork-selected .artwork-selection-mark { background: var(--accent); border-color: var(--accent); }
+.image-card.is-artwork-selected .artwork-selection-check { opacity: 1; transform: scale(1); }
+.image-card::before { content: ""; position: absolute; z-index: 2; inset: 0; border: 2px solid var(--accent); border-radius: inherit; opacity: 0; pointer-events: none; transition: opacity 140ms ease-out; }
+.image-card.is-artwork-selected::before { opacity: 1; }
+.image-card.is-artwork-selecting { transition: transform 160ms cubic-bezier(.2,.8,.2,1); }
+.image-card.is-artwork-selecting, .image-card.is-artwork-selecting:hover { box-shadow: inset 0 1px 0 var(--edge), var(--shadow-sm); }
+.image-card.is-artwork-selecting:hover, .image-card.is-artwork-selecting:hover img { transform: none; }
+.image-card.is-artwork-selecting .image-card-open:active { transform: none; }
+.image-card.is-artwork-selecting:has(.image-card-open:active) { transform: scale(.99); transition-duration: 80ms; }
+.artwork-popover { z-index: 1100; box-sizing: border-box; margin: 0; padding: 0; border: 1px solid var(--separator-strong); border-radius: 20px; background: var(--chrome-heavy); color: var(--text); box-shadow: var(--shadow-lg); backdrop-filter: blur(24px) saturate(150%); -webkit-backdrop-filter: blur(24px) saturate(150%); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.artwork-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 52px; padding: 4px 8px 0 18px; }
+.artwork-popover-heading h2 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -.01em; line-height: 1.4; }
+.artwork-popover-close { width: 44px; height: 44px; flex: 0 0 44px; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); font-size: 22px; cursor: pointer; }
+.artwork-popover-content { padding: 2px 8px 10px; }
+.artwork-membership-list { display: grid; gap: 2px; }
+.artwork-membership-row { display: flex; align-items: center; gap: 10px; min-height: 44px; width: 100%; padding: 8px 10px; border: 0; border-radius: 12px; color: var(--text); background: transparent; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.artwork-membership-row[aria-pressed="true"] { background: var(--accent-soft); }
+.artwork-folder-symbol { display: inline-flex; flex: 0 0 20px; width: 20px; color: var(--text-secondary); }
+.artwork-folder-symbol svg { display: block; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+.artwork-folder-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.artwork-membership-row small { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.artwork-member-check { flex: 0 0 18px; color: var(--accent); font-weight: 650; }
+.artwork-new-folder { display: flex; align-items: center; gap: 4px; margin: 10px 2px 0; padding-top: 10px; border-top: 1px solid var(--separator); }
+.artwork-new-folder input, .artwork-rename-form input { width: 100%; min-width: 0; min-height: 44px; padding: 8px 10px; font-size: 12px; border-radius: 11px; }
+.artwork-new-folder .artwork-action { flex: 0 0 auto; color: var(--accent); padding-inline: 9px; }
+.artwork-menu-hint, .artwork-menu-error { margin: 8px 10px; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.artwork-menu-error { color: var(--danger); overflow-wrap: anywhere; }
+.artwork-manager-list { display: grid; gap: 2px; }
+.artwork-manager-row { display: flex; align-items: center; flex-wrap: wrap; min-height: 46px; border-radius: 12px; background: var(--surface-muted); }
+.artwork-manager-row.is-dragging { position: relative; z-index: 1; background: var(--chrome-solid); box-shadow: var(--shadow-sm); outline: 1px solid var(--separator-strong); }
+.artwork-drag-handle, .artwork-folder-delete { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; padding: 0; border: 0; border-radius: 10px; color: var(--text-tertiary); background: transparent; font-size: 21px; cursor: pointer; }
+.artwork-drag-handle { touch-action: none; cursor: grab; user-select: none; }
+.is-dragging .artwork-drag-handle { cursor: grabbing; }
+.artwork-manager-name { min-width: 0; flex: 1; min-height: 44px; padding: 8px 2px; border: 0; color: var(--text); background: transparent; text-align: left; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; cursor: text; }
+.artwork-manager-count { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-tertiary); margin-left: 5px; }
+.artwork-rename-form { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; padding-right: 4px; }
+.artwork-mini-action { padding: 0 7px; white-space: nowrap; }
+.artwork-delete-confirm { width: 100%; padding: 2px 10px 8px 44px; text-align: right; }
+.artwork-delete-confirm p { font-size: 12px; line-height: 1.6; color: var(--text-secondary); text-align: left; margin: 0 0 2px; }
+.artwork-popover button:disabled, .artwork-toolbar button:disabled, .artwork-star:disabled { opacity: .45; cursor: not-allowed; }
+.artwork-folder-toggle:active:not(:disabled), .artwork-folder-chip:active:not(:disabled), .artwork-action:active:not(:disabled), .artwork-star:active:not(:disabled), .artwork-manage:active:not(:disabled), .artwork-membership-row:active:not(:disabled), .artwork-mini-action:active:not(:disabled) { transform: scale(.97); }
+.artwork-star, .artwork-action, .artwork-folder-chip, .artwork-membership-row, .artwork-manage { transition: background-color 140ms ease, color 140ms ease, transform 90ms ease; }
+@media (hover:hover) and (pointer:fine) {
+  .artwork-star:hover:not(:disabled), .artwork-folder-toggle:hover:not(:disabled), .artwork-folder-chip:hover:not(:disabled), .artwork-action:hover:not(:disabled), .artwork-manage:hover:not(:disabled), .artwork-popover-close:hover, .artwork-membership-row:hover:not(:disabled), .artwork-mini-action:hover:not(:disabled), .artwork-drag-handle:hover:not(:disabled), .artwork-folder-delete:hover:not(:disabled) { background: var(--surface-pressed); }
+}
+@media (max-width: 720px) {
+  .artwork-toolbar-layout { gap: 6px; }
+  .artwork-folder-chip { max-width: 150px; padding-inline: 10px; }
+  .artwork-selection-actions { gap: 1px; }
+  .artwork-selection-summary { flex-basis: 100%; text-align: right; padding: 4px 8px; }
+  .artwork-action { padding-inline: 9px; }
+}
+@media (max-width: 430px) {
+  .history-header { align-items: flex-start; }
+  .history-heading-actions { gap: 4px; }
+  .artwork-toolbar:not(.is-selecting) .artwork-browser { max-width: calc(100% - 58px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .artwork-star, .artwork-star svg, .artwork-folder-toggle::after, .artwork-folder-chip, .artwork-action, .artwork-manage, .artwork-membership-row, .artwork-selection-mark, .artwork-selection-check, .image-card.is-artwork-selecting, .image-card::before { transition: none; }
+  .artwork-star:active, .artwork-folder-toggle:active, .artwork-folder-chip:active, .artwork-action:active, .artwork-manage:active, .artwork-membership-row:active, .artwork-mini-action:active { transform: none; }
+  .image-card.is-artwork-selecting:has(.image-card-open:active), .image-card .artwork-selection-mark, .artwork-selection-check { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .artwork-popover { background: var(--chrome-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .artwork-selection-mark { background: var(--chrome-solid); border-color: var(--text); }
+}

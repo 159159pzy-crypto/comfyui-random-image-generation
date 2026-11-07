@@ -1,0 +1,36 @@
+/* The same pool browser content has two hosts: the generation drawer and this dialog. */
+.pool-character-picker {
+  width: min(1120px, calc(100vw - 48px)); max-width: none;
+  height: min(840px, calc(100dvh - 48px)); max-height: none;
+  overflow: hidden; border-radius: 24px;
+}
+.pool-character-picker[open] { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
+.pool-character-picker > * { min-width: 0; }
+.pool-character-picker .pool-content-actions,
+.pool-character-picker #poolMoreSelection,
+.pool-character-picker #favoriteSelection,
+.pool-character-picker .item-tools,
+.pool-character-picker .facet-heading > button,
+.pool-character-picker .collection-edit { display: none !important; }
+.pool-character-picker .pool-toolbar { grid-template-columns: minmax(180px, 1fr) 130px 130px auto auto auto; }
+.pool-character-picker .pool-item-copy { padding-right: 0; }
+.pool-character-picker .pool-item.already-bound { opacity: .7; }
+.pool-character-picker .pool-item.already-bound label { cursor: default; }
+.pool-character-picker .pool-bound-label { color: var(--text-secondary); font-size: 10px; }
+.pool-character-picker .pool-actions { grid-template-columns: 1fr; }
+.pool-character-picker .pool-picker-footer-actions { display: flex; gap: 8px; }
+.pool-character-picker #poolModeNote { display: block; color: var(--text-secondary); max-width: none; }
+.pool-character-picker[data-selection-mode="single"] #selectPage,
+.pool-character-picker[data-selection-mode="single"] #selectFilteredPool { display: none; }
+@media (max-width: 900px) {
+  .pool-character-picker .pool-toolbar { grid-template-columns: minmax(0, 1fr) 120px 120px; }
+  .pool-character-picker .pool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .pool-character-picker { width: 100vw; height: 100dvh; margin: 0; border-radius: 0; }
+  .pool-character-picker .pool-toolbar { grid-template-columns: minmax(0, 1fr) 112px; padding-inline: 14px; }
+  .pool-character-picker .pool-sidebar-toggle { display: block; }
+  .pool-character-picker .pool-grid { grid-template-columns: 1fr; }
+  .pool-character-picker .drawer-footer { grid-template-columns: 1fr auto; }
+  .pool-character-picker .pool-picker-footer-actions { grid-column: 2; grid-row: 1 / 3; }
+}

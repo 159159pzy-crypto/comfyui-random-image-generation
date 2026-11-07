@@ -1,0 +1,179 @@
+{
+  "167:56": {
+    "inputs": {
+      "unet_name": "anima-base-v1.0.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "167:57": {
+    "inputs": {
+      "clip_name": "qwen_3_06b_base.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader"
+  },
+  "167:58": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "72": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text"
+      },
+      "text": "",
+      "loras": {
+        "__value__": []
+      },
+      "model": [
+        "167:56",
+        0
+      ],
+      "clip": [
+        "167:57",
+        0
+      ]
+    },
+    "class_type": "Lora Loader (LoraManager)"
+  },
+  "1010:995": {
+    "inputs": {
+      "clip": [
+        "72",
+        1
+      ],
+      "text": ""
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "1010:1004": {
+    "inputs": {
+      "clip": [
+        "72",
+        1
+      ],
+      "text": ""
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "691:53": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 832,
+      "height": 1216,
+      "batch_size": 1
+    }
+  },
+  "691:1240": {
+    "inputs": {
+      "model": [
+        "72",
+        0
+      ],
+      "positive": [
+        "1010:995",
+        0
+      ],
+      "negative": [
+        "1010:1004",
+        0
+      ],
+      "steps": 20,
+      "cfg": 8.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "seed": 0,
+      "latent_image": [
+        "691:53",
+        0
+      ],
+      "denoise": 1.0
+    },
+    "class_type": "KSampler"
+  },
+  "701:496": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 832,
+      "height": 1216,
+      "batch_size": 1
+    }
+  },
+  "701:1450": {
+    "class_type": "SesquiLatentUpscale",
+    "inputs": {
+      "latent": [
+        "701:1245",
+        0
+      ],
+      "scale": 1.0,
+      "model_format": "Wan 2.1",
+      "half_precision": true
+    }
+  },
+  "701:1245": {
+    "inputs": {
+      "model": [
+        "72",
+        0
+      ],
+      "positive": [
+        "1010:995",
+        0
+      ],
+      "negative": [
+        "1010:1004",
+        0
+      ],
+      "steps": 30,
+      "cfg": 8.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "noise_seed": 0,
+      "latent_image": [
+        "701:496",
+        0
+      ],
+      "start_at_step": 0,
+      "end_at_step": 30,
+      "add_noise": "enable",
+      "return_with_leftover_noise": "enable"
+    },
+    "class_type": "KSamplerAdvanced"
+  },
+  "701:1246": {
+    "inputs": {
+      "model": [
+        "72",
+        0
+      ],
+      "positive": [
+        "1010:995",
+        0
+      ],
+      "negative": [
+        "1010:1004",
+        0
+      ],
+      "steps": 30,
+      "cfg": 8.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "noise_seed": 0,
+      "latent_image": [
+        "701:1450",
+        0
+      ],
+      "start_at_step": 15,
+      "end_at_step": 30,
+      "add_noise": "enable",
+      "return_with_leftover_noise": "disable"
+    },
+    "class_type": "KSamplerAdvanced"
+  }
+}

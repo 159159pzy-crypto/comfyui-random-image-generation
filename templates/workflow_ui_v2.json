@@ -1,0 +1,721 @@
+{
+  "version": 0.4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "PrimitiveInt",
+      "properties": {
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "Lora Loader (LoraManager)",
+      "properties": {
+        "Node name for S&R": "Lora Loader (LoraManager)"
+      },
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL"
+        },
+        {
+          "name": "clip",
+          "shape": 7,
+          "type": "CLIP"
+        },
+        {
+          "name": "lora_stack",
+          "shape": 7,
+          "type": "LORA_STACK"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL"
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP"
+        },
+        {
+          "name": "trigger_words",
+          "type": "STRING"
+        },
+        {
+          "name": "loaded_loras",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "UNETLoader",
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "inputs": [
+        {
+          "name": "unet_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "unet_name"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "CLIPLoader",
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "inputs": [
+        {
+          "name": "clip_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "clip_name"
+          }
+        },
+        {
+          "name": "type",
+          "type": "COMBO",
+          "widget": {
+            "name": "type"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "VAELoader",
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "inputs": [
+        {
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP"
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "VAEDecodeTiled",
+      "properties": {
+        "Node name for S&R": "VAEDecodeTiled"
+      },
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT"
+        },
+        {
+          "name": "vae",
+          "type": "VAE"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "KSampler",
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL"
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING"
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING"
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT"
+        },
+        {
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          }
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          }
+        },
+        {
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          }
+        },
+        {
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "ComfyMathExpression",
+      "properties": {
+        "Node name for S&R": "ComfyMathExpression"
+      },
+      "inputs": [
+        {
+          "label": "a",
+          "name": "values.a",
+          "type": "FLOAT,INT,BOOLEAN"
+        },
+        {
+          "label": "b",
+          "name": "values.b",
+          "shape": 7,
+          "type": "FLOAT,INT,BOOLEAN"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT"
+        },
+        {
+          "name": "INT",
+          "type": "INT"
+        },
+        {
+          "name": "BOOL",
+          "type": "BOOLEAN"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "EmptyLatentImage",
+      "properties": {
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "inputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          }
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "widget": {
+            "name": "batch_size"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "SesquiLatentUpscale",
+      "properties": {
+        "Node name for S&R": "SesquiLatentUpscale"
+      },
+      "inputs": [
+        {
+          "name": "latent",
+          "type": "LATENT"
+        },
+        {
+          "name": "model_format",
+          "type": "COMBO",
+          "widget": {
+            "name": "model_format"
+          }
+        },
+        {
+          "name": "scale",
+          "type": "FLOAT",
+          "widget": {
+            "name": "scale"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "KSamplerAdvanced",
+      "properties": {
+        "Node name for S&R": "KSamplerAdvanced"
+      },
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL"
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING"
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING"
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT"
+        },
+        {
+          "name": "noise_seed",
+          "type": "INT",
+          "widget": {
+            "name": "noise_seed"
+          }
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          }
+        },
+        {
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          }
+        },
+        {
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "name": "end_at_step",
+          "type": "INT",
+          "widget": {
+            "name": "end_at_step"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "VAEEncodeTiled",
+      "properties": {
+        "Node name for S&R": "VAEEncodeTiled"
+      },
+      "inputs": [
+        {
+          "name": "pixels",
+          "type": "IMAGE"
+        },
+        {
+          "name": "vae",
+          "type": "VAE"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "SeedVR2Preprocess",
+      "properties": {
+        "Node name for S&R": "SeedVR2Preprocess"
+      },
+      "inputs": [
+        {
+          "name": "resized_images",
+          "type": "IMAGE"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "SeedVR2PostProcessing",
+      "properties": {
+        "Node name for S&R": "SeedVR2PostProcessing"
+      },
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE"
+        },
+        {
+          "name": "original_resized_images",
+          "type": "IMAGE"
+        },
+        {
+          "label": "颜色匹配方法",
+          "name": "color_correction_method",
+          "type": "COMBO",
+          "widget": {
+            "name": "color_correction_method"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "SeedVR2Conditioning",
+      "properties": {
+        "Node name for S&R": "SeedVR2Conditioning"
+      },
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL"
+        },
+        {
+          "label": "latent",
+          "name": "vae_conditioning",
+          "type": "LATENT"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING"
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "ForbiddenVisionFaceProcessorIntegrated",
+      "properties": {
+        "Node name for S&R": "ForbiddenVisionFaceProcessorIntegrated"
+      },
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL"
+        },
+        {
+          "name": "vae",
+          "type": "VAE"
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING"
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING"
+        },
+        {
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE"
+        },
+        {
+          "name": "latent",
+          "shape": 7,
+          "type": "LATENT"
+        },
+        {
+          "name": "clip",
+          "shape": 7,
+          "type": "CLIP"
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "name": "cfg_scale",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg_scale"
+          }
+        },
+        {
+          "name": "sampler",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler"
+          }
+        },
+        {
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "name": "denoise_strength",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise_strength"
+          }
+        },
+        {
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "final_image",
+          "type": "IMAGE"
+        },
+        {
+          "name": "processed_face",
+          "type": "IMAGE"
+        },
+        {
+          "name": "side_by_side_comparison",
+          "type": "IMAGE"
+        },
+        {
+          "name": "final_mask",
+          "type": "MASK"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "RTXVideoSuperResolution",
+      "properties": {
+        "Node name for S&R": "RTXVideoSuperResolution"
+      },
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "upscaled_images",
+          "type": "IMAGE"
+        },
+        {
+          "name": "calculated_scale",
+          "type": "FLOAT"
+        },
+        {
+          "name": "output_width",
+          "type": "INT"
+        },
+        {
+          "name": "output_height",
+          "type": "INT"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "DLSS5NeuralRender",
+      "properties": {
+        "Node name for S&R": "DLSS5NeuralRender"
+      },
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE"
+        },
+        {
+          "name": "style",
+          "type": "COMBO",
+          "widget": {
+            "name": "style"
+          }
+        },
+        {
+          "name": "intensity",
+          "type": "FLOAT",
+          "widget": {
+            "name": "intensity"
+          }
+        },
+        {
+          "name": "local_tone",
+          "type": "FLOAT",
+          "widget": {
+            "name": "local_tone"
+          }
+        },
+        {
+          "name": "local_struct",
+          "type": "FLOAT",
+          "widget": {
+            "name": "local_struct"
+          }
+        },
+        {
+          "name": "output_mix",
+          "type": "FLOAT",
+          "widget": {
+            "name": "output_mix"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE"
+        }
+      ]
+    }
+  ],
+  "links": [],
+  "groups": [],
+  "config": {},
+  "extra": {}
+}

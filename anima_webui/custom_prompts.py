@@ -1,0 +1,902 @@
+from __future__ import annotations
+
+import asyncio
+import copy
+import csv
+import functools
+import hashlib
+import io
+import json
+import logging
+import os
+import shutil
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Any
+
+from .async_utils import serialized_mutation
+from .catalog import SECTIONS, CatalogError, PromptCatalog, normalize_text
+from .persistence import StorageProtection, backup_for_migration
+
+
+logger = logging.getLogger(__name__)
+
+
+def _locked(method: Any) -> Any:
+    """变更方法整体串行化:内存修改在事件循环线程完成,写盘经 to_thread 让出循环。"""
+
+    @functools.wraps(method)
+    @serialized_mutation
+    async def wrapper(self: "CustomPromptStore", *args: Any, **kwargs: Any) -> Any:
+        self.ensure_writable()
+        previous_items, previous_groups = copy.deepcopy((self.items, self.groups))
+        try:
+            return await method(self, *args, **kwargs)
+        except Exception:
+            self.items, self.groups = previous_items, previous_groups
+            self.catalog.set_custom_items(self.items)
+            raise
+
+    return wrapper
+
+
+CUSTOM_DATA_VERSION = 4
+MAX_GROUPS_PER_SECTION = 512
+MAX_IMPORT_ROWS = 2000
+LEGACY_FOLDER_NAME = "历史自定义分组"
+UNGROUPED_NAME = "未分组"
+IMPORT_FIELDS = (
+    "section", "title", "prompt", "subtitle", "gender", "hair", "eye",
+    "copyright", "groups", "categories", "traits",
+)
+TEMPLATE_EXAMPLES = {
+    "character": {
+        "title": "示例角色", "prompt": "1girl, silver hair, blue eyes, looking at viewer",
+        "subtitle": "角色模板示例", "gender": "female", "hair": "silver",
+        "eye": "blue", "copyright": "原创角色", "groups": ["常用角色"],
+        "categories": ["女性角色"], "traits": ["looking at viewer"],
+    },
+    "clothing": {
+        "title": "休闲连帽衫", "prompt": "oversized hoodie, pleated skirt, casual outfit",
+        "subtitle": "服装模板示例", "gender": "unknown", "hair": "", "eye": "",
+        "copyright": "", "groups": ["日常服装"], "categories": ["casual"],
+        "traits": ["hoodie", "pleated skirt"],
+    },
+    "pose": {
+        "title": "站立挥手", "prompt": "standing, waving, one hand raised",
+        "subtitle": "姿势模板示例", "gender": "unknown", "hair": "", "eye": "",
+        "copyright": "", "groups": ["常用姿势"], "categories": ["Standing & Dynamic"],
+        "traits": ["waving", "hand raised"],
+    },
+    "background": {
+        "title": "樱花街道", "prompt": "cherry blossom street, spring daylight, soft bokeh",
+        "subtitle": "背景模板示例", "gender": "unknown", "hair": "", "eye": "",
+        "copyright": "", "groups": ["户外背景"], "categories": ["outdoor"],
+        "traits": ["cherry blossoms", "street"],
+    },
+    "expression": {
+        "title": "期待", "prompt": "expectant, sparkling eyes",
+        "subtitle": "表情模板示例", "gender": "unknown", "hair": "", "eye": "",
+        "copyright": "", "groups": ["常用表情"], "categories": ["愉悦"],
+        "traits": ["sparkling eyes"],
+    },
+}
+
+
+class CustomPromptStore(StorageProtection):
+    store_name = "custom_prompts"
+
+    def __init__(self, path: str | Path, catalog: PromptCatalog):
+        self.path = Path(path)
+        self.catalog = catalog
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.items: list[dict[str, Any]] = []
+        self.groups: dict[str, list[dict[str, Any]]] = {section: [] for section in SECTIONS}
+        self.load_warnings: list[str] = []
+        self._lock = asyncio.Lock()
+        self.reload()
+
+    def reload(self) -> None:
+        self.load_warnings = []
+        self.read_only_reason = None
+        self.load_trusted = False
+        self.load_state = "missing"
+        self.disk_digest = None
+        self.source_completeness = "unverified"
+        if not self.path.is_file():
+            self.items = []
+            self.groups = {section: [] for section in SECTIONS}
+            self.catalog.set_custom_items([])
+            self.load_trusted = True
+            return
+        try:
+            source_bytes = self.path.read_bytes()
+            self.disk_digest = hashlib.sha256(source_bytes).hexdigest()
+            payload = json.loads(source_bytes.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise CatalogError("自定义提示词文件不是 JSON 对象")
+            self.source_completeness = payload.get("source_completeness", "complete")
+            if self.source_completeness not in {"complete", "unverified"}:
+                raise CatalogError("自定义提示词来源完整性标记无效")
+            raw_groups = payload.get("groups", {})
+            raw_items = payload.get("items")
+            version = payload.get("version", 0)
+            if type(version) is not int or not 0 <= version <= CUSTOM_DATA_VERSION:
+                raise CatalogError("自定义提示词文件版本无效")
+            # 加载必须先拒绝会丢失数据的输入。API 的宽松规范化会忽略坏项、
+            # 截断分组及删除未知成员，不能把这样的结果当作清理收藏的可信依据。
+            self._validate_persisted_data(raw_groups, raw_items, version)
+            groups = {
+                section: self._normalize_groups(raw_groups.get(section, []))
+                for section in SECTIONS
+            }
+            items = [self._normalize(item) for item in raw_items]
+            if version < CUSTOM_DATA_VERSION:
+                groups, items = self._migrate_legacy_tree(groups, items)
+                self._validate_persisted_data(groups, items, CUSTOM_DATA_VERSION)
+            self.groups = groups
+            self.items = items
+            self.catalog.set_custom_items(self.items)
+            self.load_trusted = True
+            self.load_state = "loaded"
+            if version < CUSTOM_DATA_VERSION:
+                try:
+                    self._backup_before_v4_migration()
+                    self._write_text(self._serialize(self.groups, self.items, self.source_completeness))
+                except OSError as error:
+                    logger.warning("自定义提示词 v4 迁移暂未写回: %s", error)
+                    self._protect_storage(f"自定义提示词已在内存迁移，但迁移备份或写回失败({error})")
+        except (OSError, UnicodeError, json.JSONDecodeError, CatalogError, ValueError, TypeError) as error:
+            self.load_trusted = False
+            self.load_state = "unreadable" if isinstance(error, OSError) else "invalid"
+            if not isinstance(error, OSError):
+                try:
+                    backup_for_migration(self.path, CUSTOM_DATA_VERSION)
+                except OSError as backup_error:
+                    logger.warning("自定义词库损坏备份失败: %s", backup_error)
+            self._protect_storage(f"源词库读取失败({error})，保留原文件以防重启后误判为空库")
+            self.items = []
+            self.groups = {section: [] for section in SECTIONS}
+            # 同时把目录从 set_custom_items 可能留下的半修改状态恢复为无自定义项。
+            self.catalog.set_custom_items([])
+
+    @staticmethod
+    def _validate_persisted_data(raw_groups: Any, raw_items: Any, version: int) -> None:
+        """Validate disk data before permissive API normalization can discard it."""
+        if not isinstance(raw_groups, dict) or not isinstance(raw_items, list):
+            raise CatalogError("自定义提示词文件的 groups/items 结构无效")
+        if any(section not in SECTIONS for section in raw_groups):
+            raise CatalogError("自定义提示词文件包含未知分组分类")
+        leaf_ids: dict[str, set[str]] = {}
+        for section in SECTIONS:
+            values = raw_groups.get(section, [])
+            if not isinstance(values, list) or len(values) > MAX_GROUPS_PER_SECTION:
+                raise CatalogError(f"{section} 自定义分组结构无效或数量超过上限")
+            by_id: dict[str, dict[str, Any]] = {}
+            for group in values:
+                if not isinstance(group, dict):
+                    raise CatalogError("自定义分组必须是对象")
+                group_id, name = group.get("id"), group.get("name")
+                if (
+                    not isinstance(group_id, str) or not group_id.strip()
+                    or group_id != group_id.strip() or group_id in by_id
+                    or not isinstance(name, str) or not name.strip() or len(name.strip()) > 100
+                ):
+                    raise CatalogError("自定义分组 ID 重复或名称/ID 无效")
+                kind, parent_id = group.get("kind", "group"), group.get("parentId")
+                if not isinstance(kind, str) or kind not in {"group", "import", "legacy"}:
+                    raise CatalogError("自定义分组类型无效")
+                if parent_id is not None and (
+                    not isinstance(parent_id, str) or not parent_id.strip() or parent_id != parent_id.strip()
+                ):
+                    raise CatalogError("自定义分组父项无效")
+                if (kind != "group" and parent_id is not None) or (
+                    version < CUSTOM_DATA_VERSION and (kind != "group" or parent_id is not None)
+                ):
+                    raise CatalogError("自定义分组层级与文件版本不符")
+                by_id[group_id] = group
+            for group in values:
+                parent_id = group.get("parentId")
+                if parent_id is not None and (
+                    parent_id not in by_id or by_id[parent_id].get("kind", "group") not in {"import", "legacy"}
+                ):
+                    raise CatalogError("自定义分组包含不存在或无效的父项")
+            leaf_ids[section] = {key for key, group in by_id.items() if group.get("kind", "group") == "group"}
+
+        seen: set[str] = set()
+        for item in raw_items:
+            if not isinstance(item, dict):
+                raise CatalogError("自定义项必须是对象")
+            item_id, section = item.get("id"), item.get("section")
+            if (
+                not isinstance(item_id, str) or not item_id.startswith("custom:")
+                or len(item_id) == len("custom:") or any(char.isspace() for char in item_id)
+                or item_id in seen
+            ):
+                raise CatalogError("自定义项 ID 重复或无效")
+            seen.add(item_id)
+            if not isinstance(section, str) or section not in SECTIONS:
+                raise CatalogError("自定义项包含未知分类")
+            for key in ("title", "prompt"):
+                if not isinstance(item.get(key), str) or not item[key].strip():
+                    raise CatalogError("自定义项名称和提示词必须是非空文本")
+            for key in ("subtitle", "gender", "hair", "eye", "copyright"):
+                if key in item and not isinstance(item[key], str):
+                    raise CatalogError(f"自定义项 {key} 必须是文本")
+            for key in ("groupIds", "categories", "traits"):
+                values = item.get(key, [])
+                if (
+                    not isinstance(values, list)
+                    or any(not isinstance(value, str) or not value.strip() for value in values)
+                    or len({value.strip() for value in values}) != len(values)
+                ):
+                    raise CatalogError(f"自定义项 {key} 必须是无重复的文本数组")
+                if key == "groupIds" and any(value not in leaf_ids[section] for value in values):
+                    raise CatalogError("自定义项包含不存在或非叶子的分组")
+
+    def list(self, section: str | None = None, group_id: str | None = None) -> list[dict[str, Any]]:
+        if section and section not in SECTIONS:
+            raise CatalogError(f"不支持的随机池: {section}")
+        values = self.items if not section else [item for item in self.items if item["section"] == section]
+        if group_id:
+            group_ids = self.group_filter_ids(section or "", group_id)
+            values = [item for item in values if group_ids.intersection(item.get("groupIds", []))]
+        return [copy.deepcopy(item) for item in values]
+
+    def group_filter_ids(self, section: str, group_id: str) -> set[str]:
+        """把父项展开为叶子分组；未知旧筛选值保持返回零结果的兼容行为。"""
+        self._check_section(section)
+        group = self._group(section, group_id)
+        return self._descendant_leaf_ids(section, group_id) if group else {group_id}
+
+    @_locked
+    async def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+        item = self._normalize({**payload, "id": f"custom:{uuid.uuid4().hex}"})
+        self._validate_group_ids(item["section"], item["groupIds"])
+        next_items = [*self.items, item]
+        await self._write(self.groups, next_items)
+        self.items = next_items
+        self.catalog.set_custom_items(self.items)
+        return copy.deepcopy(item)
+
+    @_locked
+    async def create_or_reuse(self, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Idempotent source creation for the save-text-and-favorite workflow."""
+        item = self._normalize({**payload, "id": f"custom:{uuid.uuid4().hex}"})
+        self._validate_group_ids(item["section"], item["groupIds"])
+        existing = next(
+            (
+                value for value in self.items
+                if value["section"] == item["section"]
+                and value["prompt"].strip().casefold() == item["prompt"].casefold()
+            ),
+            None,
+        )
+        if existing is not None:
+            return copy.deepcopy(existing), False
+        next_items = [*self.items, item]
+        await self._write(self.groups, next_items)
+        self.items = next_items
+        self.catalog.set_custom_items(self.items)
+        return copy.deepcopy(item), True
+
+    @_locked
+    async def update(self, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        index = next((index for index, item in enumerate(self.items) if item["id"] == item_id), None)
+        if index is None:
+            raise KeyError(item_id)
+        item = self._normalize({**self.items[index], **payload, "id": item_id})
+        self._validate_group_ids(item["section"], item["groupIds"])
+        self.items[index] = item
+        await self._save()
+        self.catalog.set_custom_items(self.items)
+        return copy.deepcopy(item)
+
+    @_locked
+    async def delete(self, item_id: str) -> bool:
+        old_length = len(self.items)
+        self.items = [item for item in self.items if item["id"] != item_id]
+        if len(self.items) == old_length:
+            return False
+        await self._save()
+        self.catalog.set_custom_items(self.items)
+        return True
+
+    def list_groups(self, section: str) -> dict[str, Any]:
+        self._check_section(section)
+        groups = copy.deepcopy(self.groups[section])
+        section_items = [item for item in self.items if item["section"] == section]
+        leaf_sets = {
+            group["id"]: self._descendant_leaf_ids(section, group["id"])
+            for group in groups
+        }
+        counts = {
+            group["id"]: sum(
+                bool(leaf_sets[group["id"]].intersection(item.get("groupIds", [])))
+                for item in section_items
+            )
+            for group in groups
+        }
+        exclusive_counts = {
+            group["id"]: sum(
+                bool(leaf_sets[group["id"]].intersection(item.get("groupIds", [])))
+                and not (set(item.get("groupIds", [])) - leaf_sets[group["id"]])
+                for item in section_items
+            )
+            for group in groups
+        }
+        return {
+            "groups": [
+                {
+                    **group,
+                    "count": counts[group["id"]],
+                    "directCount": sum(group["id"] in item.get("groupIds", []) for item in section_items)
+                    if group["kind"] == "group"
+                    else 0,
+                    "exclusiveCount": exclusive_counts[group["id"]],
+                    "childCount": sum(item.get("parentId") == group["id"] for item in groups),
+                }
+                for group in groups
+            ]
+        }
+
+    @_locked
+    async def create_group(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._check_section(section)
+        name = self._group_name(payload.get("name"))
+        if len(self.groups[section]) >= MAX_GROUPS_PER_SECTION:
+            raise CatalogError("自定义分组数量已达到上限")
+        self._ensure_unique_group_name(section, name, parent_id=None)
+        group = {
+            "id": f"custom_group_{uuid.uuid4().hex[:12]}",
+            "name": name,
+            "parentId": None,
+            "kind": "group",
+        }
+        self.groups[section].append(group)
+        await self._save()
+        return {"group": copy.deepcopy(group), **self.list_groups(section)}
+
+    @_locked
+    async def update_group(self, section: str, group_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._check_section(section)
+        group = next((item for item in self.groups[section] if item["id"] == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        name = self._group_name(payload.get("name"))
+        self._ensure_unique_group_name(
+            section, name, parent_id=group.get("parentId"), except_id=group_id
+        )
+        group["name"] = name
+        await self._save()
+        return self.list_groups(section)
+
+    @_locked
+    async def delete_group(
+        self,
+        section: str,
+        group_id: str,
+        delete_items: bool = False,
+        delete_mode: str | None = None,
+    ) -> dict[str, Any]:
+        self._check_section(section)
+        mode = delete_mode or ("exclusive" if delete_items else "keep")
+        if mode not in {"keep", "exclusive", "all"}:
+            raise CatalogError("deleteMode 必须是 keep、exclusive 或 all")
+        if not any(item["id"] == group_id for item in self.groups[section]):
+            raise KeyError(group_id)
+        subtree_ids = self._descendant_group_ids(section, group_id)
+        leaf_ids = {
+            item["id"]
+            for item in self.groups[section]
+            if item["id"] in subtree_ids and item["kind"] == "group"
+        }
+        self.groups[section] = [item for item in self.groups[section] if item["id"] not in subtree_ids]
+        deleted_item_ids: list[str] = []
+        detached_item_count = 0
+        next_items: list[dict[str, Any]] = []
+        for item in self.items:
+            group_ids = list(item.get("groupIds", []))
+            if item["section"] != section or not leaf_ids.intersection(group_ids):
+                next_items.append(item)
+                continue
+            remaining = [value for value in group_ids if value not in leaf_ids]
+            if mode == "all" or (mode == "exclusive" and not remaining):
+                deleted_item_ids.append(item["id"])
+                continue
+            item["groupIds"] = remaining
+            detached_item_count += 1
+            next_items.append(item)
+        self.items = next_items
+        await self._save()
+        self.catalog.set_custom_items(self.items)
+        return {
+            **self.list_groups(section),
+            "deletedItemIds": deleted_item_ids,
+            "deletedItemCount": len(deleted_item_ids),
+            "detachedItemCount": detached_item_count,
+            "deletedGroupIds": sorted(subtree_ids),
+            "deletedGroupCount": len(subtree_ids),
+            "deleteMode": mode,
+        }
+
+    def template(self, section: str, file_format: str) -> tuple[str, str, bytes]:
+        self._check_section(section)
+        example = {"section": section, **copy.deepcopy(TEMPLATE_EXAMPLES[section])}
+        filename = f"custom-prompts-{section}-template"
+        if file_format == "json":
+            body = json.dumps({"version": 1, "items": [example]}, ensure_ascii=False, indent=2) + "\n"
+            return f"{filename}.json", "application/json", body.encode("utf-8")
+        if file_format == "csv":
+            buffer = io.StringIO(newline="")
+            writer = csv.DictWriter(buffer, fieldnames=IMPORT_FIELDS)
+            writer.writeheader()
+            writer.writerow({
+                **example,
+                "groups": "|".join(example["groups"]),
+                "categories": "|".join(example["categories"]),
+                "traits": "|".join(example["traits"]),
+            })
+            return f"{filename}.csv", "text/csv", ("\ufeff" + buffer.getvalue()).encode("utf-8")
+        raise CatalogError("导入模板只支持 json 或 csv")
+
+    def preview_import(
+        self, file_format: str, content: str, section: str, bundle_name: str = ""
+    ) -> dict[str, Any]:
+        self._check_section(section)
+        bundle_name = self._group_name(bundle_name)
+        raw_items = self._parse_import(file_format, content)
+        if len(raw_items) > MAX_IMPORT_ROWS:
+            raise CatalogError(f"单次最多导入 {MAX_IMPORT_ROWS} 项")
+        rows: list[dict[str, Any]] = []
+        pending_names: set[str] = set()
+        import_keys: set[tuple[str, str]] = set()
+        existing_custom = {(item["section"], normalize_text(item["title"])): item for item in self.items}
+        builtin_names = {
+            (section, normalize_text(item["title"]))
+            for section in SECTIONS for item in self.catalog.all_items(section) if item.get("builtin")
+        }
+        for row_number, raw in enumerate(raw_items, 2 if file_format == "csv" else 1):
+            try:
+                prepared, group_names = self._prepare_import_item(raw)
+                if prepared["section"] != section:
+                    raise CatalogError("导入文件包含其他随机池条目，只能导入当前池")
+                key = (prepared["section"], normalize_text(prepared["title"]))
+                if key in builtin_names:
+                    raise CatalogError("名称与内置条目冲突，内置条目不可覆盖")
+                if key in import_keys:
+                    raise CatalogError("同一导入文件中存在重名项")
+                import_keys.add(key)
+                conflict = existing_custom.get(key)
+                status = "conflict" if conflict else "new"
+                for name in group_names or [UNGROUPED_NAME]:
+                    pending_names.add(self._group_name(name))
+                rows.append({
+                    "row": row_number, "status": status, "action": "skip" if conflict else "create",
+                    "existingId": conflict["id"] if conflict else "", "item": prepared, "groups": group_names, "error": "",
+                })
+            except (CatalogError, ValueError) as error:
+                rows.append({"row": row_number, "status": "error", "action": "skip", "item": raw, "groups": [], "error": str(error)})
+        bundle = self._import_bundle(section, bundle_name)
+        if bundle is None:
+            self._ensure_unique_group_name(section, bundle_name, parent_id=None)
+        existing_children = {
+            normalize_text(group["name"])
+            for group in self.groups[section]
+            if bundle and group.get("parentId") == bundle["id"] and group["kind"] == "group"
+        }
+        new_child_names = sorted(
+            name for name in pending_names if normalize_text(name) not in existing_children
+        )
+        pending_nodes = (0 if bundle else 1) + len(new_child_names)
+        if len(self.groups[section]) + pending_nodes > MAX_GROUPS_PER_SECTION:
+            raise CatalogError(f"{section} 自定义分组数量已达到上限")
+        return {
+            "rows": rows,
+            "summary": {name: sum(row["status"] == name for row in rows) for name in ("new", "conflict", "error")},
+            "newGroups": {section: new_child_names} if new_child_names else {},
+            "bundle": {"name": bundle_name, "exists": bool(bundle), "newChildCount": len(new_child_names)},
+        }
+
+    @_locked
+    async def commit_import(
+        self,
+        rows: Any,
+        section: str,
+        target_group_ids: Any = None,
+        bundle_name: str = "",
+    ) -> dict[str, Any]:
+        self._check_section(section)
+        bundle_name = self._group_name(bundle_name)
+        if not isinstance(rows, list) or len(rows) > MAX_IMPORT_ROWS:
+            raise CatalogError("导入确认数据无效")
+        if target_group_ids is None:
+            target_group_ids = []
+        if not isinstance(target_group_ids, list) or any(not isinstance(value, str) for value in target_group_ids):
+            raise CatalogError("目标分组必须是数组")
+        target_group_ids = list(dict.fromkeys(value.strip() for value in target_group_ids if value.strip()))
+        self._validate_group_ids(section, target_group_ids)
+        next_items = copy.deepcopy(self.items)
+        next_groups = copy.deepcopy(self.groups)
+        imported = updated = skipped = 0
+        actionable_rows = [
+            row for row in rows if isinstance(row, dict) and str(row.get("action") or "skip") != "skip"
+        ]
+        bundle = self._import_bundle(section, bundle_name, next_groups)
+        if actionable_rows and bundle is None:
+            self._ensure_unique_group_name(
+                section, bundle_name, parent_id=None, groups=next_groups
+            )
+            self._ensure_group_capacity(section, next_groups, 1)
+            bundle = {
+                "id": f"custom_folder_{uuid.uuid4().hex[:12]}",
+                "name": bundle_name,
+                "parentId": None,
+                "kind": "import",
+            }
+            next_groups[section].append(bundle)
+        builtin_names = {
+            (section, normalize_text(item["title"]))
+            for section in SECTIONS for item in self.catalog.all_items(section) if item.get("builtin")
+        }
+        for raw_row in rows:
+            if not isinstance(raw_row, dict):
+                raise CatalogError("导入行无效")
+            action = str(raw_row.get("action") or "skip")
+            if action == "skip":
+                skipped += 1
+                continue
+            if action not in {"create", "overwrite"}:
+                raise CatalogError("导入操作无效")
+            prepared, embedded_group_names = self._prepare_import_item(raw_row.get("item") or {})
+            if prepared["section"] != section:
+                raise CatalogError("导入文件包含其他随机池条目，只能导入当前池")
+            group_names = self._list_value(raw_row.get("groups")) or embedded_group_names
+            group_names = [self._group_name(value) for value in group_names] or [UNGROUPED_NAME]
+            group_ids: list[str] = list(target_group_ids)
+            for name in group_names:
+                if bundle is None:
+                    raise CatalogError("导入大项无效")
+                group = self._group_by_name(
+                    section,
+                    name,
+                    parent_id=bundle["id"],
+                    kind="group",
+                    groups=next_groups,
+                )
+                if group is None:
+                    self._ensure_group_capacity(section, next_groups, 1)
+                    group = {
+                        "id": f"custom_group_{uuid.uuid4().hex[:12]}",
+                        "name": name,
+                        "parentId": bundle["id"],
+                        "kind": "group",
+                    }
+                    next_groups[section].append(group)
+                if group["id"] not in group_ids:
+                    group_ids.append(group["id"])
+            key = (section, normalize_text(prepared["title"]))
+            if key in builtin_names:
+                raise CatalogError("名称与内置条目冲突，内置条目不可覆盖")
+            position = next((index for index, item in enumerate(next_items) if (item["section"], normalize_text(item["title"])) == key), None)
+            if position is not None and action != "overwrite":
+                raise CatalogError(f"导入项已存在: {prepared['title']}")
+            if position is None and action == "overwrite":
+                raise CatalogError(f"没有可覆盖的自定义项: {prepared['title']}")
+            item_id = next_items[position]["id"] if position is not None else f"custom:{uuid.uuid4().hex}"
+            item = self._normalize({**prepared, "id": item_id, "groupIds": group_ids})
+            if position is None:
+                next_items.append(item)
+                imported += 1
+            else:
+                next_items[position] = item
+                updated += 1
+        await self._write(next_groups, next_items)
+        self.groups = next_groups
+        self.items = next_items
+        self.catalog.set_custom_items(self.items)
+        return {
+            "imported": imported,
+            "updated": updated,
+            "skipped": skipped,
+            "total": len(self.items),
+            "bundleId": bundle["id"] if bundle else "",
+            "bundleName": bundle["name"] if bundle else bundle_name,
+        }
+
+    def _normalize(self, payload: dict[str, Any]) -> dict[str, Any]:
+        section = str(payload.get("section") or "")
+        self._check_section(section)
+        title = str(payload.get("title") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+        subtitle = str(payload.get("subtitle") or "").strip()
+        if not title or not prompt:
+            raise CatalogError("自定义项需要名称和提示词")
+        if len(title) > 200 or len(prompt) > 20000 or len(subtitle) > 300:
+            raise CatalogError("自定义项内容过长")
+        gender = str(payload.get("gender") or "unknown").strip().lower()
+        if section != "character":
+            gender = "unknown"
+        gender = {"female": "1girl", "male": "1boy"}.get(gender, gender)
+        if gender not in {"1girl", "1boy", "unknown"}:
+            raise CatalogError("角色性别只能是 1girl、1boy 或 unknown")
+        categories = self._list_value(payload.get("categories"))
+        traits = self._list_value(payload.get("traits"))
+        group_ids = self._list_value(payload.get("groupIds"))
+        if len(categories) > 32 or len(traits) > 128:
+            raise CatalogError("自定义项分类或特征过多")
+        return {
+            "id": str(payload.get("id") or ""), "section": section, "title": title,
+            "subtitle": subtitle, "prompt": prompt, "gender": gender,
+            "hair": str(payload.get("hair") or "").strip().lower() if section == "character" else "",
+            "eye": str(payload.get("eye") or "").strip().lower() if section == "character" else "",
+            "copyright": str(payload.get("copyright") or "").strip() if section == "character" else "",
+            "categories": categories, "traits": traits, "groupIds": group_ids,
+        }
+
+    def _prepare_import_item(self, raw: Any) -> tuple[dict[str, Any], list[str]]:
+        if not isinstance(raw, dict):
+            raise CatalogError("导入行必须是对象")
+        groups = self._list_value(raw.get("groups"))
+        item = self._normalize({**raw, "id": "custom:preview", "groupIds": []})
+        return {key: value for key, value in item.items() if key not in {"id", "groupIds"}}, [self._group_name(value) for value in groups]
+
+    def _parse_import(self, file_format: str, content: str) -> list[dict[str, Any]]:
+        if not isinstance(content, str) or len(content.encode("utf-8")) > 5 * 1024 * 1024:
+            raise CatalogError("导入文件无效或超过 5 MB")
+        if file_format == "json":
+            try:
+                payload = json.loads(content.lstrip("\ufeff"))
+            except json.JSONDecodeError as error:
+                raise CatalogError(f"JSON 无法解析: 第 {error.lineno} 行") from error
+            values = payload.get("items") if isinstance(payload, dict) else payload
+            if not isinstance(values, list):
+                raise CatalogError("JSON 模板必须包含 items 数组")
+            return [item for item in values]
+        if file_format == "csv":
+            try:
+                return [dict(row) for row in csv.DictReader(io.StringIO(content.lstrip("\ufeff")))]
+            except csv.Error as error:
+                raise CatalogError(f"CSV 无法解析: {error}") from error
+        raise CatalogError("导入文件只支持 json 或 csv")
+
+    def _normalize_groups(self, values: Any) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in values if isinstance(values, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            group_id = str(raw.get("id") or "").strip()
+            name = str(raw.get("name") or "").strip()
+            if group_id and name and group_id not in seen:
+                kind = str(raw.get("kind") or "group")
+                if kind not in {"group", "import", "legacy"}:
+                    kind = "group"
+                parent_id = str(raw.get("parentId") or "").strip() or None
+                result.append(
+                    {
+                        "id": group_id,
+                        "name": name[:100],
+                        "parentId": parent_id if kind == "group" else None,
+                        "kind": kind,
+                    }
+                )
+                seen.add(group_id)
+        result = result[:MAX_GROUPS_PER_SECTION]
+        by_id = {group["id"]: group for group in result}
+        for group in result:
+            parent = by_id.get(group.get("parentId"))
+            if group["kind"] == "group" and (
+                parent is None or parent["kind"] not in {"import", "legacy"}
+            ):
+                group["parentId"] = None
+        return result
+
+    def _migrate_legacy_tree(
+        self,
+        groups: dict[str, list[dict[str, Any]]],
+        items: list[dict[str, Any]],
+    ) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+        """把 v1-v3 扁平分组无损归入每池的历史父项。"""
+        for section in SECTIONS:
+            section_items = [item for item in items if item["section"] == section]
+            existing_groups = groups[section]
+            valid_existing = {group["id"] for group in existing_groups}
+            ungrouped = [
+                item
+                for item in section_items
+                if not valid_existing.intersection(item.get("groupIds", []))
+            ]
+            if not existing_groups and not ungrouped:
+                continue
+            legacy_id = f"custom_folder_legacy_{section}"
+            legacy = {
+                "id": legacy_id,
+                "name": LEGACY_FOLDER_NAME,
+                "parentId": None,
+                "kind": "legacy",
+            }
+            migrated_groups = [legacy]
+            for group in existing_groups:
+                migrated_groups.append(
+                    {
+                        **group,
+                        "parentId": legacy_id,
+                        "kind": "group",
+                    }
+                )
+            if ungrouped:
+                ungrouped_id = f"custom_group_legacy_ungrouped_{section}"
+                migrated_groups.append(
+                    {
+                        "id": ungrouped_id,
+                        "name": UNGROUPED_NAME,
+                        "parentId": legacy_id,
+                        "kind": "group",
+                    }
+                )
+                for item in ungrouped:
+                    item["groupIds"] = [ungrouped_id]
+            if len(migrated_groups) > MAX_GROUPS_PER_SECTION:
+                raise CatalogError(f"{section} 自定义分组数量已达到上限")
+            groups[section] = migrated_groups
+        return groups, items
+
+    def _backup_before_v4_migration(self) -> None:
+        backup = self.path.with_name(self.path.name + ".pre-v4.bak")
+        if not backup.exists():
+            shutil.copy2(self.path, backup)
+
+    def _remove_unknown_group_ids(self) -> None:
+        valid = {
+            section: {group["id"] for group in groups if group["kind"] == "group"}
+            for section, groups in self.groups.items()
+        }
+        for item in self.items:
+            item["groupIds"] = [value for value in item.get("groupIds", []) if value in valid[item["section"]]]
+
+    @staticmethod
+    def _list_value(value: Any) -> list[str]:
+        if isinstance(value, list):
+            values = value
+        elif isinstance(value, str):
+            values = value.split("|") if "|" in value else ([] if not value.strip() else [value])
+        elif value in (None, ""):
+            values = []
+        else:
+            raise CatalogError("多值字段必须是数组或使用 | 分隔的文本")
+        return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+
+    def _validate_group_ids(self, section: str, group_ids: list[str]) -> None:
+        by_id = {group["id"]: group for group in self.groups[section]}
+        if any(group_id not in by_id for group_id in group_ids):
+            raise CatalogError("自定义项包含不存在的分组")
+        if any(by_id[group_id]["kind"] != "group" for group_id in group_ids):
+            raise CatalogError("目标分组只能选择叶子分组")
+
+    def _group_by_name(
+        self,
+        section: str,
+        name: str,
+        parent_id: str | None = None,
+        kind: str | None = None,
+        groups: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any] | None:
+        key = normalize_text(name)
+        values = (groups or self.groups)[section]
+        return next(
+            (
+                group
+                for group in values
+                if normalize_text(group["name"]) == key
+                and group.get("parentId") == parent_id
+                and (kind is None or group["kind"] == kind)
+            ),
+            None,
+        )
+
+    def _ensure_unique_group_name(
+        self,
+        section: str,
+        name: str,
+        parent_id: str | None,
+        except_id: str = "",
+        groups: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
+        values = (groups or self.groups)[section]
+        if any(
+            group["id"] != except_id
+            and group.get("parentId") == parent_id
+            and normalize_text(group["name"]) == normalize_text(name)
+            for group in values
+        ):
+            raise CatalogError("同一层级内不能有重名的自定义分组")
+
+    def _group(self, section: str, group_id: str) -> dict[str, Any] | None:
+        return next((group for group in self.groups[section] if group["id"] == group_id), None)
+
+    def _descendant_group_ids(self, section: str, group_id: str) -> set[str]:
+        ids: set[str] = set()
+        pending = [group_id]
+        while pending:
+            current = pending.pop()
+            if current in ids:
+                continue
+            ids.add(current)
+            pending.extend(
+                group["id"]
+                for group in self.groups[section]
+                if group.get("parentId") == current
+            )
+        return ids
+
+    def _descendant_leaf_ids(self, section: str, group_id: str) -> set[str]:
+        descendants = self._descendant_group_ids(section, group_id)
+        return {
+            group["id"]
+            for group in self.groups[section]
+            if group["id"] in descendants and group["kind"] == "group"
+        }
+
+    def _import_bundle(
+        self,
+        section: str,
+        name: str,
+        groups: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any] | None:
+        return self._group_by_name(
+            section, name, parent_id=None, kind="import", groups=groups
+        )
+
+    @staticmethod
+    def _ensure_group_capacity(
+        section: str,
+        groups: dict[str, list[dict[str, Any]]],
+        additional: int,
+    ) -> None:
+        if len(groups[section]) + additional > MAX_GROUPS_PER_SECTION:
+            raise CatalogError(f"{section} 自定义分组数量已达到上限")
+
+    @staticmethod
+    def _group_name(value: Any) -> str:
+        name = str(value or "").strip()
+        if not name or len(name) > 100:
+            raise CatalogError("自定义分组名称需要 1-100 个字符")
+        return name
+
+    @staticmethod
+    def _check_section(section: str) -> None:
+        if section not in SECTIONS:
+            raise CatalogError(f"不支持的随机池: {section}")
+
+    async def _save(self) -> None:
+        await self._write(self.groups, self.items)
+
+    async def _write(self, groups: dict[str, list[dict[str, Any]]], items: list[dict[str, Any]]) -> None:
+        # 快照序列化在事件循环线程完成(状态一致),fsync 等慢速 I/O 移入工作线程。
+        payload = self._serialize(groups, items, self.source_completeness)
+        await asyncio.to_thread(self._write_text, payload)
+
+    @staticmethod
+    def _serialize(groups: dict[str, list[dict[str, Any]]], items: list[dict[str, Any]], source_completeness: str = "complete") -> str:
+        return json.dumps(
+            {"version": CUSTOM_DATA_VERSION, "groups": groups, "items": items,
+             **({"source_completeness": source_completeness} if source_completeness != "complete" else {})},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
+
+    def _write_text(self, text: str) -> None:
+        self.ensure_writable()
+        fd, temp_name = tempfile.mkstemp(prefix="custom-prompts-", suffix=".json", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, self.path)
+            self.disk_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)

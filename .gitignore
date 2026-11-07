@@ -1,0 +1,33 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Local configuration and personal data
+.env
+.env.*
+!.env.example
+data/
+output/
+*.log
+*.corrupt.bak
+*.corrupt-*.bak
+
+# Browser and local development artifacts
+.playwright-cli/
+playwright-report/
+test-results/
+.codex-local/
+.claude/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.lnk
+/AGENTS.md
+/CLAUDE.md
