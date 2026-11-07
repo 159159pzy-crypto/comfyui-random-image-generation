@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anima-random-webui"
-version = "0.1.0"
+version = "0.1.1"
 description = "Anima Random WebUI：独立的本地五池随机生图工作台"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -12,3 +12,32 @@
 *.png binary
 *.webp binary
 *.jpg binary
+
+# Keep development files in Git, but export only the user source package.
+* export-ignore
+/Install.ps1 -export-ignore
+/Start.ps1 -export-ignore
+/Start.cmd -export-ignore
+/run.py -export-ignore
+/pyproject.toml -export-ignore
+/LICENSE -export-ignore
+/README.md -export-ignore
+/RELEASE_NOTES.md -export-ignore
+/anima_webui -export-ignore
+/anima_webui/*.py -export-ignore
+/anima_webui/zh_names.json -export-ignore
+/static -export-ignore
+/static/*.html -export-ignore
+/static/*.js -export-ignore
+/static/*.css -export-ignore
+/static/*.svg -export-ignore
+/templates -export-ignore
+/templates/workflow_api_v2.json -export-ignore
+/templates/workflow_ui_v2.json -export-ignore
+/docs -export-ignore
+/docs/guide.md -export-ignore
+/docs/dependencies.md -export-ignore
+/docs/readme -export-ignore
+/docs/readme/random-workbench.png -export-ignore
+/docs/readme/prompt-pool.png -export-ignore
+/docs/readme/lora-manager.png -export-ignore

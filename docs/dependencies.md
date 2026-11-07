@@ -12,9 +12,9 @@
 | Pillow | `>=13.0,<14`，本地图像/缩略图处理 |
 | 浏览器 | 支持原生 dialog、现代 JavaScript、localStorage 的桌面浏览器 |
 | Node.js | 22+，仅运行 JavaScript 语法检查和前端测试；正常启动无需 Node |
-| 开发依赖 | `pytest>=8`、`ruff>=0.15,<0.16`、`setuptools>=68`，由 `Install.ps1 -Dev` 安装 |
+| 开发依赖 | 仅 Git 克隆的完整仓库需要；`pytest>=8`、`ruff>=0.15,<0.16`、`setuptools>=68`，由 `Install.ps1 -Dev` 安装 |
 
-权威版本范围见根目录 `pyproject.toml`。静态前端无需 npm 安装或打包。本项目不会代为安装 GPU 驱动、PyTorch、ComfyUI、自定义节点或模型。
+权威版本范围见根目录 `pyproject.toml`。静态前端无需 npm 安装或打包。Release 下载包仅包含运行文件与用户文档，不包含测试、CI 或开发脚本。本项目不会代为安装 GPU 驱动、PyTorch、ComfyUI、自定义节点或模型。
 
 ## 所有生成模式都需要
 

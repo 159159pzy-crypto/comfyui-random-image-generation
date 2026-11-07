@@ -16,7 +16,7 @@ def run(*args: str) -> None:
 def main() -> None:
     metadata = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
     assert metadata['project']['name'] == 'anima-random-webui'
-    assert metadata['project']['version'] == '0.1.0'
+    assert metadata['project']['version'] == '0.1.1'
     run(sys.executable, '-m', 'ruff', 'check', 'anima_webui', 'tests', 'scripts', 'run.py')
     powershell = shutil.which('powershell.exe') or shutil.which('pwsh')
     if powershell:

@@ -5,13 +5,14 @@
 项目在独立 Python 虚拟环境运行，要求 Python 3.11+。Windows 可使用根目录的 `Install.ps1` 和 `Start.ps1`；也可以手动完成相同操作：
 
 ```powershell
-Set-Location F:\animarandom
+# 替换为你的解压目录
+Set-Location "D:\AnimaRandomWebUI"
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe run.py
 ```
 
-需要开发工具时，将安装命令改为 `-m pip install -e ".[dev]"`。Node.js 22+ 只用于 `scripts/check.py` 和前端测试，不参与 WebUI 服务运行。
+需要开发工具时，请先通过 Git 克隆完整仓库，再将安装命令改为 `-m pip install -e ".[dev]"`。Node.js 22+ 只用于开发检查和前端测试，不参与 WebUI 服务运行；Release 下载包不包含测试与开发脚本。
 
 先单独启动 ComfyUI，再启动 WebUI。默认 WebUI 地址为 `http://127.0.0.1:8191`，ComfyUI 地址为 `http://127.0.0.1:8188`。`Start.cmd` 是调用 PowerShell 的源码启动入口，没有后台托盘或 EXE 服务。按 Ctrl+C 或关闭启动终端停止 WebUI。正在执行和等待中的批次属于当前服务进程；重启不会自动续跑队列。
 
@@ -193,4 +194,4 @@ AnimaRandomWebUI/YYYY-MM-DD/批次ID/image_....png
 | 数据只读提示 | 阅读页面原因和 `webui.log`，先保留现有文件与备份，再修复数据问题 |
 | 浏览器界面资源不一致 | 刷新页面，确认访问的是当前源码启动的端口 |
 
-开发检查运行 `python scripts/check.py`（使用项目虚拟环境）。该检查不自动进行真实 GPU 生图；具体已验证流程以本次验收报告为准。
+开发检查仅在 Git 克隆的完整仓库中运行 `python scripts/check.py`（使用项目虚拟环境），Release 下载包不包含该脚本。自动检查不等同于真实 GPU 生图；版本变化与验证范围见 [发行说明](../RELEASE_NOTES.md)。
