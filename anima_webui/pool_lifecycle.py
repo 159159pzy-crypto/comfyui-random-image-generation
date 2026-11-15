@@ -213,8 +213,14 @@ class PoolLifecycleService:
             # response. Reload only when disk and this process disagree.
             if committed and _digest(self._source_text(source, profile).encode()) != journal["after_hash"]:
                 source.reload()
-                self._trusted(source)
+                if source.migration_pending:
+                    source.ensure_writable(allow_pending_migration=True)
+                else:
+                    self._trusted(source)
             await asyncio.to_thread(path.unlink)
+            if source.migration_pending:
+                source.complete_pending_migration()
+                self._trusted(source)
         except Exception as error:
             raise PoolLifecycleError(f"收藏一致性恢复尚未完成，请重试：{error}",
                                      code="favorite_sync_recovery_required", source_committed=committed,

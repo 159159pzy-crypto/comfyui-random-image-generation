@@ -28,7 +28,7 @@ function element(tag = '') {
       this.markup = value;
       if (tag === 'button') {
         this.image = element('img');
-        this.image.src = value.match(/\bsrc="([^"]+)"/)[1];
+        this.image.dataset.thumbnailUrl = value.match(/\bdata-thumbnail-url="([^"]+)"/)[1];
         this.failure = { hidden: true };
         this.title = { textContent: '' }; this.description = { textContent: '' };
       }
@@ -38,38 +38,40 @@ function element(tag = '') {
       if (tag === 'article') return ['button', '.image-card-open'].includes(selector) ? this.children[0] : this.children[0]?.querySelector(selector);
       return selector === 'img' ? this.image : selector === '.card-copy strong' ? this.title : selector === '.card-copy span' ? this.description : this.failure;
     },
-    querySelectorAll(selector) { return selector === 'img' ? this.children.flatMap(article => article.children.map(button => button.image)) : []; },
+    querySelectorAll(selector) { return selector === 'img' ? this.children.flatMap(article => article.children.map(button => button.image).filter(Boolean)) : []; },
   };
 }
 function setup() {
-  const opened = [], gallery = element('gallery');
+  const opened = [], attachments = [], removed = [], gallery = element('gallery');
   const empty = { hidden: false, querySelector: () => ({ textContent: '' }) };
   const ctx = vm.createContext({
     document: { createElement: element }, escapeHtml: value => String(value || ''), openDetail: record => opened.push(record),
     ui: { gallery, emptyState: empty, pageLabel: {}, prevPage: {}, nextPage: {}, historyCount: {} },
     config: {}, historyDirty: true, historyPage: 1, historyPages: 1, historyItems: [], historyCache: new Map(), updatePreviewNavigation() {},
+    ArtworkThumbnails: { attach: (...args) => attachments.push(args), remove: article => removed.push(article), refresh() {} },
   });
   load(ctx, 'historyViewState', 'card', 'cacheHistoryPage', 'renderHistoryPage');
-  return { ctx, gallery, opened };
+  return { ctx, gallery, opened, attachments, removed };
 }
 const record = (id, workbench = 'random') => ({ id, filename: `${id}.png`, sequence: id, sample_seed: 0, settings: { workbench } });
 
-test('history cards request thumbnails for both workbenches and never fall back to originals', () => {
-  const { ctx, opened } = setup();
+test('history cards schedule thumbnails for both workbenches and have a separate retry button', () => {
+  const { ctx, opened, attachments } = setup();
   for (const workbench of ['random', 'single']) {
     const value = record(7, workbench), card = ctx.card(value, 0), button = card.children[0];
-    assert.equal(button.image.src, '/api/images/7/thumbnail');
-    assert.match(button.innerHTML, /loading="lazy" decoding="async" fetchpriority="low"/);
-    button.image.listeners.get('error')({ target: button.image });
-    assert.equal(button.failure.hidden, false);
-    assert.equal(button.image.src, '/api/images/7/thumbnail');
+    assert.equal(button.image.dataset.thumbnailUrl, '/api/images/7/thumbnail');
+    assert.equal(button.image.src, undefined, 'the scheduler owns assigning src');
+    assert.match(button.innerHTML, /decoding="async"/);
+    assert.equal(card.children[1].className, 'image-retry');
+    assert.equal(card.children[1].hidden, true);
+    assert.deepEqual(attachments.at(-1), [card, button.image, card.children[1]]);
     button.listeners.get('click')();
     assert.equal(opened.at(-1), value, 'the thumbnail still opens the original record details');
   }
 });
 
 test('history paging detaches old cards and keeps its rendered list bounded', () => {
-  const { ctx, gallery } = setup();
+  const { ctx, gallery, removed } = setup();
   ctx.renderHistoryPage({ page: 1, pages: 3, total: 50, items: Array.from({ length: 24 }, (_, index) => record(index + 1)) });
   const prior = gallery.querySelectorAll('img');
   const priorCards = [...gallery.children];
@@ -77,7 +79,8 @@ test('history paging detaches old cards and keeps its rendered list bounded', ()
   ctx.renderHistoryPage({ page: 2, pages: 3, total: 50, items: Array.from({ length: 24 }, (_, index) => record(index + 25, 'single')) });
   assert.equal(gallery.children.length, 24);
   assert.ok(priorCards.every(card => !card.parentElement));
-  assert.ok(gallery.querySelectorAll('img').every(image => image.src.endsWith('/thumbnail')));
+  assert.ok(gallery.querySelectorAll('img').every(image => image.dataset.thumbnailUrl.endsWith('/thumbnail')));
+  assert.deepEqual(removed, priorCards, 'all detached cards release queued work through the loader');
 });
 
 test('selection handles the main card without opening details and decoration preserves its image', () => {
@@ -115,13 +118,21 @@ test('unchanged refresh preserves image nodes and focus targets; metadata and cl
 
 test('details load the original for both workbenches and release it only after the dialog closes', () => {
   const image = element('img');
+  const negativeLabel = { firstChild: { textContent: '' } };
   const ctx = vm.createContext({
-    ui: { detailImage: image, detailDialog: { open: true }, detailMeta: {}, detailPositive: {}, detailNegative: {}, detailStats: {}, detailSelection: {} },
+    ui: { detailImage: image, detailDialog: { open: true }, detailMeta: {}, detailPositive: {}, detailNegative: { closest: () => negativeLabel }, detailStats: {}, detailSelection: {} },
     resetRevealImageFile() {}, renderSingleDetail() {}, resetSingleDetail() {}, closeRegenerationDrawers() {},
     normalizeSettings: settings => ({ ...settings, loras: [] }), SECTIONS: [], escapeHtml: String,
     detailContext: { origin: 'random' }, closeImagePreview() {}, regenerationRequest: 0, regenerationOptions: {}, document: { querySelector: () => null },
   });
   load(ctx, 'loraRuntimeMarkup', 'renderDetail', 'finishDetailClose');
+  for (const zero of [true, false]) {
+    const item = record(7); item.settings.zero_negative = zero; item.negative_prompt = 'original negative';
+    ctx.renderDetail(item);
+    assert.equal(ctx.ui.detailNegative.value, 'original negative');
+    assert.equal(negativeLabel.firstChild.textContent, zero ? '负面提示词 · 编码后条件置零' : '负面提示词');
+    assert.match(ctx.ui.detailStats.innerHTML, zero ? /<dd>置零<\/dd>/ : /<dd>使用负面提示词<\/dd>/);
+  }
   for (const workbench of ['random', 'single']) {
     ctx.renderDetail(record(7, workbench));
     assert.equal(image.src, '/api/images/7');

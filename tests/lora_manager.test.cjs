@@ -3,17 +3,142 @@ const assert = require('node:assert/strict');
 const { createController, groupRows, groupPath, descendants, bindingPayload, mergeDetailDraft, detailDirtyFields, metadataPatch, submitLibraryLoras, cardNavigationIndex, queryString } = require('../static/lora-manager.js');
 const { configuredRemoval } = require('../static/lora-manager.js');
 
-function harness() {
-  let profile = 'anima', loras = [];
+function harness({cache = false} = {}) {
+  let profile = 'anima', loras = [], time = 0;
   const pending = [], changes = [];
   const controller = createController({
     request(url, options = {}) { return new Promise((resolve, reject) => pending.push({ url, options, resolve, reject })); },
     getProfile: () => profile, getLoras: () => loras,
+    now: () => time, cacheTtl: cache ? 30000 : 0,
     onChange: state => changes.push({ loading: state.loading, ids: state.items.map(item => item.id), selected: [...state.selected] }),
   });
-  return { controller, pending, changes, profile(value) { profile = value; }, loras(value) { loras = value; } };
+  return { controller, pending, changes, profile(value) { profile = value; }, loras(value) { loras = value; }, tick(ms) { time += ms; } };
 }
 const page = (ids, extra = {}) => ({ items: ids.map(id => ({ id, filename: `${id}.safetensors` })), total: ids.length, page: 1, total_pages: 1, groups: [], facets: {}, ...extra });
+
+test('reopening an exact fresh query reuses its cache and expiry revalidates without blocking its cards', async () => {
+  const h=harness({cache:true});let loading=h.controller.load();h.pending[0].resolve(page(['one']));await loading;
+  h.controller.cancel();h.tick(29999);await h.controller.load();assert.equal(h.pending.length,1);
+  h.tick(1);loading=h.controller.load();
+  assert.deepEqual(h.controller.state.items.map(item=>item.id),['one']);
+  assert.equal(h.controller.state.loading,false);assert.equal(h.controller.state.revalidating,true);
+  assert.equal(new URL(h.pending[1].url,'http://local').searchParams.has('refresh'),false);
+  h.pending[1].resolve(page(['one','two']));await loading;assert.equal(h.controller.state.revalidating,false);
+});
+
+test('query caches include search and host profile even when browsing every model', async () => {
+  const h=harness({cache:true});h.controller.state.scope='all';
+  let loading=h.controller.load();h.pending[0].resolve(page(['first']));await loading;
+  loading=h.controller.update({q:'second'});h.pending[1].resolve(page(['second']));await loading;
+  await h.controller.update({q:''});assert.equal(h.pending.length,2);assert.equal(h.controller.state.items[0].id,'first');
+  h.profile('krea2');loading=h.controller.load();assert.equal(h.controller.state.loading,true);
+  h.pending[2].resolve(page(['krea-view']));await loading;
+  h.profile('anima');await h.controller.load();assert.equal(h.pending.length,3);assert.equal(h.controller.state.items[0].id,'first');
+});
+
+test('manual refresh always reaches the server and an offline cache remains read-only until recovery', async () => {
+  const h=harness({cache:true});let loading=h.controller.load();h.pending[0].resolve(page(['one']));await loading;
+  loading=h.controller.load({refresh:true});assert.equal(new URL(h.pending[1].url,'http://local').searchParams.get('refresh'),'true');
+  h.pending[1].reject(new Error('offline'));await loading;assert.equal(h.controller.state.writable,false);
+  loading=h.controller.load();assert.equal(h.pending.length,3);assert.equal(h.controller.state.writable,false);
+  h.pending[2].resolve(page(['one']));await loading;assert.equal(h.controller.state.writable,true);
+});
+
+test('favorite changes are immediate and per-item pending state survives old reads then rolls back on failure', async () => {
+  const h=harness();let loading=h.controller.load();h.pending[0].resolve(page(['one','two'],{items:[{id:'one',favorite:false},{id:'two',favorite:false}]}));await loading;
+  loading=h.controller.load();const oldDetail=h.controller.readCurrent();
+  const first=h.controller.beginMutation('one',{favorite:true}),second=h.controller.beginMutation('two',{favorite:true});
+  assert.equal(h.controller.state.items[0].favorite,true);assert.equal(h.controller.state.items[1].favorite,true);
+  assert.equal(h.controller.beginMutation('one',{favorite:false}),null);assert.equal(oldDetail(),false);
+  h.pending[1].resolve(page(['one','two'],{items:[{id:'one',favorite:false},{id:'two',favorite:false}]}));await loading;
+  assert.equal(h.controller.state.items[0].favorite,true);
+  assert.equal(h.controller.state.revalidationNeeded,true,'an invalidated read must be retried after concurrent writes settle');
+  h.controller.finishMutation(first,null,{failed:true});assert.equal(h.controller.state.items[0].favorite,false);
+  assert.equal(h.controller.state.pendingMutations.has('two'),true);
+  h.controller.finishMutation(second,{id:'two',favorite:true});assert.equal(h.controller.state.items[1].favorite,true);
+});
+
+test('successful favorites reject reads started while the write was pending and update the reusable cache', async () => {
+  const h=harness({cache:true});let loading=h.controller.load();h.pending[0].resolve(page(['one'],{items:[{id:'one',favorite:false}]}));await loading;
+  const mutation=h.controller.beginMutation('one',{favorite:true});loading=h.controller.load({revalidate:true});
+  h.controller.finishMutation(mutation,{id:'one',favorite:true});h.pending[1].resolve(page(['one'],{items:[{id:'one',favorite:false}]}));await loading;
+  assert.equal(h.controller.state.items[0].favorite,true);
+  await h.controller.load();assert.equal(h.pending.length,2);assert.equal(h.controller.state.items[0].favorite,true);
+});
+
+test('unfavoriting retains the pending card then clamps the last page and expires collection caches', async () => {
+  const h=harness({cache:true});h.controller.state.collection='__all__';h.controller.state.page=2;
+  let loading=h.controller.load();h.pending[0].resolve(page(['last'],{items:[{id:'last',favorite:true}],total:61,total_pages:2,page:2}));await loading;
+  const mutation=h.controller.beginMutation('last',{favorite:false});assert.equal(h.controller.state.items.length,1);assert.equal(h.controller.state.page,2);
+  h.controller.finishMutation(mutation,{id:'last',favorite:false});assert.equal(h.controller.state.items.length,0);assert.equal(h.controller.state.total,60);assert.equal(h.controller.state.page,1);
+  loading=h.controller.load({revalidate:true});assert.equal(new URL(h.pending[1].url,'http://local').searchParams.get('page'),'1');
+  h.pending[1].resolve(page(['first'],{total:60,total_pages:1}));await loading;
+});
+
+test('a partially saved favorite remains visible and cannot be edited until confirmed', async () => {
+  const h=harness();h.controller.state.collection='__all__';let loading=h.controller.load();
+  h.pending[0].resolve(page(['one'],{items:[{id:'one',favorite:true}]}));await loading;
+  const mutation=h.controller.beginMutation('one',{favorite:false});h.controller.finishMutation(mutation,null,{failed:true,partial:true});
+  assert.equal(h.controller.state.items.length,1);assert.equal(h.controller.state.items[0].favorite,false);
+  assert.equal(h.controller.state.items[0].pending_local,true);assert.equal(h.controller.state.total,1);
+  assert.equal(h.controller.beginMutation('one',{favorite:true}),null);
+});
+
+test('late writes update their cache without injecting old items into a different profile or owning its view', async () => {
+  const h=harness({cache:true});let loading=h.controller.load();h.pending[0].resolve(page(['old'],{items:[{id:'old',favorite:false}]}));await loading;
+  const mutation=h.controller.beginMutation('old',{favorite:true});h.controller.cancel();assert.equal(mutation.current(),false);
+  h.profile('krea2');loading=h.controller.load();h.pending[1].resolve(page(['new']));await loading;
+  h.controller.finishMutation(mutation,{id:'old',favorite:true});assert.equal(h.controller.state.known.has('old'),false);
+  assert.deepEqual(h.controller.state.items.map(item=>item.id),['new']);
+  h.profile('anima');await h.controller.load();assert.equal(h.pending.length,2);assert.equal(h.controller.state.items[0].favorite,true);
+});
+
+test('a failed favorite restores the same visible item after navigation without owning the new view', async () => {
+  const h=harness();let loading=h.controller.load();h.pending[0].resolve(page(['one'],{items:[{id:'one',favorite:false}]}));await loading;
+  const mutation=h.controller.beginMutation('one',{favorite:true});loading=h.controller.update({q:'one'});
+  h.pending[1].resolve(page(['one'],{items:[{id:'one',favorite:false}]}));await loading;
+  assert.equal(mutation.current(),false);assert.equal(h.controller.state.items[0].favorite,true);
+  h.controller.finishMutation(mutation,null,{failed:true});
+  assert.equal(h.controller.state.items[0].favorite,false);assert.equal(h.controller.state.known.get('one').favorite,false);
+  assert.equal(h.controller.state.pendingMutations.size,0);assert.equal(h.controller.state.q,'one');
+});
+
+test('shared all-profile items settle late favorites without importing the old view flags', async t => {
+  for(const outcome of ['success','failure','partial'])await t.test(outcome,async()=>{
+    const h=harness({cache:true});h.controller.state.scope='all';let loading=h.controller.load();
+    h.pending[0].resolve(page(['shared'],{items:[{id:'shared',favorite:false,available:true,writable:true,offline:false,cached:false,notes:'before'}]}));await loading;
+    const mutation=h.controller.beginMutation('shared',{favorite:true});h.profile('krea2');loading=h.controller.load();
+    h.pending[1].resolve(page(['shared'],{items:[{id:'shared',favorite:false,available:false,writable:false,offline:true,cached:true,notes:'newer note'}]}));await loading;
+    assert.equal(mutation.current(),false);assert.equal(h.controller.state.items[0].favorite,true);
+    assert.equal(h.controller.state.items[0].available,false,'pending metadata must not carry the previous view availability');
+    const saved={id:'shared',favorite:true,available:true,writable:true,offline:false,cached:false,notes:'canonical'};
+    h.controller.finishMutation(mutation,saved,{failed:outcome!=='success',partial:outcome==='partial'});
+    const current=h.controller.state.items[0];assert.equal(current.favorite,outcome!=='failure');
+    assert.equal(current.available,false);assert.equal(current.writable,false);assert.equal(current.offline,true);assert.equal(current.cached,true);
+    assert.equal(current.notes,outcome==='success'?'canonical':'newer note');
+    assert.equal(!!current.pending_local,outcome==='partial');assert.equal(h.controller.state.pendingMutations.size,0);
+    assert.equal(h.controller.state.known.get('shared').favorite,current.favorite);
+  });
+});
+
+test('authoritative detail reads replace runtime flags instead of retaining stale view availability', async () => {
+  const h=harness({cache:true});let loading=h.controller.load();
+  h.pending[0].resolve(page(['one'],{items:[{id:'one',available:true,writable:true,offline:false,cached:false}]}));await loading;
+  h.controller.replace({id:'one',available:false,writable:false,offline:false,cached:true},{fromRead:true});
+  for(const item of [h.controller.state.items[0],h.controller.state.known.get('one')]){
+    assert.equal(item.available,false);assert.equal(item.writable,false);assert.equal(item.cached,true);
+  }
+  h.controller.cancel();await h.controller.load();assert.equal(h.pending.length,1);
+  assert.equal(h.controller.state.items[0].available,false);assert.equal(h.controller.state.items[0].writable,false);
+});
+
+test('metadata and group mutations invalidate fresh list caches instead of hiding saved changes for thirty seconds', async () => {
+  const h=harness({cache:true});let loading=h.controller.load();h.pending[0].resolve(page(['one']));await loading;
+  h.controller.replace({id:'one',tags:['saved']},{changedFields:['tags']});loading=h.controller.load();
+  assert.equal(h.pending.length,2);h.pending[1].resolve(page(['one'],{items:[{id:'one',tags:['saved']}]}));await loading;
+  h.controller.invalidate();loading=h.controller.load();assert.equal(h.pending.length,3);h.pending[2].resolve(page(['one'],{groups:[{id:'new',name:'New'}]}));await loading;
+  assert.equal(h.controller.state.groups[0].id,'new');
+});
 
 test('a late search response cannot replace a more recent result, even if transport ignores abort', async () => {
   const h = harness();
@@ -180,6 +305,56 @@ test('server-side offline snapshots remain browseable but never imply writable o
   loading=h.controller.load({refresh:true});h.pending[1].resolve(page(['fresh'],{offline:false,cached:false,writable:true,error:null}));
   assert.equal(await loading,true);assert.equal(h.controller.state.offline,false);assert.equal(h.controller.state.cached,false);assert.equal(h.controller.state.writable,true);assert.equal(h.controller.state.error,'');
   assert.equal(h.controller.state.known.has('cached'),false);
+});
+
+test('only completed online refreshes give failed covers another retry generation', async () => {
+  const h = harness();
+  let loading = h.controller.load(); h.pending[0].resolve(page(['one'])); await loading;
+  assert.equal(h.controller.state.previewRetryGeneration, 0);
+  h.controller.toggle('one'); h.controller.clearSelection();
+  h.controller.replace({id: 'one', filename: 'one.safetensors', favorite: true});
+  assert.equal(h.controller.state.previewRetryGeneration, 0, 'ordinary renders must not authorize image retries');
+
+  loading = h.controller.load({refresh: true});
+  assert.equal(h.controller.state.previewRetryGeneration, 0, 'wait for the inventory response');
+  h.pending[1].resolve(page(['one'])); assert.equal(await loading, true);
+  assert.equal(h.controller.state.previewRetryGeneration, 1);
+
+  loading = h.controller.load(); h.pending[2].resolve(page(['one'])); await loading;
+  assert.equal(h.controller.state.previewRetryGeneration, 1, 'ordinary reads do not retry failed covers');
+  loading = h.controller.load({refresh: true}); h.pending[3].resolve(page(['one'], {writable: false})); await loading;
+  assert.equal(h.controller.state.previewRetryGeneration, 2, 'local metadata write restrictions do not prevent online image recovery');
+});
+
+test('offline snapshots and failed refreshes do not authorize cover retries', async () => {
+  const h = harness();
+  let loading = h.controller.load({refresh: true}); h.pending[0].resolve(page(['one'])); await loading;
+  loading = h.controller.load({refresh: true}); h.pending[1].reject(new Error('plugin offline')); await loading;
+  assert.equal(h.controller.state.previewRetryGeneration, 1);
+  assert.equal(h.controller.state.cached, true);
+  loading = h.controller.load({refresh: true});
+  h.pending[2].resolve(page(['one'], {offline: true, cached: true, writable: false, error: 'plugin offline'}));
+  assert.equal(await loading, false);
+  assert.equal(h.controller.state.previewRetryGeneration, 1);
+});
+
+test('obsolete refresh responses never grant another cover retry', async t => {
+  for (const invalidation of ['cancel', 'query', 'model', 'newer response']) {
+    await t.test(invalidation, async () => {
+      const h = harness();
+      let loading = h.controller.load({refresh: true}); h.pending[0].resolve(page(['one'])); await loading;
+      const stale = h.controller.load({refresh: true});
+      if (invalidation === 'cancel') h.controller.cancel();
+      if (invalidation === 'query') h.controller.state.q = 'changed';
+      if (invalidation === 'model') h.profile('krea2');
+      if (invalidation === 'newer response') {
+        loading = h.controller.load({refresh: true}); h.pending[2].resolve(page(['newer'])); await loading;
+      }
+      const generation = h.controller.state.previewRetryGeneration;
+      h.pending[1].resolve(page(['stale'])); assert.equal(await stale, false);
+      assert.equal(h.controller.state.previewRetryGeneration, generation);
+    });
+  }
 });
 
 test('a successful item edit updates the local offline cache rather than restoring superseded metadata', async () => {

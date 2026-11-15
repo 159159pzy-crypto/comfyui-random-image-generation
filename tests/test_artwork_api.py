@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from anima_webui.server import ARTWORK_DELETION_KEY, HISTORY_KEY, create_app
+from anima_webui.server import ARTWORK_DELETION_KEY, COMFY_KEY, HISTORY_KEY, create_app
 from test_server import APP_DIR, FakeComfy, _write_fake_tools
 
 
@@ -42,9 +42,8 @@ class ArtworkApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, status, payload)
         return payload
 
-    async def test_removed_cleanup_and_bulk_delete_routes_remain_unavailable(self):
-        routes = (("POST", "/api/history/delete"),
-                  ("GET", "/api/image-cleanup"), ("PUT", "/api/image-cleanup"),
+    async def test_removed_cleanup_routes_remain_unavailable(self):
+        routes = (("GET", "/api/image-cleanup"), ("PUT", "/api/image-cleanup"),
                   ("POST", "/api/image-cleanup/run"), ("POST", "/api/image-cleanup/leases"))
         for method, path in routes:
             with self.subTest(method=method, path=path):
@@ -151,6 +150,81 @@ class ArtworkApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["file_deleted_count"], 0)
         self.assertEqual((await self.history.list_images())["total"], 2)
         await self.json("DELETE", f"/api/history/{self.ids[0]}", status=404)
+
+    async def test_batch_record_delete_updates_favorites_and_accepts_missing_ids(self):
+        folder = (await self.json("POST", "/api/artwork-folders", {"name": "Folder"}, status=201))["folder"]["id"]
+        await self.json("POST", "/api/artwork-folders/members", {
+            "image_ids": self.ids, "folder_ids": [folder], "action": "add"})
+        payload = await self.json("POST", "/api/history/delete", {
+            "image_ids": [self.ids[2], 9999, self.ids[0], self.ids[2]], "mode": "record"})
+        self.assertEqual(payload["mode"], "record")
+        self.assertEqual([item["id"] for item in payload["results"]], [self.ids[2], 9999, self.ids[0]])
+        self.assertEqual([item["code"] for item in payload["results"]], ["deleted", "already_missing", "deleted"])
+        self.assertEqual((payload["deleted_count"], payload["success_count"], payload["failed_count"], payload["file_deleted_count"]),
+                         (2, 3, 0, 0))
+        self.assertEqual([item["id"] for item in (await self.json("GET", "/api/history"))["items"]], [self.ids[1]])
+        favorites = await self.json("GET", "/api/artwork-folders")
+        self.assertEqual(favorites["total"], 1)
+        self.assertEqual(favorites["folders"][0]["count"], 1)
+        repeated = await self.json("POST", "/api/history/delete", {"image_ids": [self.ids[0]], "mode": "record"})
+        self.assertEqual((repeated["deleted_count"], repeated["success_count"], repeated["failed_count"]), (0, 1, 0))
+
+    async def test_batch_delete_rejects_invalid_body_ids_modes_and_paths_before_mutation(self):
+        invalid_bodies = [{}, {"image_ids": self.ids}, {"mode": "record"},
+                          {"image_ids": self.ids, "mode": "record", "path": "C:/image.png"}]
+        invalid_bodies.extend({"image_ids": ids, "mode": "record"} for ids in
+                              (None, [], {}, "1", [self.ids[0], True], [self.ids[0], "2"],
+                               [self.ids[0], 2.0], [self.ids[0], 0], [self.ids[0], -1], [self.ids[0], 2**63]))
+        invalid_bodies.extend({"image_ids": self.ids, "mode": mode} for mode in (None, [], {}, True, "wipe"))
+        service, comfy = self.app[ARTWORK_DELETION_KEY], self.app[COMFY_KEY]
+        with patch.object(service, "delete_many", new=AsyncMock()) as deletion, \
+                patch.object(comfy, "status", new=AsyncMock()) as status:
+            for body in invalid_bodies:
+                with self.subTest(body=body):
+                    await self.json("POST", "/api/history/delete", body, status=400)
+            for query in ("path=x", "mode=record"):
+                await self.json("POST", f"/api/history/delete?{query}",
+                                {"image_ids": self.ids, "mode": "record"}, status=400)
+            deletion.assert_not_awaited()
+            status.assert_not_awaited()
+        self.assertEqual((await self.history.list_images())["total"], 3)
+
+    async def test_batch_file_delete_requires_same_origin_and_reports_partial_result_with_200(self):
+        service, comfy = self.app[ARTWORK_DELETION_KEY], self.app[COMFY_KEY]
+        payload = {"mode": "file", "results": [
+            {"id": self.ids[0], "record_deleted": True, "file_deleted": True,
+             "file_missing": False, "code": "deleted", "error": ""},
+            {"id": self.ids[1], "record_deleted": False, "file_deleted": False,
+             "file_missing": False, "code": "file_shared", "error": "其他作品仍引用原图"}],
+            "deleted_count": 1, "success_count": 1, "failed_count": 1, "file_deleted_count": 1}
+        body = {"image_ids": [*self.ids[:2], self.ids[0]], "mode": "file"}
+        origin = str(self.client.make_url("/")).rstrip("/")
+        with patch.object(service, "delete_many", new=AsyncMock(return_value=payload)) as deletion, \
+                patch.object(comfy, "status", new=AsyncMock(return_value={"system": {}})) as status:
+            await self.json("POST", "/api/history/delete", body, status=403)
+            await self.json("POST", "/api/history/delete", body,
+                            headers={"Origin": origin, "X-Forwarded-For": "127.0.0.1"}, status=403)
+            deletion.assert_not_awaited()
+            status.assert_not_awaited()
+            result = await self.json("POST", "/api/history/delete", body, headers={"Origin": origin})
+            self.assertEqual(result, payload)
+            status.assert_awaited_once()
+            deletion.assert_awaited_once()
+            self.assertEqual(deletion.await_args.args[:2], (self.ids[:2], "file"))
+            self.assertEqual(deletion.await_args.kwargs["stats"], {"system": {}})
+
+    async def test_batch_storage_protection_during_processing_keeps_completed_response(self):
+        service = self.app[ARTWORK_DELETION_KEY]
+        original = service._delete
+        def protect_after_first(*args):
+            result = original(*args)
+            self.history._protect_storage("test protection during batch")
+            return result
+        with patch.object(service, "_delete", side_effect=protect_after_first):
+            result = await self.json("POST", "/api/history/delete", {"image_ids": self.ids, "mode": "record"})
+        self.assertEqual([item["code"] for item in result["results"]], ["deleted", "storage_read_only", "storage_read_only"])
+        self.assertEqual((result["deleted_count"], result["failed_count"]), (1, 2))
+        self.assertEqual((await self.history.list_images())["total"], 2)
 
     async def test_single_delete_rejects_paths_and_invalid_modes(self):
         for query in ("mode=wipe", "path=C:/file.png", "mode=file&path=x"):

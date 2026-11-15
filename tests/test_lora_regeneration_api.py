@@ -42,7 +42,7 @@ class LoraRegenerationApiTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
         self.temp.cleanup()
 
-    async def record(self, *, runtime=True, stored_hash=""):
+    async def record(self, *, runtime=True, stored_hash="", bound_resources=None):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
         settings.update(
             count=1,
@@ -126,8 +126,53 @@ class LoraRegenerationApiTests(unittest.IsolatedAsyncioTestCase):
             settings=settings,
             resolved_selection=selected,
             resolved_prompt="1girl, alpha, series, standing, old trigger",
+            bound_resources=bound_resources,
             **kwargs,
         )
+
+    async def make_historical_lora_available(self, *, fingerprint=None):
+        filename = "missing/old-character.safetensors"
+        self.comfy.preview_items = [{"filename": filename, "sha256": ""}]
+
+        async def filenames():
+            return [filename]
+
+        self.comfy.lora_filenames = filenames
+        if fingerprint is not None:
+            async def inspect(**kwargs):
+                return {"supported": True, "version": 1, "items": [], "lora_files": [{
+                    "name": filename, "fingerprint": fingerprint, "status": "valid",
+                }]}
+
+            self.comfy.resource_inspection = inspect
+
+    async def test_redrawing_only_pose_keeps_the_historical_automatic_lora_and_words(self):
+        image = await self.record()
+        await self.make_historical_lora_available()
+        response = await self.client.post(f"/api/history/{image['id']}/regenerate",
+                                          json={"mode": "content_redraw", "count": 1, "sections": ["pose"]})
+        self.assertEqual(response.status, 201, await response.text())
+        result = await self.manager.wait()
+        self.assertEqual(result["status"], "completed", result)
+        png = self.comfy.submissions[-1]["extra_data"]["extra_pnginfo"]["anima_random_webui"]
+        self.assertEqual(png["settings"]["loras"], image["settings"]["loras"])
+        self.assertIn("old trigger", png["resolved_prompt_full"])
+        saved = (await self.history.list_images())["items"][0]
+        self.assertEqual(saved["lora_runtime"]["effective_loras"], image["settings"]["loras"])
+
+    async def test_redrawing_only_pose_rejects_a_replaced_character_file_at_the_same_path(self):
+        filename = "missing/old-character.safetensors"
+        image = await self.record(bound_resources={"resource_resolution": {"resources": [{
+            "field": "loras.0.filename", "kind": "loras", "name": filename, "fingerprint": "original-file",
+        }]}})
+        await self.make_historical_lora_available(fingerprint="replacement-file")
+        options = await (await self.client.get(f"/api/history/{image['id']}/regeneration-options")).json()
+        self.assertFalse(options["sections"]["character"]["canPreserve"])
+        self.assertTrue(options["modes"]["settings_reroll"]["available"])
+        response = await self.client.post(f"/api/history/{image['id']}/regenerate",
+                                          json={"mode": "content_redraw", "count": 1, "sections": ["pose"]})
+        self.assertEqual(response.status, 400, await response.text())
+        self.assertEqual(self.comfy.submissions, [])
 
     async def test_missing_automatic_resource_blocks_frozen_modes_but_allows_new_character(
         self,

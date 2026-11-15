@@ -151,7 +151,7 @@ class LoraPreviewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_generic_binary_raster_previews_get_their_real_content_type(self):
         self.preview_type = "application/octet-stream"
-        for format_name, mime in (("PNG", "image/png"), ("JPEG", "image/jpeg"), ("GIF", "image/gif"), ("WEBP", "image/webp")):
+        for format_name, mime in (("PNG", "image/png"), ("JPEG", "image/jpeg"), ("GIF", "image/gif"), ("WEBP", "image/webp"), ("AVIF", "image/avif")):
             with self.subTest(format=format_name):
                 buffer = io.BytesIO()
                 Image.new("RGB", (2, 2), "white").save(buffer, format=format_name)

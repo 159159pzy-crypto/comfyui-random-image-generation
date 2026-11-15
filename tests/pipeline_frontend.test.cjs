@@ -11,17 +11,17 @@ function load(ctx, name) {
   vm.runInContext(app.slice(start, app.indexOf('\n}', start) + 2), ctx);
 }
 function context() {
-  const ctx = vm.createContext({ clone: plain, ui: {}, applyNodeResourceControls() {}, ensureSelectValue: (node, value) => { node.value = value; } });
+  const ctx = vm.createContext({ pipelineContractState: { source: {}, version: 4 }, currentPipelineVersion: () => 4, currentProfile: () => "anima", clone: plain, ui: {}, applyNodeResourceControls() {}, ensureSelectValue: (node, value) => { node.value = value; } });
   for (const name of ['defaultUpscalers', 'normalizeUpscalers']) load(ctx, name);
   return ctx;
 }
 
-test('v3 post sampling and DLSS remain independent of latent and VSR flags', () => {
+test('v4 post sampling and DLSS remain independent of latent and VSR flags', () => {
   const ctx = context();
-  const value = ctx.normalizeUpscalers({ latent: { enabled: false }, nvidia: { enabled: false }, post_sampler: { enabled: true, steps: 7 }, dlss: { enabled: true } }, null, 'anima', 3);
+  const value = ctx.normalizeUpscalers({ latent: { enabled: false }, nvidia: { enabled: false }, post_sampler: { enabled: true, steps: 7 }, dlss: { enabled: true } }, null, 'anima', 4);
   assert.equal(value.post_sampler.enabled, true); assert.equal(value.post_sampler.steps, 7);
   assert.equal(value.dlss.enabled, true); assert.equal(value.nvidia.enabled, false);
-  const off = ctx.normalizeUpscalers({ latent: { enabled: true, second_sampler: { enabled: true } }, nvidia: { enabled: true }, post_sampler: { enabled: false }, dlss: { enabled: false } }, null, 'anima', 3);
+  const off = ctx.normalizeUpscalers({ latent: { enabled: true, second_sampler: { enabled: true } }, nvidia: { enabled: true }, post_sampler: { enabled: false }, dlss: { enabled: false } }, null, 'anima', 4);
   assert.equal(off.post_sampler.enabled, false); assert.equal(off.dlss.enabled, false);
 });
 

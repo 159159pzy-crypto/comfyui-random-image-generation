@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+from io import BytesIO
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
 import aiohttp
+from PIL import Image, UnidentifiedImageError
 
 from .resource_classification import classify_resources
 from .workflow import WorkflowError, normalize_lora_path
 
+
+HISTORY_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 8.0)
+HISTORY_RECOVERY_TIMEOUT = 60.0
+_LORA_PREVIEW_IMAGE_TYPES = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif", "AVIF": "image/avif"}
 
 class ComfyError(RuntimeError):
     def __init__(self, message: str, *, node_id: str = "", node_type: str = ""):
@@ -19,10 +25,41 @@ class ComfyError(RuntimeError):
         self.node_type = node_type
 
 
+class ComfyTransportError(ComfyError):
+    """A failed connection/read, distinct from a reported execution failure."""
+
+
+class ComfyHTTPError(ComfyError):
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
+class ComfyResultUnavailable(ComfyError):
+    def __init__(self, prompt_id: str):
+        super().__init__(f"ComfyUI 结果查询重试已耗尽，结果未确认；任务 {prompt_id} 可能仍在远端执行，请在 ComfyUI 中检查")
+        self.prompt_id = prompt_id
+
+
+class ComfyCleanupSkipped(ComfyError):
+    """Lightweight cleanup was not started; the message is safe for the UI."""
+
+
 class ComfyAborted(RuntimeError):
     """等待 ComfyUI 结果时收到停止请求。不是错误,由调用方决定如何收尾。"""
 
 
+
+
+def _lora_preview_image_type(body: bytes) -> str:
+    """Identify generic binary previews without changing their original bytes."""
+    try:
+        with Image.open(BytesIO(body), formats=list(_LORA_PREVIEW_IMAGE_TYPES)) as image:
+            content_type = _LORA_PREVIEW_IMAGE_TYPES[image.format]
+            image.verify()
+        return content_type
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError, Image.DecompressionBombError) as error:
+        raise ComfyError("LoRA 预览格式不支持") from error
 
 
 def validate_comfy_url(value: str) -> str:
@@ -43,6 +80,11 @@ class ComfyClient:
         self._object_info_generation = 0
         self._object_info_pending: dict[int, asyncio.Task[dict[str, Any]]] = {}
         self._classification_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._classification_generations = {kind: 0 for kind in ("models", "loras")}
+        self._classification_pending = {}
+        self._node_info_supported = True
+        self._inspection_cache = {}
+        self._inspection_lock = asyncio.Lock()
         self._classification_locks = {kind: asyncio.Lock() for kind in ("models", "loras")}
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -52,7 +94,7 @@ class ComfyClient:
         return self.session
 
     async def close(self) -> None:
-        pending = list(self._object_info_pending.values())
+        pending = list(self._object_info_pending.values()) + list(self._classification_pending.values())
         for task in pending:
             task.cancel()
         if pending:
@@ -73,12 +115,209 @@ class ComfyClient:
                     data = None
                 if response.status >= 400:
                     message = data.get("error") if isinstance(data, dict) else raw[:200]
-                    raise ComfyError(f"ComfyUI 返回 {response.status}: {message}")
+                    raise ComfyHTTPError(f"ComfyUI 返回 {response.status}: {message}", response.status)
                 if not isinstance(data, dict):
                     raise ComfyError("ComfyUI 返回了无效数据")
                 return data
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
-            raise ComfyError(f"无法连接 ComfyUI: {error}") from error
+            raise ComfyTransportError(f"无法连接 ComfyUI: {error}") from error
+
+    async def _resource_object_info(self, node_name: str) -> dict[str, Any]:
+        """Read only the loader needed by classification, without downloading all nodes."""
+        if type(self).object_info is not ComfyClient.object_info:
+            return await self.object_info()
+        if self._node_info_supported:
+            try:
+                return await self._json("GET", f"/object_info/{node_name}")
+            except ComfyHTTPError as error:
+                if error.status not in {404, 405}:
+                    raise
+                self._node_info_supported = False
+        return await self.object_info()
+
+
+    async def _load_resource_classifications(self, kind: str, *, refresh: bool) -> dict[str, Any]:
+        async with self._classification_locks[kind]:
+            loop = asyncio.get_running_loop()
+            if refresh:
+                self._object_info_generation += 1
+                self._object_info_cache = (0.0, None)
+                self._classification_cache.pop(kind, None)
+            cached = self._classification_cache.get(kind)
+            if cached is not None and loop.time() - cached[0] < 5.0:
+                return cached[1]
+
+            node_name, input_name = ("UNETLoader", "unet_name") if kind == "models" else ("LoraLoader", "lora_name")
+            object_info = await self._resource_object_info(node_name)
+            node = object_info.get(node_name)
+            inputs = node.get("input") if isinstance(node, dict) else None
+            required = inputs.get("required") if isinstance(inputs, dict) else None
+            choices = required.get(input_name) if isinstance(required, dict) else None
+            names = None
+            if isinstance(choices, list) and choices and isinstance(choices[0], list):
+                names = choices[0]
+            elif isinstance(choices, list) and len(choices) > 1 and isinstance(choices[1], dict):
+                names = choices[1].get("options")
+            if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                raise ComfyError(f"ComfyUI 未返回有效的 {node_name} 资源列表")
+
+            prefix = "checkpoints" if kind == "models" else "loras"
+            roots_path = "/api/lm/checkpoints/unet_roots" if kind == "models" else "/api/lm/loras/roots"
+            try:
+                roots_data = await self._json("GET", roots_path)
+                roots = roots_data.get("roots")
+                if roots_data.get("success") is not True or not isinstance(roots, list):
+                    raise ComfyError("LoRA Manager 返回了无效的模型根目录")
+                manager_items = await self._manager_inventory(prefix)
+                items = classify_resources(names, manager_items, roots)
+            except (ComfyError, ValueError, WorkflowError) as error:
+                raise ComfyError(f"LoRA Manager 分类读取失败: {error}；请确认插件已启用并完成扫描") from error
+            result = {
+                "items": items,
+                "count": len(items),
+                "source": "lora-manager",
+                "manager_url": f"{self.base_url}/{prefix}",
+                "roots": roots,
+                "manager_items": manager_items,
+            }
+            self._classification_cache[kind] = (loop.time(), result)
+            self._classification_generations[kind] += 1
+            return result
+
+
+    def classification_generation(self, kind: str) -> int:
+        """Version of the last successful classification refresh for a kind."""
+        return self._classification_generations[kind]
+
+
+    async def resource_inspection(self, *, refresh: bool = False,
+                                  modules: list[str] | None = None) -> dict[str, Any]:
+        """Read header-derived compatibility; request native probes explicitly.
+
+        Absence of the optional extension must not make the inventory endpoint
+        unavailable. Unknown remains unknown, never a fabricated success.
+        """
+        selected = tuple(sorted(set(modules or [])))
+        if set(selected) - {"nvidia", "dlss"}:
+            raise ComfyError("未知模块能力检查")
+        async with self._inspection_lock:
+            now = asyncio.get_running_loop().time()
+            cached = self._inspection_cache.get(selected)
+            if not refresh and cached and now - cached[0] < 5:
+                return cached[1]
+            query = "?" + urlencode({"probe": ",".join(selected)}) if selected else ""
+            try:
+                result = await self._json("GET", "/anima/resources/inspect" + query)
+                if result.get("version") != 1 or not isinstance(result.get("items"), list) or not isinstance(result.get("capabilities"), dict):
+                    raise ComfyError("模型检查扩展返回了无效数据")
+            except ComfyError as error:
+                result = {"version": 1, "supported": False, "items": [], "capabilities": {}, "error": str(error)}
+            self._inspection_cache[selected] = (now, result)
+            return result
+
+
+    async def queue_idle(self) -> bool:
+        """Confirm that both queues are valid and empty before lightweight cleanup."""
+        data = await self._json("GET", "/queue")
+        self._queue_contains(data, "")  # Validate every queue and entry.
+        return not data["queue_running"] and not data["queue_pending"]
+
+
+    async def cleanup_memory(self) -> None:
+        """Confirm cache cleanup and GC without unloading models or resetting caches.
+
+        Never fall back to /free: even free_memory=true alone can unload models
+        and reset the executor. A timeout leaves the cleanup outcome unknown.
+        """
+        try:
+            result = await self._json("POST", "/anima/memory/cleanup", json={})
+        except ComfyHTTPError as error:
+            if error.status == 409:
+                raise ComfyCleanupSkipped("ComfyUI 队列忙碌，已跳过清缓存与垃圾回收") from error
+            if error.status in {404, 405, 501}:
+                raise ComfyCleanupSkipped(
+                    "清理扩展尚未就绪，已跳过清缓存与垃圾回收；请安装或更新随源码提供的 ComfyUI 扩展，并在任务结束后重启 ComfyUI"
+                ) from error
+            raise
+        if result.get("status") != "completed":
+            raise ComfyError("ComfyUI 未确认清缓存与垃圾回收完成")
+
+
+    @staticmethod
+    def _queue_contains(data: dict[str, Any], prompt_id: str) -> bool:
+        if not isinstance(data, dict):
+            raise ComfyError("ComfyUI 返回了无效的队列数据")
+        found = False
+        for key in ("queue_running", "queue_pending"):
+            entries = data.get(key)
+            if not isinstance(entries, (list, tuple)):
+                raise ComfyError(f"ComfyUI 返回了无效的队列字段: {key}")
+            for entry in entries:
+                if (not isinstance(entry, (list, tuple)) or len(entry) < 2
+                        or type(entry[1]) not in (str, int) or str(entry[1]) == ""):
+                    raise ComfyError(f"ComfyUI 返回了无效的队列条目: {key}")
+                found = found or str(entry[1]) == prompt_id
+        return found
+
+
+    @staticmethod
+    def _history_entry(data: dict[str, Any], prompt_id: str) -> dict[str, Any] | None:
+        if not isinstance(data, dict):
+            raise ComfyError("ComfyUI 返回了无效的历史数据")
+        if prompt_id not in data:
+            return None
+        entry = data[prompt_id]
+        if not isinstance(entry, dict):
+            raise ComfyError("ComfyUI 返回了无效的历史条目")
+        # Older histories may omit status/outputs. Explicit incompatible
+        # types must not become an empty queue, successful result or retry.
+        status = entry.get("status", {})
+        if not isinstance(status, dict):
+            raise ComfyError("ComfyUI 返回了无效的历史状态")
+        if (("completed" in status and type(status["completed"]) is not bool)
+                or ("status_str" in status and not isinstance(status["status_str"], str))
+                or not isinstance(status.get("messages", []), (list, tuple))):
+            raise ComfyError("ComfyUI 返回了无效的历史状态字段")
+        outputs = entry.get("outputs", {})
+        if not isinstance(outputs, dict) or any(not isinstance(output, dict) for output in outputs.values()):
+            raise ComfyError("ComfyUI 返回了无效的历史输出")
+        return entry
+
+
+    @staticmethod
+    async def _history_delay(delay: float, should_abort: Callable[[], bool] | None) -> None:
+        loop = asyncio.get_running_loop()
+        end = loop.time() + delay
+        while True:
+            if should_abort is not None and should_abort():
+                raise ComfyAborted("收到停止请求")
+            remaining = end - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.1, remaining))
+
+
+    async def _history_read(self, path: str, should_abort: Callable[[], bool] | None,
+                            recovery_deadline: float | None) -> dict[str, Any]:
+        """Only accepted-job GETs get a cancellable, bounded read wrapper."""
+        loop = asyncio.get_running_loop()
+        deadline = min(loop.time() + 20.0, recovery_deadline) if recovery_deadline is not None else loop.time() + 20.0
+        task = asyncio.create_task(self._json("GET", path))
+        try:
+            while True:
+                if should_abort is not None and should_abort():
+                    raise ComfyAborted("收到停止请求")
+                if task.done():
+                    return task.result()
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise ComfyTransportError("ComfyUI 结果查询超时")
+                await asyncio.wait({task}, timeout=min(0.1, remaining))
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
 
     async def status(self) -> dict[str, Any]:
         return await self._json("GET", "/system_stats")
@@ -160,51 +399,21 @@ class ComfyClient:
     async def resource_classifications(self, kind: str, *, refresh: bool = False) -> dict[str, Any]:
         if kind not in {"models", "loras"}:
             raise ValueError("资源类型必须是 models 或 loras")
-        async with self._classification_locks[kind]:
-            loop = asyncio.get_running_loop()
-            if refresh:
-                self._object_info_generation += 1
-                self._object_info_cache = (0.0, None)
-                self._classification_cache.pop(kind, None)
-            cached = self._classification_cache.get(kind)
-            if cached is not None and loop.time() - cached[0] < 5.0:
-                return cached[1]
+        # Concurrent refreshes share one new read. A refresh queued behind an
+        # older ordinary read still gets its own turn under the source lock.
+        key = (kind, refresh)
+        task = self._classification_pending.get((kind, True)) or self._classification_pending.get(key)
+        if task is None:
+            async def fetch() -> dict[str, Any]:
+                try:
+                    return await self._load_resource_classifications(kind, refresh=refresh)
+                finally:
+                    self._classification_pending.pop(key, None)
 
-            object_info = await self.object_info()
-            node_name, input_name = ("UNETLoader", "unet_name") if kind == "models" else ("LoraLoader", "lora_name")
-            node = object_info.get(node_name)
-            inputs = node.get("input") if isinstance(node, dict) else None
-            required = inputs.get("required") if isinstance(inputs, dict) else None
-            choices = required.get(input_name) if isinstance(required, dict) else None
-            names = None
-            if isinstance(choices, list) and choices and isinstance(choices[0], list):
-                names = choices[0]
-            elif isinstance(choices, list) and len(choices) > 1 and isinstance(choices[1], dict):
-                names = choices[1].get("options")
-            if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
-                raise ComfyError(f"ComfyUI 未返回有效的 {node_name} 资源列表")
-
-            prefix = "checkpoints" if kind == "models" else "loras"
-            roots_path = "/api/lm/checkpoints/unet_roots" if kind == "models" else "/api/lm/loras/roots"
-            try:
-                roots_data = await self._json("GET", roots_path)
-                roots = roots_data.get("roots")
-                if roots_data.get("success") is not True or not isinstance(roots, list):
-                    raise ComfyError("LoRA Manager 返回了无效的模型根目录")
-                manager_items = await self._manager_inventory(prefix)
-                items = classify_resources(names, manager_items, roots)
-            except (ComfyError, ValueError, WorkflowError) as error:
-                raise ComfyError(f"LoRA Manager 分类读取失败: {error}；请确认插件已启用并完成扫描") from error
-            result = {
-                "items": items,
-                "count": len(items),
-                "source": "lora-manager",
-                "manager_url": f"{self.base_url}/{prefix}",
-                "roots": roots,
-                "manager_items": manager_items,
-            }
-            self._classification_cache[kind] = (loop.time(), result)
-            return result
+            task = asyncio.create_task(fetch())
+            self._classification_pending[key] = task
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return await asyncio.shield(task)
 
     async def lora_inventory(self, *, refresh: bool = False) -> dict[str, Any]:
         return await self.resource_classifications("loras", refresh=refresh)
@@ -239,40 +448,23 @@ class ComfyClient:
                     raise ComfyError(f"ComfyUI 返回 {response.status}: 无法读取 LoRA 预览")
                 content_type = response.headers.get("Content-Type", "application/octet-stream")
                 media_type = content_type.split(";", 1)[0].strip().lower()
-                if media_type not in {"image/png", "image/jpeg", "image/webp", "image/gif", "image/avif", "video/mp4", "video/webm", "application/octet-stream"}:
+                generic_type = media_type in {"", "application/octet-stream"}
+                if not generic_type and media_type not in {"image/png", "image/jpeg", "image/webp", "image/gif", "image/avif", "video/mp4", "video/webm"}:
                     raise ComfyError("LoRA 预览格式不支持")
                 limit = 32 * 1024 * 1024
                 if response.content_length is not None and response.content_length > limit:
                     raise ComfyError("LoRA 预览超过 32 MiB 限制")
                 chunks, size = [], 0
-                if media_type == "application/octet-stream":
-                    # Some Windows plugin installations serve WebP as generic binary.
-                    # Inspect only a bounded prefix; never infer an active type from a filename.
-                    try:
-                        prefix = await response.content.readexactly(16)
-                    except asyncio.IncompleteReadError as error:
-                        prefix = error.partial
-                    if len(prefix) < 16:
-                        raise ComfyError("LoRA 预览格式不支持")
-                    if prefix.startswith(b"\x89PNG\r\n\x1a\n"):
-                        content_type = "image/png"
-                    elif prefix.startswith(b"\xff\xd8\xff"):
-                        content_type = "image/jpeg"
-                    elif prefix.startswith((b"GIF87a", b"GIF89a")):
-                        content_type = "image/gif"
-                    elif len(prefix) == 16 and prefix[:4] == b"RIFF" and prefix[8:12] == b"WEBP" and prefix[12:16] in {b"VP8 ", b"VP8L", b"VP8X"}:
-                        content_type = "image/webp"
-                    else:
-                        raise ComfyError("LoRA 预览格式不支持")
-                    chunks.append(prefix)
-                    size = len(prefix)
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     size += len(chunk)
                     if size > limit:
                         raise ComfyError("LoRA 预览超过 32 MiB 限制")
                     chunks.append(chunk)
+                body = b"".join(chunks)
+                if generic_type:
+                    content_type = await asyncio.to_thread(_lora_preview_image_type, body)
                 cache_control = response.headers.get("Cache-Control", "private, max-age=300")
-                return b"".join(chunks), content_type, cache_control
+                return body, content_type, cache_control
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise ComfyError(f"无法连接 ComfyUI: {error}") from error
 
@@ -305,8 +497,6 @@ class ComfyClient:
         upscale_models = choices("UpscaleModelLoader", "model_name") or choices("easy hiresFix", "model_name")
         samplers = choices("KSampler", "sampler_name")
         schedulers = choices("KSampler", "scheduler")
-        if not models or not samplers or not schedulers:
-            raise ComfyError("ComfyUI 未返回模型或采样器列表")
         node_names = set(object_info)
         seedvr_nodes = sorted(
             name for name in node_names if "seedvr" in name.casefold()
@@ -497,11 +687,7 @@ class ComfyClient:
     async def prompt_queued(self, prompt_id: str) -> bool:
         """检查任务是否仍在 ComfyUI 的运行/等待队列中。"""
         data = await self._json("GET", "/queue")
-        for key in ("queue_running", "queue_pending"):
-            for entry in data.get(key) or []:
-                if isinstance(entry, (list, tuple)) and len(entry) > 1 and str(entry[1]) == prompt_id:
-                    return True
-        return False
+        return self._queue_contains(data, prompt_id)
 
     async def wait_for_history(
         self,
@@ -513,11 +699,41 @@ class ComfyClient:
         missing_since: float | None = None
         next_queue_check = 0.0
         queued = True
+        recovery_deadline: float | None = None
+        retries = 0
         while True:
             if should_abort is not None and should_abort():
                 raise ComfyAborted("收到停止请求")
-            data = await self._json("GET", f"/history/{prompt_id}")
-            entry = data.get(prompt_id)
+            try:
+                if recovery_deadline is not None and loop.time() >= recovery_deadline:
+                    raise ComfyResultUnavailable(prompt_id)
+                data = await self._history_read(f"/history/{prompt_id}", should_abort, recovery_deadline)
+                entry = self._history_entry(data, prompt_id)
+                now = loop.time()
+                if not entry and now >= next_queue_check:
+                    queue = await self._history_read("/queue", should_abort, recovery_deadline)
+                    queued = self._queue_contains(queue, prompt_id)
+                    next_queue_check = now + max(self.poll_interval, 5.0)
+            except ComfyError as error:
+                retryable = isinstance(error, ComfyTransportError) or (
+                    isinstance(error, ComfyHTTPError) and error.status in {502, 503, 504}
+                )
+                if not retryable:
+                    raise
+                if recovery_deadline is None:
+                    recovery_deadline = loop.time() + HISTORY_RECOVERY_TIMEOUT
+                remaining = recovery_deadline - loop.time()
+                if retries >= len(HISTORY_RETRY_DELAYS) or remaining <= 0:
+                    raise ComfyResultUnavailable(prompt_id) from error
+                # A failed lookup is not evidence that the prompt vanished.
+                missing_since, next_queue_check = None, 0.0
+                delay = min(HISTORY_RETRY_DELAYS[retries], remaining)
+                retries += 1
+                await self._history_delay(delay, should_abort)
+                continue
+            # Only a complete successful poll (including a required queue
+            # lookup) ends an outage. Empty history alone cannot reset retries.
+            recovery_deadline, retries = None, 0
             if entry:
                 status = entry.get("status") or {}
                 if status.get("status_str") == "error" or status.get("completed") is False:
@@ -544,18 +760,18 @@ class ComfyClient:
             # 任务既不在 history 也不在队列时(历史被清空、ComfyUI 重启丢任务),
             # 持续 missing_timeout 秒即放弃,避免批次永久卡死。
             now = loop.time()
-            if now >= next_queue_check:
-                queued = await self.prompt_queued(prompt_id)
-                next_queue_check = now + max(self.poll_interval, 5.0)
             if queued:
                 missing_since = None
             elif missing_since is None:
                 missing_since = now
             elif now - missing_since >= missing_timeout:
                 raise ComfyError("ComfyUI 的队列与历史中都找不到该任务,已放弃等待(历史可能被清空或 ComfyUI 已重启)")
-            await asyncio.sleep(self.poll_interval)
+            await self._history_delay(self.poll_interval, should_abort)
 
-    async def image_bytes(self, image: dict[str, Any]) -> tuple[bytes, str]:
+    async def image_bytes(self, image: dict[str, Any], *, max_bytes: int | None = None) -> tuple[bytes, str]:
+        """Read an original, optionally bounding the thumbnail source while downloading."""
+        if max_bytes is not None and max_bytes < 1:
+            raise ValueError("max_bytes must be positive")
         query = urlencode(
             {
                 "filename": image["filename"],
@@ -568,7 +784,18 @@ class ComfyClient:
             async with session.get(f"{self.base_url}/view?{query}") as response:
                 if response.status >= 400:
                     raise ComfyError(f"读取图片失败: HTTP {response.status}")
-                return await response.read(), response.headers.get("Content-Type", "image/png")
+                if max_bytes is None:
+                    body = await response.read()
+                else:
+                    if response.content_length is not None and response.content_length > max_bytes:
+                        raise ComfyError("历史图片超过缩略图处理大小限制")
+                    collected = bytearray()
+                    async for chunk in response.content.iter_chunked(64 * 1024):
+                        if len(collected) + len(chunk) > max_bytes:
+                            raise ComfyError("历史图片超过缩略图处理大小限制")
+                        collected.extend(chunk)
+                    body = bytes(collected)
+                return body, response.headers.get("Content-Type", "image/png")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise ComfyError(f"读取图片失败: {error}") from error
 

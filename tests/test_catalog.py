@@ -10,7 +10,7 @@ APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
 from anima_webui.catalog import CatalogError, PromptCatalog, compose_people_tags, resolve_history_selection  # noqa: E402
-from anima_webui.custom_prompts import MAX_GROUPS_PER_SECTION, CustomPromptStore  # noqa: E402
+from anima_webui.custom_prompts import CUSTOM_DATA_VERSION, MAX_GROUPS_PER_SECTION, CustomPromptStore  # noqa: E402
 from anima_webui.workflow import DEFAULT_SETTINGS, validate_settings  # noqa: E402
 
 
@@ -328,7 +328,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(store.load_warnings), 1)
         self.assertTrue(store.read_only_reason)
         self.assertFalse(store.load_trusted)
-        self.assertEqual(path.with_name("custom.json.v4.bak").read_bytes(), path.read_bytes())
+        self.assertEqual(path.with_name(f"custom.json.v{CUSTOM_DATA_VERSION}.bak").read_bytes(), path.read_bytes())
         # 目录回到一致状态:自定义项清空,内置项完好可检索
         self.assertEqual(self.catalog.count("pose"), 4)
         self.assertTrue(all(item["builtin"] for item in self.catalog.all_items("pose")))
@@ -359,7 +359,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         }), encoding="utf-8")
         store = CustomPromptStore(path, self.catalog)
         migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["version"], 4)
+        self.assertEqual(migrated["version"], CUSTOM_DATA_VERSION)
         self.assertTrue(path.with_name("custom.json.pre-v4.bak").is_file())
         history = next(group for group in store.list_groups("pose")["groups"] if group["kind"] == "legacy")
         history_children = [

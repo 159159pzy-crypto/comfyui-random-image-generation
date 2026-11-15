@@ -8,15 +8,17 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from PIL import Image, ImageCms
 
+from anima_webui import thumbnails as thumbnail_module
 from anima_webui.comfy import ComfyError
 from anima_webui.server import ARTWORK_DELETION_KEY, HISTORY_KEY, THUMBNAILS_KEY, create_app
-from anima_webui.thumbnails import CACHE_TTL_SECONDS, ThumbnailStore, make_thumbnail
+from anima_webui.thumbnails import CACHE_MAX_BYTES, TEMP_TTL_SECONDS, ThumbnailStore, make_thumbnail
 from anima_webui.workflow import DEFAULT_SETTINGS
 from test_server import APP_DIR, FakeComfy, _write_fake_tools
 
@@ -41,7 +43,7 @@ class ImageClient:
         self.body = body or source_image()
         self.calls = 0
 
-    async def image_bytes(self, _record):
+    async def image_bytes(self, _record, *, max_bytes=None):
         self.calls += 1
         return self.body, "image/png"
 
@@ -99,6 +101,7 @@ class ThumbnailStoreTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_simultaneous_requests_share_one_fetch_and_cache_survives_restart(self):
+        self.assertEqual(CACHE_MAX_BYTES, 1024 ** 3)
         results = await asyncio.gather(*(self.store.get(record()) for _ in range(8)))
         self.assertEqual(self.client.calls, 1)
         self.assertTrue(all(result.body == results[0].body for result in results))
@@ -123,17 +126,17 @@ class ThumbnailStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.calls, 2)
         self.assertEqual(len(list(self.directory.glob("*.webp"))), 3)
 
-    async def test_corruption_and_expiry_rebuild_from_source(self):
+    async def test_corruption_rebuilds_but_old_valid_cache_does_not_expire(self):
         initial = await self.store.get(record())
         path = self.directory / self.store._key(record())
         path.write_bytes(b"broken cached file")
         rebuilt = await self.store.get(record())
         self.assertEqual(rebuilt.body, initial.body)
         self.assertEqual(self.client.calls, 2)
-        stale = time.time() - CACHE_TTL_SECONDS - 1
+        stale = time.time() - 90 * 24 * 60 * 60
         os.utime(path, (stale, stale))
         await self.store.get(record())
-        self.assertEqual(self.client.calls, 3)
+        self.assertEqual(self.client.calls, 2)
 
     async def test_read_only_cache_returns_this_thumbnail_without_leftover_temporary_file(self):
         with mock.patch("anima_webui.thumbnails.os.replace", side_effect=PermissionError("read-only")):
@@ -159,9 +162,250 @@ class ThumbnailStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.body)
         self.assertEqual(list(self.directory.glob("*.webp")), [])
 
-    async def test_fetch_decode_limit_remains_two_when_a_caller_disconnects(self):
+    async def test_recently_read_entry_survives_capacity_eviction_after_restart(self):
+        first = await self.store.get(record(1))
+        await self.store.get(record(2))
+        first_path = self.directory / self.store._key(record(1))
+        modified = first_path.stat().st_mtime_ns
+        await self.store.get(record(1))
+        self.assertEqual(first_path.stat().st_mtime_ns, modified)
+        await self.store.close()
+        restarted = ThumbnailStore(self.directory, self.client, max_bytes=len(first.body) * 2 + 1)
+        self.extra_stores.append(restarted)
+        await restarted.start()
+        await restarted.get(record(3))
+        self.assertTrue(first_path.exists())
+        self.assertFalse((self.directory / restarted._key(record(2))).exists())
+        self.assertTrue((self.directory / restarted._key(record(3))).exists())
+
+    async def test_cached_request_bypasses_four_blocked_cold_generations(self):
+        warm = await self.store.get(record(99))
+        release, all_started = threading.Event(), threading.Event()
+        lock = threading.Lock()
+        started = 0
+
+        def blocked_convert(body):
+            nonlocal started
+            with lock:
+                started += 1
+                if started == 4:
+                    all_started.set()
+            if not release.wait(5):
+                raise TimeoutError("Test conversion was not released")
+            return make_thumbnail(body)
+
+        with mock.patch("anima_webui.thumbnails.make_thumbnail", side_effect=blocked_convert):
+            cold = [asyncio.create_task(self.store.get(record(index))) for index in range(1, 5)]
+            try:
+                self.assertTrue(await asyncio.to_thread(all_started.wait, 3))
+                result = await asyncio.wait_for(self.store.get(record(99)), 1)
+                self.assertEqual(result.body, warm.body)
+                self.assertFalse(any(task.done() for task in cold))
+            finally:
+                release.set()
+                await asyncio.gather(*cold, return_exceptions=True)
+
+    async def test_cached_reads_remain_bounded_to_eight(self):
+        # Keep the test independent of the machine's default executor size.
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=12))
+        for index in range(1, 11):
+            await self.store.get(record(index))
+        release, eight_started = threading.Event(), threading.Event()
+        counter_lock = threading.Lock()
+        original_read = self.store._read
+        active = peak = started = 0
+
+        def blocked_read(key):
+            nonlocal active, peak, started
+            with counter_lock:
+                active += 1
+                started += 1
+                peak = max(peak, active)
+                if started == 8:
+                    eight_started.set()
+            try:
+                if not release.wait(5):
+                    raise TimeoutError("Test cache read was not released")
+                return original_read(key)
+            finally:
+                with counter_lock:
+                    active -= 1
+
+        with mock.patch.object(self.store, "_read", side_effect=blocked_read):
+            requests = [asyncio.create_task(self.store.get(record(index))) for index in range(1, 11)]
+            try:
+                self.assertTrue(await asyncio.to_thread(eight_started.wait, 3))
+                self.assertEqual(started, 8)
+                self.assertFalse(any(task.done() for task in requests))
+                release.set()
+                results = await asyncio.gather(*requests)
+                self.assertTrue(all(result.body for result in results))
+                self.assertEqual(started, 10)
+                self.assertEqual(peak, 8)
+                self.assertEqual(self.client.calls, 10, "warm reads must not download originals again")
+            finally:
+                release.set()
+                await asyncio.gather(*requests, return_exceptions=True)
+
+    async def test_slow_first_validation_does_not_hold_global_disk_lock(self):
+        await self.store.get(record(1))
+        warm = await self.store.get(record(2))
+        await self.store.close()
+        restarted = ThumbnailStore(self.directory, self.client)
+        self.extra_stores.append(restarted)
+        await restarted.get(record(2))
+        release, started = threading.Event(), threading.Event()
+        validate = thumbnail_module._validate_thumbnail
+
+        def blocked_validate(body):
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("Test validation was not released")
+            return validate(body)
+
+        with mock.patch("anima_webui.thumbnails._validate_thumbnail", side_effect=blocked_validate):
+            validating = asyncio.create_task(restarted.get(record(1)))
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 3))
+                result = await asyncio.wait_for(restarted.get(record(2)), 1)
+                self.assertEqual(result.body, warm.body)
+                self.assertFalse(validating.done())
+            finally:
+                release.set()
+                await asyncio.gather(validating, return_exceptions=True)
+
+    async def test_repeat_hits_and_writes_do_not_rescan_or_redecode_unchanged_files(self):
+        await self.store.get(record(1))
+        await self.store.close()
+        restarted = ThumbnailStore(self.directory, self.client)
+        self.extra_stores.append(restarted)
+        await restarted.start()
+        with mock.patch.object(restarted, "_scan_directory", side_effect=AssertionError("Unexpected rescan")), \
+                mock.patch("anima_webui.thumbnails._validate_thumbnail", wraps=thumbnail_module._validate_thumbnail) as validate:
+            first = await restarted.get(record(1))
+            await restarted.get(record(1))
+            await restarted.get(record(2))
+            await restarted.get(record(1))
+            self.assertEqual(validate.call_count, 1)
+            path = self.directory / restarted._key(record(1))
+            info = path.stat()
+            os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+            changed = await restarted.get(record(1))
+            self.assertEqual(changed.etag, first.etag)
+            self.assertEqual(validate.call_count, 2)
+
+    async def test_startup_counts_recent_temporary_files_and_removes_only_stale_owned_files(self):
+        self.directory.mkdir()
+        encoded = make_thumbnail(self.client.body)
+        old = self.directory / self.store._key(record(1))
+        old.write_bytes(encoded)
+        recent = self.directory / ".thumbnail-recent.tmp"
+        recent.write_bytes(encoded)
+        stale = self.directory / ".thumbnail-stale.tmp"
+        stale.write_bytes(b"unfinished")
+        expired = time.time() - TEMP_TTL_SECONDS - 1
+        os.utime(stale, (expired, expired))
+        unrelated = self.directory / "keep.txt"
+        unrelated.write_bytes(b"not a thumbnail" * 1000)
+        self.store.max_bytes = len(encoded) * 2
+        await self.store.start()
+        self.assertFalse(stale.exists())
+        self.assertTrue(recent.exists())
+        self.assertEqual(self.store._total_bytes, len(encoded) * 2)
+        await self.store.get(record(2))
+        self.assertFalse(old.exists())
+        self.assertTrue(unrelated.exists())
+        self.assertLessEqual(self.store._total_bytes, self.store.max_bytes)
+
+    async def test_concurrent_temporary_reservations_keep_cache_under_budget(self):
+        encoded = make_thumbnail(self.client.body)
+        self.store.max_bytes = len(encoded)
+        release, writing = threading.Event(), threading.Event()
+        fsync = os.fsync
+
+        def blocked_fsync(descriptor):
+            writing.set()
+            if not release.wait(5):
+                raise TimeoutError("Test write was not released")
+            return fsync(descriptor)
+
+        with mock.patch("anima_webui.thumbnails.os.fsync", side_effect=blocked_fsync):
+            first = asyncio.create_task(self.store.get(record(1)))
+            try:
+                self.assertTrue(await asyncio.to_thread(writing.wait, 3))
+                second = await asyncio.wait_for(self.store.get(record(2)), 1)
+                self.assertTrue(second.body)
+                self.assertFalse(first.done())
+                self.assertLessEqual(sum(path.stat().st_size for path in self.directory.iterdir()), self.store.max_bytes)
+                self.assertEqual(self.store._reserved_bytes, len(encoded))
+            finally:
+                release.set()
+                await asyncio.gather(first, return_exceptions=True)
+        self.assertEqual(self.store._reserved_bytes, 0)
+        self.assertEqual(self.store._total_bytes, len(encoded))
+        self.assertEqual(len(list(self.directory.glob("*.webp"))), 1)
+
+    async def test_failed_write_releases_reservation_and_retry_can_persist(self):
+        with mock.patch("anima_webui.thumbnails.os.fsync", side_effect=OSError("disk full")):
+            result = await self.store.get(record())
+        self.assertTrue(result.body)
+        self.assertEqual(self.store._reserved_bytes, 0)
+        self.assertEqual(self.store._total_bytes, 0)
+        self.assertEqual(list(self.directory.iterdir()), [])
+        await self.store.get(record())
+        self.assertTrue((self.directory / self.store._key(record())).exists())
+
+    async def test_maintenance_does_not_restore_deleted_entries_or_lose_new_writes(self):
+        first = await self.store.get(record(1))
+        release, scanned = threading.Event(), threading.Event()
+        scan = self.store._scan_directory
+
+        def delayed_scan():
+            snapshot = scan()
+            scanned.set()
+            if not release.wait(5):
+                raise TimeoutError("Test scan was not released")
+            return snapshot
+
+        with mock.patch.object(self.store, "_scan_directory", side_effect=delayed_scan):
+            maintenance = asyncio.create_task(asyncio.to_thread(self.store._maintain))
+            try:
+                self.assertTrue(await asyncio.to_thread(scanned.wait, 3))
+                await self.store.discard(1)
+                await asyncio.wait_for(self.store.get(record(2)), 1)
+            finally:
+                release.set()
+                await maintenance
+        self.assertNotIn(self.store._key(record(1)), self.store._entries)
+        self.assertIn(self.store._key(record(2)), self.store._entries)
+        self.assertEqual(self.store._total_bytes, len(first.body))
+
+    async def test_maintenance_retries_a_temporarily_locked_deleted_thumbnail(self):
+        await self.store.get(record(1))
+        await self.store.get(record(2))
+        key = self.store._key(record(1))
+        path = self.directory / key
+        unlink = Path.unlink
+
+        def locked_unlink(target, *args, **kwargs):
+            if target == path:
+                raise PermissionError("temporary antivirus lock")
+            return unlink(target, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", locked_unlink):
+            await self.store.discard(1)
+            await asyncio.to_thread(self.store._maintain)
+            self.assertTrue(path.exists())
+            self.assertIn(key, self.store._failed_discards)
+        await asyncio.to_thread(self.store._maintain)
+        self.assertFalse(path.exists())
+        self.assertNotIn(key, self.store._entries)
+        self.assertFalse(self.store._failed_discards)
+        self.assertTrue((self.directory / self.store._key(record(2))).exists())
+
+    async def test_fetch_decode_limit_remains_four_when_a_caller_disconnects(self):
         release = threading.Event()
-        two_started = threading.Event()
+        four_started = threading.Event()
         counter_lock = threading.Lock()
         started = 0
 
@@ -169,8 +413,8 @@ class ThumbnailStoreTests(unittest.IsolatedAsyncioTestCase):
             nonlocal started
             with counter_lock:
                 started += 1
-                if started == 2:
-                    two_started.set()
+                if started == 4:
+                    four_started.set()
             if not release.wait(5):
                 raise TimeoutError("Test conversion was not released")
             return make_thumbnail(body)
@@ -178,12 +422,13 @@ class ThumbnailStoreTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("anima_webui.thumbnails.make_thumbnail", side_effect=blocked_convert):
             requests = [asyncio.create_task(self.store.get(record(index))) for index in range(1, 6)]
             try:
-                self.assertTrue(await asyncio.to_thread(two_started.wait, 3))
-                self.assertEqual(self.client.calls, 2, "downloads must wait for a decoding slot too")
+                self.assertTrue(await asyncio.to_thread(four_started.wait, 3))
+                self.assertEqual(self.client.calls, 4, "downloads must wait for a decoding slot too")
                 requests[0].cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await requests[0]
-                self.assertEqual(self.client.calls, 2)
+                await asyncio.sleep(0)
+                self.assertEqual(self.client.calls, 4, "a disconnected caller must not free a running slot")
                 release.set()
                 await asyncio.gather(*requests[1:])
                 self.assertEqual(self.client.calls, 5)

@@ -1,7 +1,8 @@
-"""Delete one history record and its explicitly requested local original."""
+"""Delete selected history records and their explicitly requested local originals."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -13,6 +14,9 @@ from . import image_location
 from .image_location import ImageLocationError
 from .persistence import StorageReadOnlyError
 from .workflow import WorkflowError
+
+
+logger = logging.getLogger(__name__)
 
 
 def deletion_image_path(directory: Path, record: dict[str, Any]) -> Path:
@@ -59,7 +63,18 @@ class ArtworkDeletionService:
         if not isinstance(mode, str) or mode not in {"record", "file"}:
             raise WorkflowError("删除模式必须为 record 或 file")
         self.history.ensure_writable()
-        task = asyncio.create_task(self._run(image_id, mode, stats or {}, comfy_url))
+        return await self._finish(asyncio.create_task(self._run(image_id, mode, stats or {}, comfy_url)))
+
+    async def delete_many(self, image_ids: list[int], mode: str, *,
+                          stats: dict[str, Any] | None = None, comfy_url: str = "") -> dict[str, Any]:
+        ids = self.history.artwork_image_ids(image_ids)
+        if not isinstance(mode, str) or mode not in {"record", "file"}:
+            raise WorkflowError("删除模式必须为 record 或 file")
+        self.history.ensure_writable()
+        return await self._finish(asyncio.create_task(self._run_many(ids, mode, stats or {}, comfy_url)))
+
+    @staticmethod
+    async def _finish(task: asyncio.Task) -> dict[str, Any]:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
@@ -76,30 +91,63 @@ class ArtworkDeletionService:
                 task.exception()
             raise
 
+    async def _verify_file_mode(self, stats: dict[str, Any], comfy_url: str) -> None:
+        if not image_location.IS_WINDOWS:
+            raise ImageLocationError("删除原文件仅支持本机 Windows ComfyUI", code="image_delete_unsupported")
+        await asyncio.to_thread(image_location.verify_local_comfy, comfy_url, stats)
+
+    async def _discard_thumbnail(self, result: dict[str, Any]) -> None:
+        if self.thumbnails is not None and (result["record_deleted"] or result["code"] == "already_missing"):
+            try:
+                await self.thumbnails.discard(result["id"])
+            except Exception:
+                result["warning"] = "记录已删除，缩略图缓存清理失败，将在后续维护时重试"
+
     async def _run(self, image_id: int, mode: str, stats: dict[str, Any], comfy_url: str) -> dict[str, Any]:
         async with self._lock:
             if mode == "file":
                 try:
-                    if not image_location.IS_WINDOWS:
-                        raise ImageLocationError("删除原文件仅支持本机 Windows ComfyUI", code="image_delete_unsupported")
-                    await asyncio.to_thread(image_location.verify_local_comfy, comfy_url, stats)
+                    await self._verify_file_mode(stats, comfy_url)
                 except ImageLocationError as error:
-                    return self._payload(mode, _result(image_id, code=error.code, error=str(error)))
+                    return self._payload(mode, [_result(image_id, code=error.code, error=str(error))])
             result = await self.history._call(self._delete, image_id, mode, stats)
-            if self.thumbnails is not None and (result["record_deleted"] or result["code"] == "already_missing"):
+            await self._discard_thumbnail(result)
+            return self._payload(mode, [result])
+
+    async def _run_many(self, image_ids: list[int], mode: str, stats: dict[str, Any], comfy_url: str) -> dict[str, Any]:
+        async with self._lock:
+            # Protection may have changed while another deletion owned the lock.
+            self.history.ensure_writable()
+            if mode == "file":
                 try:
-                    await self.thumbnails.discard(image_id)
+                    await self._verify_file_mode(stats, comfy_url)
+                except ImageLocationError as error:
+                    return self._payload(mode, [_result(image_id, code=error.code, error=str(error)) for image_id in image_ids])
+            results = []
+            for index, image_id in enumerate(image_ids):
+                try:
+                    result = await self.history._call(self._delete, image_id, mode, stats)
+                except StorageReadOnlyError as error:
+                    if not results:
+                        raise
+                    # Never hide already committed results behind a top-level 503.
+                    results.extend(_result(pending_id, code=error.code, error=str(error))
+                                   for pending_id in image_ids[index:])
+                    break
                 except Exception:
-                    result["warning"] = "记录已删除，缩略图缓存清理失败，将在后续维护时重试"
-            return self._payload(mode, result)
+                    logger.exception("作品 %s 批量删除失败", image_id)
+                    result = _result(image_id, code="deletion_error", error="无法确认删除结果，请刷新后重试")
+                await self._discard_thumbnail(result)
+                results.append(result)
+            return self._payload(mode, results)
 
     @staticmethod
-    def _payload(mode: str, result: dict[str, Any]) -> dict[str, Any]:
+    def _payload(mode: str, results: list[dict[str, Any]]) -> dict[str, Any]:
         # Keep the single-delete HTTP response compatible with existing clients.
-        success = int(result["record_deleted"] or result["code"] == "already_missing")
-        return {"mode": mode, "results": [result], "deleted_count": int(result["record_deleted"]),
-                "success_count": success, "failed_count": 1 - success,
-                "file_deleted_count": int(result["file_deleted"])}
+        success = sum(bool(result["record_deleted"] or result["code"] == "already_missing") for result in results)
+        return {"mode": mode, "results": results, "deleted_count": sum(result["record_deleted"] for result in results),
+                "success_count": success, "failed_count": len(results) - success,
+                "file_deleted_count": sum(result["file_deleted"] for result in results)}
 
     def _rollback(self) -> None:
         try:

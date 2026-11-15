@@ -9,7 +9,7 @@ class Events {
   constructor() { this.listeners = new Map(); }
   addEventListener(name, handler) { if (!this.listeners.has(name)) this.listeners.set(name, []); this.listeners.get(name).push(handler); }
   dispatch(name, values = {}) {
-    const event = { target: this, preventDefault() { this.defaultPrevented = true; }, ...values };
+    const event = { target: this, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.propagationStopped = true; }, ...values };
     for (const handler of this.listeners.get(name) || []) handler(event);
     return event;
   }
@@ -59,16 +59,17 @@ function harness() {
   document.createElement = tag => node(tag); document.createComment = () => node('#comment'); document.createTextNode = text => Object.assign(node('#text'), { textContent: text });
   document.querySelector = selector => document.body.querySelector(selector); document.querySelectorAll = selector => document.body.querySelectorAll(selector);
   const host = node('dialog', 'detailDialog'); host.open = true; document.body.append(host);
-  const title = node('h2', 'historyDetailTitle'), back = node('button', 'historyDetailBack'); host.append(title, back);
-  const ids = { detail: 'historyDetailView', delete: 'historyDeletePanel' };
-  const views = Object.fromEntries(Object.entries(ids).map(([name, id]) => { const view = node('section', id); view.hidden = name !== 'detail'; host.append(view); return [name, view]; }));
-  for (const id of ['historyDeleteMode', 'historyDeleteResults', 'historyDeleteSummary', 'historyDeleteWarning', 'historyDeleteSubmit', 'historyDeleteForm']) views.delete.append(node('div', id));
+  const title = node('h2', 'historyDetailTitle'), detail = node('section', 'historyDetailView'); host.append(title, detail);
+  const deleteDialog = node('dialog', 'historyDeleteDialog'); deleteDialog.open = false; document.body.append(deleteDialog);
+  deleteDialog.append(node('h2', 'historyDeleteTitle'));
+  for (const id of ['historyDeleteRecord', 'historyDeleteFile', 'closeHistoryDelete', 'cancelHistoryDelete', 'historyDeleteResults', 'historyDeleteSummary']) deleteDialog.append(node('button', id));
+  elements.get('historyDeleteRecord').dataset.historyDeleteMode = 'record'; elements.get('historyDeleteFile').dataset.historyDeleteMode = 'file';
   const archive = node('div', 'randomArchive'); document.body.append(archive);
   const group = node('div', 'historyWorkbenchFilter'); archive.append(group);
   const sources = ['', 'single', 'random'].map((source, index) => { const button = node('button', `source-${source || 'all'}`); button.dataset.historySource = source; button.offsetLeft = index * 100; button.offsetWidth = 100; group.append(button); return button; });
   const thumb = node('span'); thumb.className = 'history-source-thumb'; thumb.offsetLeft = 0; group.append(thumb);
   const notices = [], window = { scrollX: 0, scrollY: 480, scrollTo(value) { this.scrollX = value.left; this.scrollY = value.top; } };
-  const ctx = vm.createContext({ document, window, config: {}, historyItems: [], historyPage: 3, historyPages: 1, historyRequest: 0, historyDirty: false, historyCache: new Map(), selectedRecord: null,
+  const ctx = vm.createContext({ document, window, config: {}, historyItems: [], historyPage: 3, historyPages: 1, historyRequest: 0, historyDirty: false, historyCache: new Map(), selectedRecord: { id: 1 }, detailContext: { origin: 'random' },
     ui: { gallery: { children: [], querySelector: () => null }, detailDialog: host },
     loadHistory: async page => loads.push(page), renderHistoryPage: (data, view) => { view.items = data.items; }, request: async () => ({}), renderDetail() {}, toast: value => notices.push(value),
     performance: { now: () => time }, matchMedia: () => media,
@@ -79,56 +80,71 @@ function harness() {
   const app = read('app.js'), historyStart = app.indexOf('function historyViewState(');
   vm.runInContext(app.slice(historyStart, app.indexOf('\n}', historyStart) + 2), ctx);
   vm.runInContext(read('history-detail.js'), ctx);
+  const layout = read('motion.js'), start = layout.indexOf('function animateStudioIndicator(');
+  vm.runInContext(layout.slice(start, layout.indexOf('\n}', start) + 2), ctx);
   ctx.motionDialog = (dialog, open, options) => ctx.StudioMotion.dialog(dialog, open, options);
   const state = vm.runInContext('historyDetailState', ctx);
   const step = (ms = 1000 / 60) => { time += ms; const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback(time)); };
   const drain = () => { let limit = 500; while (frames.size && limit--) step(); assert.ok(limit > 0, 'all motion must settle'); };
-  return { ctx, state, elements, node, document, media, host, views, sources, group, thumb, frames, step, drain, loads, focusLog, notices, window };
+  return { ctx, state, elements, node, document, media, host, detail, deleteDialog, sources, group, thumb, frames, step, drain, loads, focusLog, notices, window };
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 
 
 
-
-
-test('detail/delete reversals retain presentation and velocity and only the latest view stays interactive', () => {
+test('delete dialog reversals retain presentation and velocity without replacing the detail', () => {
   const h = harness();
-  h.ctx.setHistoryDetailView('delete'); h.step(70);
-  h.ctx.setHistoryDetailView('detail', { returning: true }); h.step(40);
-  const before = h.ctx.StudioMotion.snapshot(h.views.delete, 'presence');
-  h.ctx.setHistoryDetailView('delete');
-  const after = h.ctx.StudioMotion.snapshot(h.views.delete, 'presence');
+  h.ctx.openHistoryDelete(h.ctx.selectedRecord); h.step(70);
+  h.ctx.closeHistoryDelete(); h.step(40);
+  const before = h.ctx.StudioMotion.snapshot(h.deleteDialog, 'presence');
+  h.ctx.openHistoryDelete(h.ctx.selectedRecord);
+  const after = h.ctx.StudioMotion.snapshot(h.deleteDialog, 'presence');
   assert.deepEqual(plain(after.value), plain(before.value)); assert.deepEqual(plain(after.velocity), plain(before.velocity));
-  assert.equal(h.views.detail.inert, true); assert.equal(h.views.delete.inert, false);
-  assert.equal(h.document.activeElement.id, 'historyDetailTitle');
+  assert.equal(h.detail.hidden, false); assert.equal(h.deleteDialog.inert, false);
+  assert.equal(h.document.activeElement.id, 'cancelHistoryDelete');
   h.drain();
-  for (const [name, view] of Object.entries(h.views)) { assert.equal(view.hidden, name !== 'delete'); assert.equal(view.style.transform, ''); }
+  assert.equal(h.host.open, true); assert.equal(h.deleteDialog.open, true); assert.equal(h.deleteDialog.style.transform, '');
   assert.equal(h.frames.size, 0);
 });
 
 test('returning from deletion restores More when the original delete item was hidden', () => {
   const h = harness();
   const more = h.node('button', 'more'), panel = h.node('div', 'more-panel'), item = h.node('button', 'delete-item');
-  more.dataset.detailAction = 'more'; panel.dataset.detailPanel = 'more'; panel.append(item); h.views.detail.append(more, panel);
+  more.dataset.detailAction = 'more'; panel.dataset.detailPanel = 'more'; panel.append(item); h.detail.append(more, panel);
   h.ctx.selectedRecord = { id: 1 }; h.ctx.closeDetailActionPanels = () => { panel.hidden = true; }; item.focus();
-  h.ctx.setHistoryDetailView('delete'); h.step(50); h.ctx.historyDetailBack();
-  assert.equal(h.document.activeElement, more); h.drain(); assert.equal(h.document.activeElement, more);
+  h.ctx.openHistoryDelete(h.ctx.selectedRecord); h.step(50); h.ctx.closeHistoryDelete();
+  h.drain(); assert.equal(h.document.activeElement, more); assert.equal(h.deleteDialog.open, false); assert.equal(h.host.open, true);
 });
 
-test('closing during a view transition settles all views without late focus', () => {
+test('repeated cancel clicks and Escape during exit preserve the original More focus return', () => {
+  for (const action of ['cancel', 'escape']) {
+    const h = harness(), more = h.node('button', 'more'); more.dataset.detailAction = 'more'; h.detail.append(more);
+    h.ctx.initializeHistoryDetail(); h.ctx.openHistoryDelete(h.ctx.selectedRecord); h.drain();
+    const dismiss = () => {
+      if (action === 'cancel') return h.elements.get('cancelHistoryDelete').dispatch('click');
+      const event = h.deleteDialog.dispatch('keydown', { key: 'Escape' });
+      assert.equal(event.defaultPrevented, true); assert.equal(event.propagationStopped, true);
+    };
+    dismiss(); h.step(20); dismiss();
+    h.drain(); assert.equal(h.document.activeElement, more, action); assert.equal(h.deleteDialog.open, false);
+    assert.equal(h.host.open, true); assert.equal(h.state.record, null);
+  }
+});
+
+test('closing detail during delete entry settles its dialog without late focus', () => {
   const h = harness();
-  h.ctx.setHistoryDetailView('delete'); h.step(60);
+  h.ctx.openHistoryDelete(h.ctx.selectedRecord); h.step(60);
   h.host.open = false; h.ctx.resetHistoryDetail(); const focused = h.document.activeElement;
   assert.equal(h.frames.size, 0); h.drain(); assert.equal(h.document.activeElement, focused);
-  assert.equal(h.views.delete.hidden, true); assert.equal(h.views.detail.hidden, false);
+  assert.equal(h.deleteDialog.open, false); assert.equal(h.detail.hidden, false);
   assert.equal(h.state.record, null); assert.equal(h.state.owner, null);
 });
 
-test('reduced motion and hidden pages settle the current view without residual frames or transforms', () => {
+test('reduced motion and hidden pages settle delete dismissal without residual frames or transforms', () => {
   for (const reduce of [true, false]) {
-    const h = harness(); h.ctx.setHistoryDetailView('delete'); h.step(60); h.ctx.setHistoryDetailView('detail', { returning: true });
+    const h = harness(); h.ctx.openHistoryDelete(h.ctx.selectedRecord); h.step(60); h.ctx.closeHistoryDelete();
     if (reduce) { h.media.matches = true; h.media.dispatch('change'); } else { h.document.hidden = true; h.document.dispatch('visibilitychange'); }
-    assert.equal(h.frames.size, 0); assert.equal(h.views.detail.hidden, false); assert.equal(h.views.delete.hidden, true);
-    for (const view of Object.values(h.views)) { assert.equal(view.style.transform, ''); assert.equal(view.style.willChange, ''); }
+    assert.equal(h.frames.size, 0); assert.equal(h.detail.hidden, false); assert.equal(h.deleteDialog.open, false);
+    assert.equal(h.deleteDialog.style.transform, ''); assert.equal(h.deleteDialog.style.willChange, '');
   }
 });

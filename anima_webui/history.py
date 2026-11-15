@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import history_search
 from .persistence import StorageProtection, backup_corrupt_file
 from .model_profiles import get_model_profile
 from .workflow import WorkflowError, migrate_settings, normalize_lora_path, validate_settings
@@ -125,6 +126,10 @@ class HistoryStore(StorageProtection):
             row[1] for row in connection.execute(f"PRAGMA table_info({table})")
         } for table, column in (("artwork_folders", "sort_position"), ("artwork_memberships", "added_at"))):
             HistoryStore._backup_before_artwork_favorites(connection)
+        if "images" in tables and history_search.needs_upgrade(connection):
+            HistoryStore._backup_before_extension(
+                connection, suffix=f"history-content-v{history_search.INDEX_VERSION}", label="作品内容筛选",
+            )
         needs_backup = not {"batches", "images"}.issubset(tables)
         needs_execution_backup = False
         needs_lora_backup = False
@@ -296,6 +301,7 @@ class HistoryStore(StorageProtection):
             "CREATE INDEX IF NOT EXISTS idx_images_workbench_id ON images "
             "(COALESCE(json_extract(settings_json, '$.workbench'), 'random'), id DESC)"
         )
+        history_search.initialize(connection)
         connection.execute(
             "UPDATE batches SET status = 'interrupted', error = 'WebUI 重启，未完成批次未自动恢复', updated_at = ? WHERE status IN ('running', 'stopping')",
             (_now(),),
@@ -648,6 +654,9 @@ class HistoryStore(StorageProtection):
                 json.dumps(lora_runtime or {}, ensure_ascii=False),
             ),
         )
+        history_search.write_document(
+            self.connection, cursor.lastrowid, positive_prompt, str(resolved_prompt or ""), resolved_selection,
+        )
         self.connection.commit()
         return self._get_image(cursor.lastrowid)
 
@@ -688,12 +697,15 @@ class HistoryStore(StorageProtection):
     async def list_images(
         self, page: int = 1, limit: int = 24, workbench: str | None = None,
         *, before_id: int | None = None, folder_id: str | None = None,
+        q: str = "", content_filter: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return await self._call(self._list_images, page, limit, workbench, before_id=before_id, folder_id=folder_id)
+        return await self._call(self._list_images, page, limit, workbench, before_id=before_id,
+                                folder_id=folder_id, q=q, content_filter=content_filter)
 
     def _list_images(
         self, page: int = 1, limit: int = 24, workbench: str | None = None,
         *, before_id: int | None = None, folder_id: str | None = None,
+        q: str = "", content_filter: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if before_id is not None and (
             type(before_id) is not int or not 1 <= before_id <= 2**63 - 1
@@ -713,6 +725,9 @@ class HistoryStore(StorageProtection):
         if workbench:
             conditions.append("COALESCE(json_extract(images.settings_json, '$.workbench'), 'random') = ?")
             params += (workbench,)
+        content_conditions, content_parameters = history_search.query_conditions(q, content_filter)
+        conditions.extend(content_conditions)
+        params += content_parameters
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         total = int(self.connection.execute("SELECT COUNT(*) FROM images" + collection_join + where, params).fetchone()[0])
         if before_id is not None:
@@ -743,6 +758,13 @@ class HistoryStore(StorageProtection):
             "next_before_id": int(rows[-1]["id"]) if rows and folder_id is None else None,
             "has_more": has_more,
         }
+
+    async def content_filter_options(
+        self, section: str, *, q: str = "", page: int = 1, limit: int = 40,
+        term_ids: list[str] | None = None, attribute: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._call(history_search.filter_options, self.connection, section,
+                                q=q, page=page, limit=limit, term_ids=term_ids, attribute=attribute)
 
     @staticmethod
     def _artwork_id_chunks(values: list[Any]):

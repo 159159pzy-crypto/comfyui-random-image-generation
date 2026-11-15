@@ -29,16 +29,16 @@ class StylePresetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_favorites_sort_first_and_updates_replace_the_snapshot(self):
         favorite = await self.store.create(
-            {"name": "Favorite", "favorite": True, "settings": snapshot(width=768)}
+            {"name": "Favorite", "favorite": True, "include": {"size": True}, "settings": snapshot(width=768)}
         )
         regular = await self.store.create(
-            {"name": "Regular", "favorite": False, "settings": snapshot(width=832)}
+            {"name": "Regular", "favorite": False, "include": {"size": True}, "settings": snapshot(width=832)}
         )
         self.assertEqual([item["id"] for item in self.store.list()["items"]], [favorite["id"], regular["id"]])
 
         updated = await self.store.update(
             regular["id"],
-            {"name": "Renamed", "favorite": True, "settings": snapshot(width=1024)},
+            {"name": "Renamed", "favorite": True, "include": {"size": True}, "settings": snapshot(width=1024)},
         )
         self.assertEqual(updated["name"], "Renamed")
         self.assertEqual(updated["settings"]["width"], 1024)
@@ -48,7 +48,7 @@ class StylePresetTests(unittest.IsolatedAsyncioTestCase):
     async def test_atomic_save_leaves_valid_json_without_temp_files(self):
         await self.store.create({"name": "Atomic", "settings": snapshot(), "favorite": False})
         payload = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["version"], 2)
+        self.assertEqual(payload["version"], 4)
         self.assertEqual(payload["items"][0]["name"], "Atomic")
         for removed in ("hires", "detailers", "cfg_zero_star", "second_sampler"):
             self.assertNotIn(removed, payload["items"][0]["settings"])

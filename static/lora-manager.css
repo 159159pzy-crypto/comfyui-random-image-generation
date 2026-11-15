@@ -127,6 +127,7 @@
 .lm-card-controls { position: absolute; inset: 8px 8px auto; display: flex; justify-content: space-between; pointer-events: none; }
 .lm-card-controls button { display: grid; place-items: center; width: 29px; height: 29px; padding: 0; border: 1px solid rgba(255,255,255,.25); border-radius: 9px; background: rgba(25,25,28,.65); color: white; font-size: 17px; pointer-events: auto; }
 .lm-card-controls button.is-favorite { color: #ffd16a; }
+.lm-card-controls button.is-saving, .lm-detail-quick button.is-saving { opacity: .65; cursor: progress; }
 .lm-card-controls svg { display: block; width: 17px; height: 17px; }
 .lm-card-controls button.is-favorite svg { fill: currentColor; }
 .lm-card-controls button.is-configured { color: white; background: var(--accent); }

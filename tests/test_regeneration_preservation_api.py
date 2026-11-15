@@ -36,6 +36,7 @@ class RegenerationPreservationApiTests(unittest.IsolatedAsyncioTestCase):
         self, *, positive="1girl, alpha, series, standing", character=None
     ):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
+        settings["pipeline_version"] = 4
         settings.update(
             {
                 "count": 1,
@@ -163,6 +164,7 @@ class RegenerationPreservationApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.comfy.wait_for_history = captured_history
         settings = copy.deepcopy(DEFAULT_SETTINGS)
+        settings["pipeline_version"] = 4
         settings.update(
             {
                 "count": 1,

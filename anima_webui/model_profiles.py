@@ -12,6 +12,7 @@ class ModelProfileError(ValueError):
 MODEL_PROFILE_VERSION = 1
 DEFAULT_MODEL_PROFILE = "anima"
 MODEL_PROFILE_IDS = ("anima",)
+LEGACY_SAMPLING_DEFAULTS = {"anima": {"steps": 30, "cfg": 8.0, "sampler_name": "euler", "scheduler": "simple"}}
 MODEL_PROFILES: dict[str, dict[str, Any]] = {
     "anima": {
         "id": "anima",
@@ -23,10 +24,19 @@ MODEL_PROFILES: dict[str, dict[str, Any]] = {
         "prompt_mode": "tag_or_natural",
         "defaults": {
             "steps": 30,
-            "cfg": 8.0,
-            "sampler_name": "euler",
+            "cfg": 4.0,
+            "sampler_name": "er_sde",
             "scheduler": "simple",
             "base_mode": "dual_sampler",
+        },
+        "dual_defaults": {
+            "switch_step": 15, "scale": 1.0, "second_cfg": 4.0,
+            "second_sampler_name": "er_sde", "second_scheduler": "simple",
+            "upscale_method": "sesqui", "model_format": "Wan 2.1", "half_precision": True,
+        },
+        "face_refine_defaults": {
+            "steps": 16, "cfg_scale": 4.0, "sampler": "er_sde",
+            "scheduler": "simple", "denoise_strength": 0.3,
         },
         "seedvr2_model": "seedvr2_3b_int8_convrot.safetensors",
         "seedvr2_vae": "ema_vae_fp16.safetensors",
@@ -221,6 +231,9 @@ def profile_public(
         "clip_type": profile["clip_type"],
         "prompt_mode": profile["prompt_mode"],
         "defaults": copy.deepcopy(profile["defaults"]),
+        "dual_defaults": copy.deepcopy(profile["dual_defaults"]),
+        "face_refine_defaults": copy.deepcopy(profile["face_refine_defaults"]),
+        "post_sampler_defaults": copy.deepcopy(profile["post_sampler_defaults"]),
         "latent_sampler_defaults": copy.deepcopy(profile["latent_sampler_defaults"]),
         "seedvr2_model": profile["seedvr2_model"],
         "seedvr2_vae": profile["seedvr2_vae"],

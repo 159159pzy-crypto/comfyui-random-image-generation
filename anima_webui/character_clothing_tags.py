@@ -1,4 +1,4 @@
-"""Conservative clothing classification for built-in character feature tags.
+"""Conservative clothing classification for character feature tags.
 
 The literal below was reviewed against all 3,455 distinct feature tags in the
 local 7,999-character Anima official catalog, plus basic garment names. It is
@@ -1148,7 +1148,89 @@ zipper skirt
 )
 
 
+# Explicit additions reviewed against imported custom characters. Keep these
+# separate from the official-catalog audit so their provenance stays visible.
+_CUSTOM_CLOTHING_TAGS: frozenset[str] = frozenset(
+    """
+ankle boots
+ankle socks
+asymmetrical cape
+asymmetrical sleeves
+asymmetrical yellow jacket
+black and white combat outfit
+black and white outfit
+black boots
+black cargo pants
+black elbow gloves
+black fingerless gloves
+black high-collar undershirt
+black high-heel boots
+black high-neck shirt
+black kneehighs
+black leather jacket
+black leggings
+black loose pants
+black outfit
+black shoes
+black sneakers
+black turtleneck
+blue and black jacket
+blue and black pants
+blue high heels
+blue leggings
+blue oni-inspired combat outfit
+dark blue and white maid dress
+dark green turtleneck
+detached draped sleeves
+elegant maid uniform
+formal public security uniform
+gothic black dress
+gothic lolita dress
+gothic lolita outfit
+grey boots
+high low skirt
+industrial work uniform
+leotard over bodysuit
+loose pants
+maid uniform with apron
+military combat uniform
+mismatched fingerless gloves
+new eridu public security uniform
+off shoulder dress
+orange mechanic workwear
+pink dress lining
+platform heels
+puff sleeves
+purple chest armor
+red and black combat outfit
+red and black gloves
+red thighhighs
+revealing mechanic outfit
+rolled-up sleeves
+school uniform with shark motif
+side cutout pants
+silver buttons
+single black glove
+tanuki-themed kimono outfit
+thigh armor
+thigh-high boots
+torn dress hem
+traditional swordmaster uniform
+turtleneck shirt
+white and black business outfit
+white and blue dress
+white cropped jacket
+white habit
+white lace apron
+white shoes
+white sneakers
+white thigh high stockings
+white top
+""".strip().splitlines()
+)
+
+
 def is_character_clothing_tag(value: str) -> bool:
     """Match one complete tag without rewriting it or interpreting prompt syntax."""
     normalized = " ".join(value.casefold().replace("_", " ").split())
-    return normalized in _CLOTHING_TAGS
+    return normalized in _CLOTHING_TAGS or normalized in _CUSTOM_CLOTHING_TAGS

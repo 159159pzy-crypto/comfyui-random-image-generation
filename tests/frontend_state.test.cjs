@@ -12,7 +12,7 @@ function functionSource(name) {
   return source.slice(start, end);
 }
 function context() {
-  const ctx = createFrontendContext({
+  const ctx = createFrontendContext({ pipelineContractState: { source: {}, version: 4 }, currentPipelineVersion: () => 4,
     SECTIONS: ['character', 'clothing', 'pose', 'background', 'expression'],
     defaults: { profile_settings: { anima: {}, krea2: {} } },
     draft: {}, profileDrafts: {}, ui: {}, activeProfileId: 'anima',
@@ -271,7 +271,7 @@ test('LoRA refresh preserves profile drafts and rejects a stale response after s
 
 test('favorite reads cannot replace the active section with a stale response', async () => {
   const pending = [];
-  const ctx = createFrontendContext({ favoritesRequest: 0, activeSection: 'pose', favoritesData: {}, favoritesAvailable: false, currentProfile: () => 'anima',
+  const ctx = createFrontendContext({ pipelineContractState: { source: {}, version: 4 }, currentPipelineVersion: () => 4, favoritesRequest: 0, activeSection: 'pose', favoritesData: {}, favoritesAvailable: false, currentProfile: () => 'anima',
     request: path => new Promise(resolve => pending.push({ path, resolve })), updateFavoriteSelectionButton() {}, toast() {}, currentView: () => ({ filters: {} }) });
   for (const name of ['characterPickerSession', 'poolBrowserProfile', 'loadFavorites']) vm.runInContext(functionSource(name), ctx);
   const first = ctx.loadFavorites('pose'); ctx.activeSection = 'character'; const second = ctx.loadFavorites('character');

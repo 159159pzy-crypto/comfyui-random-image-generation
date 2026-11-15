@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from anima_webui.custom_prompts import CustomPromptStore
+from anima_webui.custom_prompts import CUSTOM_DATA_VERSION, CustomPromptStore
 from anima_webui.history import HistoryMigrationError, HistoryStore
 from anima_webui.lora_triggers import LoraTriggerOverrideStore
 from anima_webui.persistence import StorageReadOnlyError
@@ -147,7 +147,7 @@ class StorageRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 path = self.root / f"{name}.json"
                 path.write_bytes(b"{broken")
                 store = factory(path)
-                suffix = ".v4.bak" if name == "custom_prompts" else ".corrupt.bak"
+                suffix = f".v{CUSTOM_DATA_VERSION}.bak" if name == "custom_prompts" else ".corrupt.bak"
                 self.assertEqual(path.with_name(path.name + suffix).read_bytes(), b"{broken")
                 if name in REFERENCED_SOURCE_STORES:
                     for current in (store, factory(path)):

@@ -114,7 +114,7 @@ test('a local stop exposes unconfirmed remote cancellation and clears it for the
   const { ctx, ui } = setup();
   const warning = '旧版 ComfyUI 无法安全取消正在执行的任务，远端任务可能继续执行';
   ctx.renderBatch(batch({ status: 'stopped', cancel_warning: warning }));
-  assert.equal(ui.batchState.textContent, '已停止');
+  assert.equal(ui.batchState.textContent, '本地已停止，ComfyUI 尚未确认');
   assert.equal(ui.batchError.hidden, false);
   assert.equal(ui.batchError.textContent, warning);
   assert.equal(ui.stopButton.disabled, true);

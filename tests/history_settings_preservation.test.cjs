@@ -29,6 +29,8 @@ function context() {
     samplingModes: { normal: { steps: 23 }, dual_sampler: { steps: 39 } },
     sharedSamplingDrafts: () => plain(ctx.samplingModes), sharedSamplingRestoreDrafts: value => { ctx.samplingModes = value; },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => { writes.push(key); storage.set(key, value); }, removeItem: key => { throw new Error(`unexpected deletion: ${key}`); } },
+    canonicalizeWorkflowSettings: async value => plain(value), pipelineContractState: { persistenceBlocked: false },
+    request: async (_url, options) => ({ settings: { ...JSON.parse(options.body).settings, model_name: "style.safetensors", steps: 31 } }),
     initialized: true, DRAFT_KEY: 'anima-random-webui:draft:v1', VIEW_KEY: 'anima-random-webui:pool-view:v1',
     ui: { draftStatus: {} }, profileDrafts: { anima: { fixed: { clothing: 'hidden coat' } } }, activeSection: 'pose', poolViews: {}, characterPickerSession: () => null,
     formatSavedTime: () => '12:00',
@@ -37,13 +39,13 @@ function context() {
   return { ctx, elements, storage, writes, applied };
 }
 
-test('history restores image parameters and image seed while retaining count and complete pool editor state', () => {
+test('history restores image parameters and image seed while retaining count and complete pool editor state', async () => {
   const { ctx, elements, applied } = context();
   const before = plain(ctx.draft);
   const history = { sample_seed: 765, prompt_seed: 998, settings: { count: 1, width: 768, height: 1280, model_name: 'chosen.safetensors',
     random_character: false, fixed_character: 'old identity', pools: { character: { ids: ['old'] } }, loras: [{ filename: 'saved.safetensors', enabled: true, strength: .7 }],
     upscalers: { latent: { enabled: true, sampler: { steps: 29 } }, post_sampler: { enabled: false, steps: 18 } }, pipeline_version: 4 } };
-  ctx.randomWorkbenchRestoreHistory(history);
+  await ctx.randomWorkbenchRestoreHistory(history);
   const restored = applied[0].settings;
   assert.equal(restored.count, 7); assert.equal(restored.width, 768); assert.equal(restored.height, 1280);
   assert.equal(restored.model_name, 'chosen.safetensors'); assert.equal(restored.loras[0].strength, .7);
@@ -65,28 +67,28 @@ test('random seeds omit prompt seeds, allow fresh draws and reject unsafe intege
   elements.randomSampleSeed.value = String(2 ** 50); assert.equal(ctx.randomWorkbenchSeeds().sample_seed, 2 ** 50);
 });
 
-test('new project ignores old browser drafts and persists its seeds, inactive fixed text and both sampling modes', () => {
+test('new project ignores old browser drafts and persists its seeds, inactive fixed text and both sampling modes', async () => {
   const { ctx, storage, writes, elements } = context();
   storage.set('anima-random-studio:draft:v4', JSON.stringify({ settings: { model_name: 'old-project' } }));
   storage.set('anima-studio:workbench-drafts:v1', JSON.stringify({ drafts: { random: { anima: { settings: { count: 99 } } } } }));
   load(ctx, 'persistNow'); load(ctx, 'loadStoredDraft');
-  assert.equal(ctx.loadStoredDraft(), false);
+  assert.equal(await ctx.loadStoredDraft(), false);
   ctx.persistNow();
   assert.deepEqual(writes, ['anima-random-webui:draft:v1', 'anima-random-webui:pool-view:v1']);
   const saved = JSON.parse(storage.get(ctx.DRAFT_KEY));
   assert.equal(saved.version, 1); assert.equal(saved.seed, '42');
   assert.deepEqual(saved.samplingModes, { normal: { steps: 23 }, dual_sampler: { steps: 39 } });
   elements.randomSampleSeed.value = '0'; ctx.profileDrafts = {};
-  assert.equal(ctx.loadStoredDraft(), true); assert.equal(elements.randomSampleSeed.value, '42');
+  assert.equal(await ctx.loadStoredDraft(), true); assert.equal(elements.randomSampleSeed.value, '42');
   assert.equal(ctx.profileDrafts.anima.fixed.clothing, 'hidden coat');
   assert.equal(storage.has('anima-random-studio:draft:v4'), true);
 });
 
-test('preset application retains current pool/count and independent sampling mode drafts', () => {
+test('preset application retains current pool/count and independent sampling mode drafts', async () => {
   const { ctx, applied } = context();
   ctx.settings.pools = plain(ctx.draft.pools);
   const before = plain(ctx.samplingModes);
-  ctx.randomWorkbenchApplyPreset({ settings: { model_name: 'style.safetensors', steps: 31, upscalers: { latent: { sampler: { steps: 22 } }, post_sampler: { steps: 19 } } } });
+  await ctx.randomWorkbenchApplyPreset({ settings: { model_name: 'style.safetensors', steps: 31, upscalers: { latent: { sampler: { steps: 22 } }, post_sampler: { steps: 19 } } } });
   assert.equal(applied[0].settings.count, 7); assert.equal(applied[0].settings.model_name, 'style.safetensors');
   assert.deepEqual(applied[0].settings.pools, plain(ctx.draft.pools));
   assert.deepEqual(plain(ctx.samplingModes), before);

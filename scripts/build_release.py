@@ -23,7 +23,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = frozenset({
-    "Install.ps1", "Start.ps1", "Start.cmd", "run.py", "pyproject.toml",
+    "Install.ps1", "Install-ComfyExtension.ps1", "Start.ps1", "Start.cmd", "run.py", "pyproject.toml",
     "LICENSE", "README.md", "RELEASE_NOTES.md",
 })
 DOCUMENTS = frozenset({
@@ -34,11 +34,16 @@ DOCUMENTS = frozenset({
 TEMPLATES = frozenset({
     "templates/workflow_api_v2.json", "templates/workflow_ui_v2.json",
 })
+EXTENSION_FILES = frozenset(
+    "anima_webui/comfy_extension/atelier_resources/" + name
+    for name in ("__init__.py", "capabilities.py", "inspector.py", "memory_cleanup.py", "native_probe.py")
+)
 REQUIRED_FILES = ROOT_FILES | DOCUMENTS | TEMPLATES | {
     "anima_webui/__init__.py", "anima_webui/server.py",
     "anima_webui/workflow.py", "anima_webui/zh_names.json",
     "static/index.html", "static/app.js",
-}
+    "anima_webui/extension_install.py",
+} | EXTENSION_FILES
 TEXT_SUFFIXES = {".py", ".js", ".css", ".html", ".svg", ".json", ".toml", ".md", ".ps1", ".cmd"}
 MAX_UNPACKED_BYTES = 128 * 1024 * 1024
 SENSITIVE_TEXT = re.compile(
@@ -66,7 +71,7 @@ def git(repo: Path, *args: str) -> bytes:
 
 
 def allowed_path(name: str) -> bool:
-    if name in ROOT_FILES | DOCUMENTS | TEMPLATES:
+    if name in ROOT_FILES | DOCUMENTS | TEMPLATES | EXTENSION_FILES:
         return True
     path = PurePosixPath(name)
     if path.parent == PurePosixPath("anima_webui"):

@@ -431,3 +431,20 @@
     target: element => dialogs.get(element)?.target ?? presences.get(element)?.target ?? disclosures.get(element)?.target,
   });
 })();
+
+
+function animateStudioIndicator(indicator, target, { immediate = false } = {}) {
+  if (!indicator || !(target.width > 0) || !Number.isFinite(target.x)) return;
+  const apply = values => {
+    indicator.style.width = `${values.width}px`;
+    indicator.style.transform = `translateX(${values.x}px)`;
+  };
+  if (typeof StudioMotion === "undefined") { apply(target); return; }
+  indicator.dataset.motionIndicator = "true";
+  const previous = indicator.motionIndicatorTarget;
+  if (!immediate && previous?.x === target.x && previous?.width === target.width) return;
+  indicator.motionIndicatorTarget = { ...target };
+  StudioMotion.spring(indicator, "indicator", target, {
+    initial: previous ? undefined : target, response: .3, damping: 1, immediate, onUpdate: apply,
+  });
+}

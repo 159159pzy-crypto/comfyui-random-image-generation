@@ -37,6 +37,12 @@ const ui = Object.fromEntries(
   "progressCount",
   "progressFill",
   "batchError",
+  "zero_negative",
+  "clip_name",
+  "vae_name",
+  "pipelineUpgradeHint",
+  "manageStylePresets",
+  "presetScroll",
   "sampleProgress",
   "sampleFill",
   "queueBadge",
@@ -285,7 +291,6 @@ const ui = Object.fromEntries(
   "artistFavoriteList",
   "artistFavoriteCount",
   "presetSummary",
-  "presetName",
   "savePreset",
   "presetError",
   "presetList",
@@ -427,6 +432,7 @@ if (missingUi.length) {
 let defaults = null;
 let config = { catalog: { counts: {} } };
 let currentBatch = null;
+let stopRequestId = "";
 let selectedRecord = null;
 let detailContext = null;
 const imagePreview = {
@@ -472,6 +478,11 @@ let poolTotalsRequest = 0;
 let editingCustom = null;
 let customEditorSession = 0;
 let customWriteBusy = false;
+let customCharacterController = null;
+let customCharacterTimer = null;
+const importCharacterControllers = new Set();
+let characterReviewEpoch = 0;
+let characterReviewIds = null;
 let editingCustomGroup = null;
 let editingFavoriteItem = null;
 let loraInventory = [];
@@ -492,8 +503,11 @@ let favoritesAvailable = false;
 let customGroups = [];
 let artistFavoritesData = { groups: [], items: [] };
 let stylePresets = [];
-let stylePresetRequest = 0;
 let stylePresetProfile = "";
+const stylePresetReadGate = StudioRequestState.createReadGate();
+const stylePresetViewEpoch = StudioRequestState.createViewEpoch();
+const stylePresetCreates = new Map();
+const stylePresetWrites = new Set();
 let resources = { models: [], seedvr2_models: [], upscale_models: [], samplers: [], schedulers: [], model_profiles: {}, nodes: {}, plugins: {} };
 let resourceRequest = 0;
 let resourceInventoryProfile = "";
@@ -504,6 +518,8 @@ let loraInventoryProfile = "";
 
 let customGroupsRequest = 0;
 let importPreview = null;
+const importReadGate = StudioRequestState.createReadGate();
+const importViewEpoch = StudioRequestState.createViewEpoch();
 let editingGroup = null;
 let childGroupParent = null;
 let selectedChildSource = "";
@@ -569,6 +585,11 @@ async function request(path, options = {}) {
     error.payload = payload;
     throw error;
   }
+  if (typeof historyFiltersCatalogChanged === "function" && options.method && !["GET", "HEAD"].includes(options.method)
+    && /^\/api\/(?:favorites|custom-prompts|custom-groups)(?:\/|\?|$)/.test(path)
+    && !/\/(?:query|preview|character-analysis|reconcile)(?:\?|$)/.test(path)) {
+    historyFiltersCatalogChanged();
+  }
   if (path.startsWith("/api/favorites/") && !path.split("?")[0].endsWith("/reconcile") && options.method && options.method !== "GET") {
     if (typeof sharedFavoritesChanged === "function") sharedFavoritesChanged({
       model_profile: favoriteProfile, section: favoriteSection,
@@ -591,7 +612,7 @@ async function requestFavorites(path, options = {}) {
 // Protection lasts until restart. Observe new controls and later enable attempts
 // so asynchronous resource/history refreshes cannot re-enable protected writes.
 const STORAGE_CONTROLS = {
-  history: "#startButton, #confirmReplay, #confirmVariant, #deleteRecord, #historyDeleteSubmit",
+  history: "#startButton, #confirmReplay, #confirmVariant, #deleteRecord, #historyDeleteRecord, #historyDeleteFile",
   style_presets: "#savePreset, .preset-actions button",
   custom_prompts: '#customForm button[type="submit"], #deleteCustom, #customGroupForm button[type="submit"], #deleteCustomGroup, #commitImport, [data-storage-write="custom_prompts"], [data-favorite-custom-write]',
   lora_triggers: '#loraTriggerForm button[type="submit"], #resetLoraTriggers',
@@ -692,7 +713,10 @@ function applyPromptField(field, value) {
     const section = field.slice(6);
     draft.fixed[section] = value;
     const input = ui.dimensionList.querySelector(`[data-fixed="${section}"]`);
-    if (input) input.value = value;
+    if (input) {
+      if (input.value !== value) input.value = value;
+      syncDimensionPromptHeight(input, { keepCaret: document.activeElement === input });
+    }
     return;
   }
   if (field === "custom_prompt") {
@@ -847,7 +871,19 @@ function initialTheme() {
 function normalizeProfileId() {
   return "anima";
 }
+// Rendering may expose legacy aliases; serialization retains the source contract.
+const pipelineContractState = { source: {}, version: 5, persistenceBlocked: false };
+function currentPipelineVersion() { return pipelineContractState.version; }
+async function canonicalizeWorkflowSettings(settings) {
+  const input = { ...settings };
+  delete input.resource_replacements;
+  const payload = await request("/api/settings/normalize", { method: "POST", body: JSON.stringify({ settings: input }) });
+  if (!payload?.settings || typeof payload.settings !== "object") throw new Error("设置校验未返回有效参数");
+  return Array.isArray(settings.resource_replacements) ? { ...payload.settings, resource_replacements: clone(settings.resource_replacements) } : payload.settings;
+}
 function defaultUpscalers(profile = "anima") {
+  // Compatibility defaults for incomplete saved settings. Fresh workbenches
+  // explicitly overlay the model profile via sharedUpscalerDefaults().
   return {
     pixel_hires: { enabled: false, model_name: "4x_foolhardy_Remacri.pth", percent: 50, upscale_method: "lanczos" },
     post_sampler: { enabled: false, steps: 16, cfg: 4, sampler_name: "er_sde", scheduler: "simple", denoise: .2 },
@@ -860,7 +896,7 @@ function defaultUpscalers(profile = "anima") {
     face_refine: { enabled: false, steps: 8, cfg_scale: 1, sampler: "res_2m_ode", scheduler: "beta57", denoise_strength: 0.3, face_selection: 0, detection_confidence: 0.75, manual_rotation: "None", processing_resolution: 1024, enable_pre_upscale: true, upscaler_model: "Fast 4x (Lanczos)", crop_padding: 1.6, face_positive_prompt: "", replace_positive_prompt: false, face_negative_prompt: "", replace_negative_prompt: false, exclusions: "", blend_softness: 8, mask_expansion: 2, sampling_mask_blur_size: 21, sampling_mask_blur_strength: 1, enable_color_correction: true, enable_segmentation: true, enable_differential_diffusion: true, enable_lightness_rescue: true, enable_final_refinement: true, offload_models_to_cpu: true }
   };
 }
-function normalizeUpscalers(value, fallback = null, profile = "anima", pipelineVersion = 4) {
+function normalizeUpscalers(value, fallback = null, profile = "anima", pipelineVersion = 5) {
   const base = clone(defaultUpscalers(profile));
   const raw = value && typeof value === "object" ? value : {};
   for (const source of [fallback || {}, raw]) for (const key of Object.keys(base)) {
@@ -874,13 +910,9 @@ function normalizeUpscalers(value, fallback = null, profile = "anima", pipelineV
     }
   }
   base.latent.enabled = Boolean(base.latent.enabled);
-  base.latent.scale_by = Number.isFinite(Number(base.latent.scale_by)) ?
-  Math.max(0.01, Math.min(64, Number(base.latent.scale_by))) :
-  1.5;
   base.seedvr2.enabled = Boolean(base.seedvr2.enabled);
   base.seedvr2.model_name = String(base.seedvr2.model_name || "");
   base.seedvr2.vae_name = String(base.seedvr2.vae_name || "");
-  base.seedvr2.scale_by = Number.isFinite(Number(base.seedvr2.scale_by)) ? Math.max(0.01, Math.min(64, Number(base.seedvr2.scale_by))) : 2;
   base.nvidia.enabled = Boolean(base.nvidia.enabled);
   // Ignore the deprecated v1 upscale-model choice. RTXVideoSuperResolution
   // uses the installed GPU/plugin directly and has no model-file input.
@@ -899,12 +931,12 @@ function profileDefaults(profile) {
 function profileSettingsDefaults(profile) {
   const id = normalizeProfileId(profile);
   const saved = defaults?.profile_settings?.[id] || defaults?.profiles?.[id]?.settings;
-  if (saved) return saved;
-  if (normalizeProfileId(defaults?.model_profile || "anima") === id) return defaults || {};
+  if (saved) return { ...saved, pipeline_version: 5 };
+  if (normalizeProfileId(defaults?.model_profile || "anima") === id) return { ...defaults, pipeline_version: 5 };
   const bound = profileConfig(id);
   return { ...defaults, ...bound.defaults, model_profile: id,
-    ...Object.fromEntries(["model_name", "clip_name", "vae_name", "clip_type"].map((key) => [key, bound[key] || ""])),
-    pipeline_version: 4, upscalers: normalizeUpscalers(null, null, id), loras: [], lora_managed_triggers: [], pools: defaultPools() };
+    ...Object.fromEntries(["model_name", "clip_name", "vae_name", "clip_type"].map(key => [key, bound[key] || ""])),
+    pipeline_version: 5, upscalers: normalizeUpscalers(null, null, id), loras: [], lora_managed_triggers: [], pools: defaultPools() };
 }
 function defaultLorasForProfile(profile) {
   return clone(profileSettingsDefaults(profile)?.loras || []);
@@ -941,10 +973,13 @@ function saveCurrentProfileDraft() {
 }
 function profileSamplingState() {
   return {
-    pipeline_version: 4,
+    pipeline_version: currentPipelineVersion(),
+    sourceSettings: clone(pipelineContractState.source),
     model_name: ui.model_name?.value || "",
+    clip_name: ui.clip_name?.value || "",
+    vae_name: ui.vae_name?.value || "",
     base_mode: ui.base_mode?.value || "normal",
-    dual: typeof readRandomDualControls === "function" ? readRandomDualControls() : null,
+    dual: typeof readRandomDualSettings === "function" ? readRandomDualSettings() : null,
     steps: Number(ui.steps?.value || 0),
     cfg: Number(ui.cfg?.value || 0),
     sampler_name: ui.sampler_name?.value || "",
@@ -969,18 +1004,21 @@ function restoreProfileDraft(profile, settings = {}, { preferStored = true } = {
     pools: clone(source.pools || defaultPools()), loras: clone(source.loras || []), managedTriggers: clone(source.managedTriggers || [])
   };
   profileDrafts[normalizeProfileId(profile)] = {
-    pipeline_version: 4,
+    pipeline_version: (preferStored ? stored?.pipeline_version : undefined) ?? settings.pipeline_version ?? 4,
+    sourceSettings: clone((preferStored ? stored?.sourceSettings : null) || settings.sourceSettings || settings),
     ...clone(profileDraftFromDraft()),
 
     extra_prompt: (preferStored ? stored?.extra_prompt : undefined) ?? settings.extra_prompt ?? "",
     model_name: (preferStored ? stored?.model_name : undefined) ?? (sourceProfile === targetProfile ? settings.model_name : null) ?? profileConfig(profile).model_name ?? "",
+    clip_name: (preferStored ? stored?.clip_name : undefined) ?? (sourceProfile === targetProfile ? settings.clip_name : null) ?? profileConfig(profile).clip_name ?? "",
+    vae_name: (preferStored ? stored?.vae_name : undefined) ?? (sourceProfile === targetProfile ? settings.vae_name : null) ?? profileConfig(profile).vae_name ?? "",
     base_mode: (preferStored ? stored?.base_mode : undefined) ?? settings.base_mode,
-    dual: clone((preferStored ? stored?.dual : undefined) ?? settings.dual ?? null),
+    dual: clone(preferStored && stored && Object.prototype.hasOwnProperty.call(stored, "dual") ? stored.dual : settings.dual ?? null),
     steps: (preferStored ? stored?.steps : undefined) ?? settings.steps,
     cfg: (preferStored ? stored?.cfg : undefined) ?? settings.cfg,
     sampler_name: (preferStored ? stored?.sampler_name : undefined) ?? settings.sampler_name,
     scheduler: (preferStored ? stored?.scheduler : undefined) ?? settings.scheduler,
-    upscalers: normalizeUpscalers((preferStored ? stored?.upscalers : null) || settings.upscalers || defaults?.upscalers, null, targetProfile, (preferStored ? stored?.pipeline_version : null) ?? settings.pipeline_version ?? 2)
+    upscalers: normalizeUpscalers((preferStored ? stored?.upscalers : null) || settings.upscalers || defaults?.upscalers, null, targetProfile, (preferStored ? stored?.pipeline_version : null) ?? settings.pipeline_version ?? 4)
   };
 }
 function switchProfileDraft(nextProfile, { applyDefaults = true } = {}) {
@@ -990,6 +1028,9 @@ function switchProfileDraft(nextProfile, { applyDefaults = true } = {}) {
   if (previous !== next) saveCurrentProfileDraft();
   activeProfileId = next;
   if (ui.model_profile) ui.model_profile.value = next;
+  if (typeof invalidateCustomImport === "function") invalidateCustomImport();
+  if (typeof stylePresetContextChanged === "function") stylePresetContextChanged();
+  if (typeof sharedFavoritesResetModel === "function") sharedFavoritesResetModel();
   const state = profileDrafts[next];
   if (state) {
     restoreProfileDraft(next, state);
@@ -1001,7 +1042,10 @@ function switchProfileDraft(nextProfile, { applyDefaults = true } = {}) {
     ui.extra_prompt.value = source.extra_prompt || "";
   }
   const selectedState = profileDrafts[next] || profileSettingsDefaults(next);
+  pipelineContractState.version = Number(selectedState.pipeline_version ?? 4);
+  pipelineContractState.source = clone(selectedState.sourceSettings || selectedState);
   ensureSelectValue(ui.model_name, selectedState.model_name || profileConfig(next).model_name || "");
+  for (const key of ["clip_name", "vae_name"]) if (ui[key]) ensureSelectValue(ui[key], selectedState[key] || profileConfig(next)[key] || "");
   if (applyDefaults) {
     const values = profileDefaults(next);
     const profileSettings = selectedState;
@@ -1011,14 +1055,14 @@ function switchProfileDraft(nextProfile, { applyDefaults = true } = {}) {
       if (value !== undefined && ui[field]) setControl(field, value);
     }
     const repair = profileSettings.upscalers || profileSettingsDefaults(next).upscalers || defaults?.upscalers || defaultUpscalers();
-    const normalized = normalizeUpscalers(repair, null, next, selectedState.pipeline_version ?? 2);
+    const normalized = normalizeUpscalers(repair, null, next, selectedState.pipeline_version ?? 4);
     normalized.seedvr2.model_name = normalized.seedvr2.model_name || profileConfig(next).seedvr2_model || "";
     normalized.seedvr2.vae_name = normalized.seedvr2.vae_name || profileConfig(next).seedvr2_vae || "";
     setUpscalerControls(normalized);
     if (typeof setRandomDualControls === "function") setRandomDualControls(profileSettings);
   }
   updateProfileResources();
-  renderDimensions();
+  renderDimensions({ immediate: true });
   renderLoras();
   updatePoolOverview();
 
@@ -1027,12 +1071,20 @@ function switchProfileDraft(nextProfile, { applyDefaults = true } = {}) {
 }
 function normalizeSettings(raw) {
   const merged = { ...defaults, ...raw };
+  merged.zero_negative = raw?.zero_negative === true;
 
   merged.model_profile = normalizeProfileId("anima");
   const settingsProfile = normalizeProfileId(raw?.model_profile ?? defaults?.model_profile ?? "anima");
   merged.model_name = String(raw?.model_name ?? (settingsProfile === merged.model_profile ? defaults?.model_name : null) ?? profileConfig(merged.model_profile).model_name ?? "");
+  for (const key of ["clip_name", "vae_name"]) merged[key] = String(raw?.[key] ?? (settingsProfile === merged.model_profile ? defaults?.[key] : null) ?? profileConfig(merged.model_profile)[key] ?? "");
 
   merged.base_mode = (raw?.base_mode ?? defaults?.base_mode) === "dual_sampler" ? "dual_sampler" : "normal";
+  // New settings are complete. Missing fields belong to old snapshots and
+  // must not inherit a later release's generation defaults.
+  merged.steps = raw?.steps ?? (merged.base_mode === "dual_sampler" ? 30 : 20);
+  merged.cfg = raw?.cfg ?? 8;
+  merged.sampler_name = raw?.sampler_name ?? "euler";
+  merged.scheduler = raw?.scheduler ?? "simple";
   const hasPools = raw && raw.pools && typeof raw.pools === "object";
   merged.pools = hasPools ? clone(raw.pools) : defaultPools();
   for (const section of SECTIONS) {
@@ -1042,8 +1094,11 @@ function normalizeSettings(raw) {
   const hasLoras = raw && Object.prototype.hasOwnProperty.call(raw, "loras");
   merged.loras = clone(hasLoras ? raw.loras || [] : defaultLorasForProfile(merged.model_profile));
   merged.lora_managed_triggers = normalizeTriggerWords(raw?.lora_managed_triggers || defaults?.lora_managed_triggers || []);
-  merged.upscalers = normalizeUpscalers(raw?.upscalers, defaults?.upscalers);
-  merged.pipeline_version = 4;
+  const defaultRepair = normalizeUpscalers(defaults?.upscalers, null, merged.model_profile);
+  merged.pipeline_version = Number(raw?.pipeline_version ?? 4);
+  if (![4, 5].includes(merged.pipeline_version)) throw new Error("仅支持 v4 和 v5 工作流");
+  merged.upscalers = normalizeUpscalers(raw?.upscalers, defaultRepair, merged.model_profile, merged.pipeline_version);
+  merged.dual = clone(raw?.dual ?? null);
   const profile = profileConfig(merged.model_profile);
   if (!merged.upscalers.seedvr2.model_name) merged.upscalers.seedvr2.model_name = profile.seedvr2_model || "";
   if (!merged.upscalers.seedvr2.vae_name) merged.upscalers.seedvr2.vae_name = profile.seedvr2_vae || "";
@@ -1107,13 +1162,16 @@ function setUpscalerControls(upscalers) {
   applyNodeResourceControls();
 }
 function readUpscalerControls() {
-  const result = {};
-  for (const [stage, fields] of Object.entries(UPSCALER_CONTROL_FIELDS)) result[stage] = Object.fromEntries(fields.map((field) => [field, controlValue(UPSCALER_CONTROL_IDS[stage][field])]));
-  result.post_sampler = { enabled: controlValue("latent_second_sampler_enabled"), ...readSamplerValues(POST_SAMPLER_IDS) };
-  result.latent.sampler = readSamplerValues(LATENT_SAMPLER_IDS);
+  const result = normalizeUpscalers(pipelineContractState.source.upscalers, null, currentProfile(), currentPipelineVersion());
+  for (const [stage, fields] of Object.entries(UPSCALER_CONTROL_FIELDS)) {
+    Object.assign(result[stage], Object.fromEntries(fields.map((field) => [field, controlValue(UPSCALER_CONTROL_IDS[stage][field])])));
+  }
+  const post = { enabled: controlValue("latent_second_sampler_enabled"), ...readSamplerValues(POST_SAMPLER_IDS) };
+  result.post_sampler = { ...result.post_sampler, ...post };
+  result.latent.sampler = { ...result.latent.sampler, ...readSamplerValues(LATENT_SAMPLER_IDS) };
   if (typeof sharedParameterState !== "undefined") Object.assign(result.latent, sharedParameterState.latent);
   result.seedvr2.sampler = readSamplerValues(SEED_SAMPLER_IDS);
-  Object.assign(result.seedvr2, readTileValues());
+  for (const [group, values] of Object.entries(readTileValues())) result.seedvr2[group] = { ...result.seedvr2[group], ...values };
   if (ui.latent_model_format) result.latent.model_format = typeof sharedLatentFormat === "function" ? sharedLatentFormat(ui.latent_model_format.value, sharedParameterState.latent.model_format) : ui.latent_model_format.value;
   if (typeof NVIDIA_DLSS_KEYS !== "undefined") result.dlss = { ...defaultUpscalers().dlss, ...sharedParameterState.dlss, ...result.dlss, ...Object.fromEntries(NVIDIA_DLSS_KEYS.map((key) => [key, controlValue(`nvidia_dlss_${key}`)])) };
   return result;
@@ -1146,38 +1204,52 @@ function invalidateResourceInventories() {
   loraInventoryLoaded = false;
 }
 
-function applySettings(raw, { useProfileDraft = false } = {}) {
+function applySettings(raw, { useProfileDraft = false, preservePromptProcessing = false, preservePoolDraft = false } = {}) {
+  const keptPools = preservePoolDraft ? clone({ modes: draft.modes, counts: draft.counts, fixed: draft.fixed, pools: draft.pools }) : null;
   if (typeof invalidatePoolContext === "function") invalidatePoolContext();
   invalidatePromptNormalization();
   const settings = normalizeSettings(raw || defaults || {});
+  pipelineContractState.version = settings.pipeline_version;
+  pipelineContractState.source = { ...clone(settings), upscalers: clone(raw?.upscalers || settings.upscalers) };
+  showPipelineUpgradeNotice(settings);
   const previousProfile = currentProfile();
   activeProfileId = settings.model_profile;
   if (ui.model_profile) ui.model_profile.value = settings.model_profile;
+  if (typeof invalidateCustomImport === "function") invalidateCustomImport();
+  if (typeof stylePresetContextChanged === "function") stylePresetContextChanged();
   clearNormalizationUndo();
   if (ui.promptRuleDialog?.open) {clearPromptRuleEditor();void loadPromptRules();}
 
   ensureSelectValue(ui.model_name, settings.model_name);
+  for (const key of ["clip_name", "vae_name"]) if (ui[key]) ensureSelectValue(ui[key], settings[key]);
   ensureSelectValue(ui.base_mode, settings.base_mode);
   for (const [name, value] of Object.entries(settings)) {
     const element = ui[name];
     if (element && !["object", "undefined"].includes(typeof value)) element.value = value;
   }
+  if (ui.zero_negative) ui.zero_negative.checked = settings.zero_negative === true;
   ensureSelectValue(ui.sampler_name, settings.sampler_name);
   ensureSelectValue(ui.scheduler, settings.scheduler);
-  const upscalers = normalizeUpscalers(settings.upscalers);
+  const upscalers = normalizeUpscalers(settings.upscalers, null, settings.model_profile, settings.pipeline_version);
   setUpscalerControls(upscalers);
   if (typeof setRandomDualControls === "function") setRandomDualControls(settings);
   if (typeof sharedParametersApply === "function") sharedParametersApply(settings, raw);
-  restoreProfileDraft(settings.model_profile, useProfileDraft ? profileDrafts[settings.model_profile] || settings : settings, { preferStored: useProfileDraft });
+  restoreProfileDraft(settings.model_profile, useProfileDraft ? (profileDrafts[settings.model_profile] || settings) : settings, { preferStored: useProfileDraft });
+  if (keptPools) {
+    for (const key of ["modes", "counts", "fixed", "pools"]) {
+      draft[key] = clone(keptPools[key]);
+      profileDrafts[settings.model_profile][key] = clone(keptPools[key]);
+    }
+  }
   if (typeof refreshPoolSelectionTotals === "function") void refreshPoolSelectionTotals();
   const storedProfileState = profileDrafts[settings.model_profile];
   if (useProfileDraft && storedProfileState) {
 
   }
   const storedExtraPrompt = useProfileDraft ? storedProfileState?.extra_prompt : null;
-  if (typeof storedExtraPrompt === "string") ui.extra_prompt.value = storedExtraPrompt;else
-  if (typeof settings.extra_prompt === "string") ui.extra_prompt.value = settings.extra_prompt;
-  renderDimensions();
+  if (typeof storedExtraPrompt === "string") ui.extra_prompt.value = storedExtraPrompt;
+  else if (typeof settings.extra_prompt === "string") ui.extra_prompt.value = settings.extra_prompt;
+  renderDimensions({ immediate: true });
   renderLoras();
 
   updatePeopleTotal();
@@ -1188,22 +1260,32 @@ function applySettings(raw, { useProfileDraft = false } = {}) {
   if (initialized && previousProfile !== settings.model_profile) void refreshProfileData();
 }
 
+function showPipelineUpgradeNotice(source) {
+  if (!ui.pipelineUpgradeHint) return;
+  const version = Number(source?.pipeline_version ?? 4);
+  ui.pipelineUpgradeHint.hidden = version >= 5;
+  ui.pipelineUpgradeHint.textContent = `保留原工作流 v${version} 参数和执行规则；保存或生成不会自动升级。`;
+}
+
 function readSettings() {
   saveCurrentProfileDraft();
   const normalizedArtist = canonicalArtists(ui.manual_artist.value);
   if (ui.manual_artist.value !== normalizedArtist) ui.manual_artist.value = normalizedArtist;
   const settings = {
-    pipeline_version: 4,
+    ...clone(pipelineContractState.source),
+    pipeline_version: currentPipelineVersion(),
     count: Number(ui.count.value), female_count: Number(ui.female_count.value), male_count: Number(ui.male_count.value),
     character_detail: ui.character_detail.value, manual_artist: normalizedArtist, quality_prompt: ui.quality_prompt.value,
     extra_prompt: ui.extra_prompt.value, negative_prompt: ui.negative_prompt.value, width: Number(ui.width.value), height: Number(ui.height.value),
+    zero_negative: Boolean(ui.zero_negative?.checked),
     steps: Number(ui.steps.value), cfg: Number(ui.cfg.value), sampler_name: ui.sampler_name.value, scheduler: ui.scheduler.value,
     base_denoise: Number(ui.base_denoise?.value ?? 1),
 
     model_profile: currentProfile(), model_name: ui.model_name.value,
-
+    clip_name: ui.clip_name?.value ?? pipelineContractState.source.clip_name,
+    vae_name: ui.vae_name?.value ?? pipelineContractState.source.vae_name,
     base_mode: ui.base_mode.value === "dual_sampler" ? "dual_sampler" : "normal",
-    dual: typeof readRandomDualControls === "function" ? readRandomDualControls() : null,
+    dual: typeof readRandomDualSettings === "function" ? readRandomDualSettings() : null,
     pools: clone(draft.pools), loras: clone(draft.loras), lora_managed_triggers: clone(draft.managedTriggers || []),
     upscalers: readUpscalerControls()
   };
@@ -1226,7 +1308,7 @@ function formatSavedTime(timestamp) {
 }
 
 function persistNow() {
-  if (!initialized) return;
+  if (!initialized || pipelineContractState.persistenceBlocked) return;
   const savedAt = new Date().toISOString();
   try {
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 1, savedAt, settings: readSettings(), profileDrafts: clone(profileDrafts), seedMode: document.getElementById("randomSeedMode").value, seed: document.getElementById("randomSampleSeed").value, samplingModes: sharedSamplingDrafts() }));
@@ -1256,10 +1338,11 @@ function loadStoredView() {
   }
 }
 
-function loadStoredDraft() {
+async function loadStoredDraft() {
   try {
     const payload = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
     if (payload?.version !== 1 || !payload.settings || typeof payload.settings !== "object") return false;
+    payload.settings = await canonicalizeWorkflowSettings(payload.settings);
     profileDrafts = payload.profileDrafts && typeof payload.profileDrafts === "object" ? clone(payload.profileDrafts) : {};
     applySettings(payload.settings, { useProfileDraft: true });
     document.getElementById("randomSeedMode").value = payload.seedMode === "random" ? "random" : "fixed";
@@ -1267,8 +1350,10 @@ function loadStoredDraft() {
     sharedSamplingRestoreDrafts(payload.samplingModes);
     ui.draftStatus.textContent = `已恢复草稿 ${formatSavedTime(payload.savedAt)}`;
     return true;
-  } catch { return false; }
-}
+  } catch (error) {
+    pipelineContractState.persistenceBlocked = true;
+    throw new Error(`草稿加载失败，原内容已保留：${error.message}`);
+  }}
 
 function selectedCount(section) {
   const selection = draft.pools[section] || { mode: "include", ids: [], excluded_ids: [] };
@@ -1307,42 +1392,234 @@ async function refreshPoolSelectionTotals({ throwOnError = false } = {}) {
   if (throwOnError && results.some((result) => result.status === "rejected")) throw results.find((result) => result.status === "rejected").reason;
 }
 
-function renderDimensions() {
-  ui.dimensionList.replaceChildren(
-    ...SECTIONS.map((section) => {
-      const meta = SECTION_META[section];
-      const mode = draft.modes[section] || "off";
-      const count = draft.counts[section] || 1;
-      const selected = selectedCount(section);
-      const article = document.createElement("article");
-      article.className = `dimension-row mode-${mode}`;
-      article.dataset.section = section;
-      article.innerHTML = `<div class="dimension-heading"><div><span class="dimension-icon">${meta.label.slice(0, 1)}</span><strong>${meta.label}</strong><small>${selected} 项已选</small></div><button class="manage-pool" type="button" data-manage="${section}">管理池 <span aria-hidden="true">→</span></button></div>
-      <div class="dimension-mode" role="group" aria-label="${meta.label}模式"><button type="button" data-mode="off" class="${mode === "off" ? "active" : ""}">关闭</button><button type="button" data-mode="pool" class="${mode === "pool" ? "active" : ""}">随机池</button><button type="button" data-mode="fixed" class="${mode === "fixed" ? "active" : ""}">固定</button></div>
-      <div class="dimension-body"><label class="draw-count"><span>抽取数量</span><input type="number" min="1" max="${section === "expression" ? 1 : 5}" step="1" value="${section === "expression" ? 1 : count}" data-count="${section}" ${mode !== "pool" || section === "expression" ? "disabled" : ""}></label><span class="mode-note">${mode === "pool" ? `${selected} 项候选` : mode === "fixed" ? "使用固定提示词" : "不加入提示词"}</span></div>
-      <label class="field dimension-fixed"><span>固定提示词</span><input type="text" value="${escapeHtml(draft.fixed[section] || "")}" data-fixed="${section}" placeholder="留空则不加入" ${mode !== "fixed" ? "disabled" : ""}></label>`;
-      article.querySelectorAll("[data-mode]").forEach((button) =>
-      button.addEventListener("click", () => {
-        draft.modes[section] = button.dataset.mode;
-        renderDimensions();
-        schedulePersist();
-      })
-      );
-      article.querySelector("[data-count]").addEventListener("input", (event) => {
-        draft.counts[section] = Math.max(1, Math.min(5, Number(event.target.value || 1)));
-        schedulePersist();
-        updatePoseConflict();
+function styleDimensionPromptMeasure(measure, styles, width) {
+  for (const name of ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight", "letterSpacing", "wordSpacing", "textIndent", "textTransform", "tabSize", "whiteSpace", "wordBreak", "overflowWrap", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "borderStyle"]) {
+    measure.style[name] = styles[name];
+  }
+  measure.style.width = `${width}px`;
+}
+function dimensionPromptMetrics(input) {
+  const bounds = input.getBoundingClientRect();
+  if (!(bounds.width > 0)) return null;
+  const styles = getComputedStyle(input);
+  const number = name => Number.parseFloat(styles[name]) || 0;
+  const lineHeight = number("lineHeight") || number("fontSize") * 1.6;
+  const paddingTop = number("paddingTop"), paddingBottom = number("paddingBottom");
+  const border = number("borderTopWidth") + number("borderBottomWidth");
+  const minHeight = Math.max(number("minHeight"), lineHeight + paddingTop + paddingBottom + border);
+  const maxHeight = Math.max(minHeight, lineHeight * 6 + paddingTop + paddingBottom + border);
+  const state = input.dimensionPromptMotion ||= {};
+  let measure = state.measure;
+  if (!measure) {
+    measure = document.createElement("textarea");
+    measure.className = "dimension-fixed-measure";
+    measure.rows = 1; measure.tabIndex = -1; measure.disabled = true;
+    measure.setAttribute("aria-hidden", "true");
+    Object.assign(measure.style, {
+      position: "fixed", left: "0", top: "0", visibility: "hidden", pointerEvents: "none",
+      height: "0px", minHeight: "0", maxHeight: "none", margin: "0", resize: "none",
+      boxSizing: "border-box", overflowX: "hidden", overflowY: "hidden",
+    });
+    document.body.append(measure); state.measure = measure;
+  }
+  styleDimensionPromptMeasure(measure, styles, bounds.width);
+  measure.style.overflowY = "hidden";
+  measure.value = input.value;
+  let contentHeight = Math.max(minHeight, measure.scrollHeight + border);
+  // A capped editor reserves a scrollbar. Measure with that same text width so
+  // its last line and caret remain accurate on platforms with classic scrollbars.
+  if (contentHeight > maxHeight + .5) {
+    measure.style.overflowY = "scroll";
+    contentHeight = Math.max(minHeight, measure.scrollHeight + border);
+  }
+  let caretTop = paddingTop;
+  if (!input.disabled && document.activeElement === input) {
+    let caretMeasure = state.caretMeasure;
+    if (!caretMeasure) {
+      caretMeasure = document.createElement("div");
+      caretMeasure.className = "dimension-fixed-measure dimension-fixed-caret-measure";
+      caretMeasure.setAttribute("aria-hidden", "true");
+      Object.assign(caretMeasure.style, {
+        position: "fixed", left: "0", top: "0", visibility: "hidden", pointerEvents: "none",
+        height: "0px", minHeight: "0", maxHeight: "none", margin: "0", boxSizing: "border-box", overflowX: "hidden",
       });
-      const fixedInput = article.querySelector("[data-fixed]");
-      fixedInput.addEventListener("input", (event) => {
-        draft.fixed[section] = event.target.value;
-        schedulePersist();
+      state.caretOrigin = document.createElement("span"); state.caretOrigin.textContent = "\u200b";
+      state.caretBefore = document.createElement("span"); state.caretAfter = document.createElement("span");
+      caretMeasure.append(state.caretOrigin, state.caretBefore, state.caretAfter);
+      document.body.append(caretMeasure); state.caretMeasure = caretMeasure;
+    }
+    styleDimensionPromptMeasure(caretMeasure, styles, bounds.width);
+    caretMeasure.style.overflowY = measure.style.overflowY;
+    const caret = (input.selectionDirection === "backward" ? input.selectionStart : input.selectionEnd) ?? input.value.length;
+    state.caretBefore.textContent = input.value.slice(0, caret);
+    // Keep the entire suffix: its word can wrap before the caret even when a
+    // prefix-only measurement would still fit on the preceding line.
+    state.caretAfter.textContent = input.value.slice(caret) || "\u200b";
+    const line = Math.max(0, Math.round((state.caretAfter.offsetTop - state.caretOrigin.offsetTop) / lineHeight));
+    caretTop += line * lineHeight;
+  }
+  const caretBottom = caretTop + lineHeight;
+  return { width: bounds.width, height: bounds.height, lineHeight, paddingTop, paddingBottom, border,
+    minHeight, maxHeight, contentHeight, caretTop, caretBottom };
+}
+function applyDimensionPromptHeight(input, height) {
+  const state = input.dimensionPromptMotion;
+  if (!state) return;
+  state.height = height;
+  input.style.height = `${height}px`;
+  if (input.disabled) { input.scrollTop = 0; state.scrollTop = 0; return; }
+  if (!state.keepCaret || document.activeElement !== input) return;
+  // All geometry is captured when text or width changes, not in animation frames.
+  const viewport = height - state.border;
+  let scroll = state.scrollTop;
+  if (state.caretTop < scroll + state.paddingTop) scroll = state.caretTop - state.paddingTop;
+  else if (state.caretBottom > scroll + viewport - state.paddingBottom) scroll = state.caretBottom - viewport + state.paddingBottom;
+  state.scrollTop = Math.max(0, Math.min(scroll, state.contentHeight - height));
+  input.scrollTop = state.scrollTop;
+}
+function syncDimensionPromptHeight(input, { immediate = false, keepCaret = false } = {}) {
+  if (!input) return;
+  const state = input.dimensionPromptMotion ||= {};
+  const metrics = dimensionPromptMetrics(input);
+  if (!metrics) {
+    state.pending = true;
+    const layout = ui.dimensionList.dimensionLayout;
+    // A workbench can hide and reappear between ResizeObserver deliveries with
+    // the same width. One shared frame resolves that restoration without polling.
+    if (layout && layout.revealFrame == null && !document.hidden) {
+      layout.revealFrame = requestAnimationFrame(() => {
+        layout.revealFrame = null;
+        for (const article of ui.dimensionList.querySelectorAll(".dimension-row")) {
+          const field = article.querySelector("[data-fixed]");
+          if (!field.dimensionPromptMotion?.pending || !(field.getBoundingClientRect().width > 0)) continue;
+          positionDimensionIndicator(article, { immediate: true });
+          syncDimensionPromptHeight(field, { immediate: true, keepCaret: document.activeElement === field });
+        }
       });
-      fixedInput.addEventListener("blur", () => normalizePromptElement(fixedInput));
-      article.querySelector("[data-manage]").addEventListener("click", () => openPool(section));
-      return article;
-    })
-  );
+    }
+    return;
+  }
+  const first = !Number.isFinite(state.target), previous = state.target;
+  Object.assign(state, metrics, { pending: false, value: input.value, keepCaret, scrollTop: input.scrollTop });
+  const fixed = draft.modes[input.dataset.fixed] === "fixed";
+  const target = fixed ? Math.min(metrics.maxHeight, metrics.contentHeight) : metrics.minHeight;
+  input.style.overflowY = fixed && metrics.contentHeight > metrics.maxHeight + .5 ? "auto" : "hidden";
+  if (!immediate && !first && Math.abs(target - previous) < .5) {
+    applyDimensionPromptHeight(input, metrics.height);
+    return;
+  }
+  state.target = target;
+  const finish = () => { applyDimensionPromptHeight(input, target); state.keepCaret = false; };
+  if (typeof StudioMotion === "undefined") { finish(); return; }
+  StudioMotion.spring(input, "dimension-height", { height: target }, {
+    initial: first ? { height: metrics.height || metrics.minHeight } : undefined,
+    immediate: immediate || first, response: .3, damping: 1, precision: .1,
+    onUpdate: value => applyDimensionPromptHeight(input, value.height), onComplete: finish,
+  });
+}
+function positionDimensionIndicator(article, { immediate = false } = {}) {
+  const selected = article.querySelector(`[data-mode="${draft.modes[article.dataset.section] || "off"}"]`);
+  const indicator = article.querySelector(".dimension-mode-thumb");
+  if (!selected || !indicator || !(selected.offsetWidth > 0)) return;
+  const target = { x: selected.offsetLeft - indicator.offsetLeft, width: selected.offsetWidth };
+  if (typeof animateStudioIndicator === "function") animateStudioIndicator(indicator, target, { immediate });
+  else { indicator.style.width = `${target.width}px`; indicator.style.transform = `translateX(${target.x}px)`; }
+}
+function initializeDimensionLayout() {
+  const list = ui.dimensionList;
+  if (list.dimensionLayout) return list.dimensionLayout;
+  const state = list.dimensionLayout = { widths: new WeakMap(), observed: new WeakSet(), observer: null };
+  const refresh = article => {
+    positionDimensionIndicator(article, { immediate: true });
+    const input = article.querySelector("[data-fixed]");
+    syncDimensionPromptHeight(input, { immediate: true, keepCaret: document.activeElement === input });
+  };
+  if (typeof ResizeObserver !== "undefined") {
+    state.observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const width = entry.contentRect.width, previous = state.widths.get(entry.target);
+        if (previous !== undefined && Math.abs(width - previous) < .5) continue;
+        state.widths.set(entry.target, width);
+        if (width > 0) refresh(entry.target);
+        else if (typeof StudioMotion !== "undefined") {
+          StudioMotion.finish(entry.target.querySelector("[data-fixed]"), "dimension-height");
+          StudioMotion.finish(entry.target.querySelector(".dimension-mode-thumb"), "indicator");
+        }
+      }
+    });
+  } else {
+    window.addEventListener("resize", () => list.querySelectorAll(".dimension-row").forEach(refresh));
+  }
+  document.fonts?.ready?.then(() => list.querySelectorAll(".dimension-row").forEach(refresh));
+  return state;
+}
+function setDimensionMode(section, mode, { focus = false } = {}) {
+  if (!SECTIONS.includes(section) || !["off", "pool", "fixed"].includes(mode) || (draft.modes[section] || "off") === mode) return false;
+  draft.modes[section] = mode;
+  renderDimensions();
+  if (focus) ui.dimensionList.querySelector(`[data-section="${section}"] [data-mode="${mode}"]`)?.focus({ preventScroll: true });
+  schedulePersist();
+  return true;
+}
+function createDimensionCard(section) {
+  const meta = SECTION_META[section], article = document.createElement("article");
+  article.className = "dimension-row"; article.dataset.section = section;
+  article.innerHTML = `<div class="dimension-heading"><div><span class="dimension-icon">${meta.label.slice(0, 1)}</span><strong>${meta.label}</strong><small></small></div><button class="manage-pool" type="button" data-manage="${section}">管理池 <span aria-hidden="true">→</span></button></div>
+    <div class="dimension-mode" role="group" aria-label="${meta.label}模式"><span class="dimension-mode-thumb" aria-hidden="true"></span><button type="button" data-mode="off">关闭</button><button type="button" data-mode="pool">随机池</button><button type="button" data-mode="fixed">固定</button></div>
+    <div class="dimension-body"><label class="draw-count"><span>抽取数量</span><input type="number" min="1" max="${section === "expression" ? 1 : 5}" step="1" data-count="${section}"></label><span class="mode-note"></span></div>
+    <label class="field dimension-fixed"><span>固定提示词</span><textarea rows="1" data-fixed="${section}" placeholder="留空则不加入"></textarea></label>`;
+  article.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => setDimensionMode(section, button.dataset.mode)));
+  article.querySelector("[data-count]").addEventListener("input", event => {
+    draft.counts[section] = Math.max(1, Math.min(5, Number(event.target.value || 1)));
+    schedulePersist(); updatePoseConflict();
+  });
+  const input = article.querySelector("[data-fixed]");
+  input.addEventListener("input", () => {
+    draft.fixed[section] = input.value;
+    syncDimensionPromptHeight(input, { keepCaret: true }); schedulePersist();
+  });
+  input.addEventListener("blur", () => normalizePromptElement(input));
+  input.addEventListener("compositionstart", () => { input.dimensionComposing = true; });
+  input.addEventListener("compositionend", () => {
+    input.dimensionComposing = false; draft.fixed[section] = input.value;
+    syncDimensionPromptHeight(input, { keepCaret: true }); schedulePersist();
+  });
+  input.addEventListener("select", () => syncDimensionPromptHeight(input, { keepCaret: true }));
+  article.querySelector("[data-manage]").addEventListener("click", () => openPool(section));
+  return article;
+}
+function renderDimensions({ immediate = false } = {}) {
+  const layout = initializeDimensionLayout();
+  for (const section of SECTIONS) {
+    let article = ui.dimensionList.querySelector(`[data-section="${section}"]`);
+    const created = !article;
+    if (!article) { article = createDimensionCard(section); ui.dimensionList.append(article); }
+    const mode = draft.modes[section] || "off", changed = article.dimensionMode !== mode;
+    const count = section === "expression" ? 1 : draft.counts[section] || 1;
+    const selected = selectedCount(section), fixed = draft.fixed[section] || "";
+    article.dimensionMode = mode;
+    for (const name of ["off", "pool", "fixed"]) article.classList.toggle(`mode-${name}`, mode === name);
+    for (const button of article.querySelectorAll("[data-mode]")) {
+      const active = button.dataset.mode === mode;
+      button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active));
+    }
+    const summary = article.querySelector(".dimension-heading small"), summaryText = `${selected} 项已选`;
+    if (summary.textContent !== summaryText) summary.textContent = summaryText;
+    const note = article.querySelector(".mode-note"), noteText = mode === "pool" ? `${selected} 项候选` : mode === "fixed" ? "使用固定提示词" : "不加入提示词";
+    if (note.textContent !== noteText) note.textContent = noteText;
+    const countInput = article.querySelector("[data-count]");
+    if (countInput.value !== String(count) && (immediate || document.activeElement !== countInput)) countInput.value = count;
+    countInput.disabled = mode !== "pool" || section === "expression";
+    const input = article.querySelector("[data-fixed]");
+    const valueChanged = input.value !== fixed;
+    if (valueChanged && (!input.dimensionComposing || immediate)) input.value = fixed;
+    input.disabled = mode !== "fixed";
+    if (created || changed || immediate) positionDimensionIndicator(article, { immediate: immediate || created });
+    if (created || changed || valueChanged || immediate || input.dimensionPromptMotion?.pending) {
+      syncDimensionPromptHeight(input, { immediate: immediate || created, keepCaret: document.activeElement === input });
+    }
+    if (layout.observer && !layout.observed.has(article)) { layout.observed.add(article); layout.observer.observe(article); }
+  }
 }
 
 function updatePeopleTotal() {
@@ -1478,6 +1755,7 @@ function modelSelectionIssue(filename = ui.model_name?.value || "") {
   return classificationReason(classificationItem(resources.model_items, filename), filename ? "文件不在当前 ComfyUI 主模型清单中" : "没有识别为当前档案的主模型");
 }
 function generationClassificationIssues(settings = null) {
+  if (typeof resourceResolutionIssues === "function") return resourceResolutionIssues(settings || readSettings());
   const issues = [];
   const modelName = settings?.model_name ?? ui.model_name?.value ?? "";
   const modelIssue = modelSelectionIssue(modelName);
@@ -1494,8 +1772,9 @@ function generationClassificationIssues(settings = null) {
 }
 function updateGenerationAvailability() {
   if (!ui.startButton) return;
+  if (typeof scheduleResourceResolution === "function") scheduleResourceResolution();
   const issues = generationClassificationIssues();
-
+  if (typeof currentBatch !== "undefined" && currentBatch?.memory_release === "pending") issues.push("正在清缓存与垃圾回收，请稍后再试");
   const storage = config.storage_status?.history;
   ui.startButton.disabled = submitInFlight || !ui.connection.classList.contains("online") || issues.length > 0 || Boolean(storage?.read_only);
   ui.startButton.title = storage?.read_only ? storage.reason || "历史存储已受保护" : issues.join("；");
@@ -1514,7 +1793,7 @@ function renderLoras() {
   ui.loraEmpty.hidden = loras.length > 0;
   ui.loraList.replaceChildren(
     ...loras.map((item, index) => {
-      const selectionIssue = loraSelectionIssue(item.filename);
+      const selectionIssue = item.enabled ? loraSelectionIssue(item.filename) : "";
       const available = !selectionIssue;
       const high = Math.abs(Number(item.strength)) > 2;
       const row = document.createElement("div");
@@ -1523,7 +1802,7 @@ function renderLoras() {
       const display = loraPresentation(inventoryItem, item.filename);
       const triggers = normalizeTriggerWords(inventoryItem?.trigger_words || []);
       const triggerLabel = inventoryItem?.trigger_override ? "触发词（已覆盖）" : "触发词";
-      row.innerHTML = `<input class="lora-toggle" type="checkbox" ${item.enabled ? "checked" : ""} title="启用 LoRA" aria-label="启用 ${escapeHtml(item.filename)}"><div class="lora-name"><strong title="${escapeHtml(display.path)}">${escapeHtml(display.label)}</strong><small class="${available && !high ? "" : "lora-warning"}">${available ? high ? "高强度 · 模型 + CLIP" : "模型 + CLIP" : escapeHtml(selectionIssue)}</small>${triggers.length || inventoryItem?.trigger_override ? `<small class="lora-trigger-line" title="自动触发词">${triggerLabel}：${triggers.length ? escapeHtml(triggers.join(", ")) : "已禁用"}</small>` : ""}</div><input class="lora-strength" type="number" min="-100" max="100" step="0.05" value="${Number(item.strength)}" title="LoRA strength" aria-label="${escapeHtml(item.filename)} 强度"><div class="lora-actions"><button class="button ghost compact lora-trigger-edit" type="button" data-lora-triggers ${inventoryItem ? "" : "disabled"}>触发词</button><button class="icon-button dark" type="button" data-lora-up title="上移" aria-label="上移">↑</button><button class="icon-button dark" type="button" data-lora-down title="下移" aria-label="下移">↓</button><button class="icon-button dark" type="button" data-lora-remove title="移除" aria-label="移除">×</button></div>`;
+      row.innerHTML = `<input class="lora-toggle" type="checkbox" ${item.enabled ? "checked" : ""} title="启用 LoRA" aria-label="启用 ${escapeHtml(item.filename)}"><div class="lora-name"><strong title="${escapeHtml(display.path)}">${escapeHtml(inventoryItem?.display_name || display.basename)}</strong><small class="${available && !high ? "" : "lora-warning"}">${available ? (high ? "高强度 · 模型 + CLIP" : "模型 + CLIP") : escapeHtml(selectionIssue)}</small>${triggers.length || inventoryItem?.trigger_override ? `<small class="lora-trigger-line" title="自动触发词">${triggerLabel}：${triggers.length ? escapeHtml(triggers.join(", ")) : "已禁用"}</small>` : ""}</div><input class="lora-strength" type="number" min="-100" max="100" step="0.05" value="${Number(item.strength)}" title="LoRA strength" aria-label="${escapeHtml(item.filename)} 强度"><div class="lora-actions"><button class="button ghost compact lora-trigger-edit" type="button" data-lora-triggers ${inventoryItem ? "" : "disabled"}>触发词</button><button class="icon-button dark" type="button" data-lora-up title="上移" aria-label="上移">↑</button><button class="icon-button dark" type="button" data-lora-down title="下移" aria-label="下移">↓</button><button class="icon-button dark" type="button" data-lora-remove title="移除" aria-label="移除">×</button></div>`;
       row.querySelector(".lora-toggle").addEventListener("change", (event) => {
         item.enabled = event.target.checked;
         reconcileLoraTriggers(item.enabled ? [item] : []);
@@ -1707,8 +1986,26 @@ function initializeLoraManager() {
     onCompactRestore: (query) => {ui.loraSearch.value = query ?? ui.loraSearch.value;renderLoraCatalog();},
     request,
     notify: toast,
-    onInventoryChanged: () => loadLoraInventory({ refresh: true })
+    onItemChanged: managedLoraItemChanged,
+    onInventoryChanged: () => loadLoraInventory({ refresh: true }),
   });
+}
+function managedLoraItemChanged({ item, changedFields = [] } = {}) {
+  if (!item?.filename) return;
+  const triggersChanged = changedFields.some(field => ["trigger_words", "trigger_override", "source_trigger_words"].includes(field));
+  // Stars, folders, tags and notes belong to the library. They do not change
+  // generation inputs and must not invalidate or redraw the host inventories.
+  if (!triggersChanged && !changedFields.includes("default_strength")) return;
+  replaceLoraInventoryItem(item);
+  if (item.model_profile !== currentProfile()) return;
+  if (triggersChanged) {
+    reconcileLoraTriggers(draft.loras.filter(value => value.enabled));
+    renderLoras();
+    schedulePersist();
+  }
+  // The compact picker renders on restore. Avoid rebuilding its hidden images
+  // while the manager is open, including when only a future default changes.
+  if (ui.loraDialog.open && !ui.loraDialog.classList.contains("lm-expanded")) renderLoraCatalog();
 }
 function parseLoraTriggerInput(value) {
   return normalizeTriggerWords(
@@ -1855,31 +2152,34 @@ function renderQueue(queue) {
   const existing = new Map([...ui.queuePanel.children].map((row) => [row.dataset.queueId, row]));
   const retained = new Set();
   queue.forEach((entry, index) => {
-    const key = String(entry.queue_id);
-    let row = existing.get(key);
-    if (!row) {
-      row = document.createElement("div");
-      row.className = "queue-row";
-      row.dataset.queueId = key;
-      const label = document.createElement("span");
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "icon-button dark";
-      remove.title = "移出队列";
-      remove.setAttribute("aria-label", "移出队列");
-      remove.textContent = "×";
-      remove.addEventListener("click", async () => {
-        try {
-          const payload = await request(`/api/batches/queue/${row.dataset.queueId}`, { method: "DELETE" });
-          renderQueue(payload.queue || []);
-        } catch (error) {toast(error.message);}
-      });
-      row.append(label, remove);
-    }
-    retained.add(row);
-    const label = row.firstElementChild;
-    label.textContent = `${entry.position}. ${entry.count} 张 · ${entry.model_name}`;
-    if (ui.queuePanel.children[index] !== row) ui.queuePanel.insertBefore(row, ui.queuePanel.children[index] || null);
+      const key = String(entry.queue_id);
+      let row = existing.get(key);
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "queue-row";
+        row.dataset.queueId = key;
+        const label = document.createElement("span");
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "icon-button dark";
+        remove.title = "移出队列";
+        remove.setAttribute("aria-label", "移出队列");
+        remove.textContent = "×";
+        remove.addEventListener("click", async () => {
+          try {
+            const payload = await request(`/api/batches/queue/${row.dataset.queueId}`, { method: "DELETE" });
+            renderQueue(payload.queue || []);
+          } catch (error) { toast(error.message); }
+        });
+        row.append(label, remove);
+      }
+      retained.add(row);
+      const label = row.firstElementChild;
+      label.textContent = entry.kind === "prompt_preview"
+        ? `${entry.position}. ${entry.prompt_kind === "reverse" || entry.settings?.kind === "reverse" ? "图像反推" : "提示词重写"} · ${entry.model_name}`
+        : `${entry.position}. ${entry.count} 张 · ${entry.model_name}`;
+      if (typeof resourceReplacementText === "function") label.title = resourceReplacementText(entry.resource_resolution?.replacements || []);
+      if (ui.queuePanel.children[index] !== row) ui.queuePanel.insertBefore(row, ui.queuePanel.children[index] || null);
   });
   for (const row of existing.values()) if (!retained.has(row)) row.remove();
 }
@@ -1907,11 +2207,9 @@ function batchProgressLabel(batch) {
 }
 function loraRuntimeSummary(runtime, warningCount = 0) {
   if (!runtime || typeof runtime !== "object") return "";
-  const applied = Array.isArray(runtime.applied) ? runtime.applied : [];
   const skipped = Array.isArray(runtime.skipped) ? runtime.skipped : [];
   const parts = [];
-  if (applied.length) parts.push(`本张人物自动启用 ${applied.length} 个 LoRA`);
-  if (skipped.length) parts.push(`本张跳过 ${skipped.length} 项：${skipped.map((item) => `${item.character_name || "人物"} · ${item.filename}（${item.message || item.reason || "不可用"}）`).join("；")}`);
+  if (skipped.length) parts.push(`本张跳过 ${skipped.length} 项：${skipped.map(item => `${item.character_name || "人物"} · ${item.filename}（${item.message || item.reason || "不可用"}）`).join("；")}`);
   if (warningCount) parts.push(`本批累计跳过 ${warningCount} 项，原因已保存在图片详情`);
   return parts.join("\n");
 }
@@ -1938,24 +2236,32 @@ function renderBatch(batch, queue = currentQueue) {
 
   renderQueue(queue);
   const active = Boolean(batch && ["running", "stopping"].includes(batch.status));
+  const stopPending = active && typeof stopRequestId !== "undefined" && stopRequestId === batch.id;
+  const stopping = active && (batch.status === "stopping" || stopPending);
+  const cancelUnconfirmed = batch?.cancel_state === "unconfirmed" || Boolean(batch?.cancel_warning);
   const completed = batch?.completed || 0;
   const total = batch?.total || 0;
+  const releasePending = batch?.memory_release === "pending";
+  const releaseMessage = batch?.memory_release !== "not_requested" ? batch?.memory_release_message || "" : "";
   const labels = {
     running: "正在生成",
-    stopping: "完成当前张后停止",
+    stopping: "正在取消当前任务",
     completed: "批次完成",
-    stopped: "已停止",
-    error: "执行失败"
+    stopped: "本地批次已停止",
+    error: "执行失败",
   };
   ui.batchState.textContent = batch ? labels[batch.status] || batch.status : "等待任务";
+  if (stopPending && batch.status === "running") ui.batchState.textContent = "正在请求停止…";
+  if (batch?.status === "stopped" && cancelUnconfirmed) ui.batchState.textContent = "本地已停止，ComfyUI 尚未确认";
+  else if (batch?.status === "stopped" && releasePending) ui.batchState.textContent = "任务已停止，正在清缓存与垃圾回收…";
   ui.progressCount.textContent = `${completed} / ${total}`;
   setProgressValue(ui.progressFill, total ? completed / total : 0, active, batch?.id || "");
   // 单张采样进度(来自 ComfyUI websocket,尽力而为;旧版页面缺控件时跳过)
   if (ui.sampleFill && ui.sampleProgress) {
-    const progress = active ? batch.progress : null;
+    const progress = active && !stopping ? batch.progress : null;
     const sampleTrack = ui.sampleFill.parentElement;
-    ui.sampleProgress.hidden = !active;
-    ui.sampleProgress.textContent = active ? batchProgressLabel(batch) : "";
+    ui.sampleProgress.hidden = !active && !releasePending && !releaseMessage;
+    ui.sampleProgress.textContent = stopping ? "正在取消当前任务，确认 ComfyUI 状态…" : active ? batchProgressLabel(batch) : releasePending ? "正在确认队列空闲并执行清缓存与垃圾回收…" : releaseMessage;
     if (progress && progress.max > 0) {
       sampleTrack.hidden = false;
       setProgressValue(ui.sampleFill, progress.value / progress.max, active, `${batch.id}:${batch.progress_node}`);
@@ -1964,12 +2270,15 @@ function renderBatch(batch, queue = currentQueue) {
       setProgressValue(ui.sampleFill, 0, false, `${batch?.id}:${batch?.progress_node}`);
     }
   }
-  ui.stopButton.disabled = !active || batch.status === "stopping";
+  ui.stopButton.disabled = !active || stopping || releasePending;
+  ui.stopButton.textContent = stopping ? "正在停止…" : "停止";
   // 运行中仍可加入队列，但分类有效性与连接状态共用同一守卫。
   updateGenerationAvailability();
-  ui.startButton.textContent = active ? "加入队列" : "开始生成";
+  if (releasePending) ui.startButton.disabled = true;
+  ui.startButton.textContent = releasePending ? (active ? "正在停止…" : "正在清理…") : active ? "加入队列" : "开始生成";
   const failurePrefix = batch?.failed_stage_label ? `${batch.failed_stage_label}失败：` : "";
-  const batchMessage = [batch?.error && (failurePrefix && !String(batch.error).startsWith(failurePrefix) ? `${failurePrefix}${batch.error}` : batch.error), batch?.cancel_warning].filter(Boolean).join("\n");
+  const cancelMessage = cancelUnconfirmed ? batch?.cancel_warning || "取消请求未确认，远端任务可能继续执行；请在 ComfyUI 中检查" : "";
+  const batchMessage = [batch?.error && (failurePrefix && !String(batch.error).startsWith(failurePrefix) ? `${failurePrefix}${batch.error}` : batch.error), cancelMessage].filter(Boolean).join("\n");
   ui.batchError.hidden = !batchMessage;
   ui.batchError.textContent = batchMessage;
   const loraNotice = typeof document !== "undefined" ? document.getElementById("loraBatchNotice") : null;
@@ -1989,6 +2298,7 @@ function renderBatch(batch, queue = currentQueue) {
     }
     // New output can shift every page boundary, including a page being read
     // by the fullscreen viewer. Preserve selections, invalidate only reads.
+    if (completed > 0 && typeof historyFiltersHistoryChanged === "function") historyFiltersHistoryChanged();
     if (typeof invalidateHistoryView === "function") invalidateHistoryView();else
     if (typeof historyCache !== "undefined") historyCache.clear();
 
@@ -1996,6 +2306,31 @@ function renderBatch(batch, queue = currentQueue) {
     typeof historyDetailState !== "undefined" && historyDetailState.homeQuery.folderId;
     loadHistory(keepPosition ? historyPage : 1);
 
+  }
+}
+async function stopCurrentBatch() {
+  const batch = currentBatch;
+  if (!batch || batch.status !== "running" || batch.memory_release === "pending" || stopRequestId === batch.id) return;
+  stopRequestId = batch.id;
+  renderBatch(currentBatch);
+  try {
+    const payload = await request(`/api/batches/${batch.id}/stop`, { method: "POST" });
+    const releaseFinished = currentBatch?.memory_release && !["not_requested", "pending"].includes(currentBatch.memory_release);
+    if (currentBatch?.id === batch.id && !(releaseFinished && payload.batch?.memory_release === "pending")
+        && (["running", "stopping"].includes(currentBatch.status)
+        || currentBatch.status === payload.batch?.status)) renderBatchPayload(payload);
+  } catch (error) {
+    toast(`停止请求失败：${error.message}`);
+    const beforeRefresh = currentBatch;
+    try {
+      const payload = await request("/api/batches/current", { cache: "no-store" });
+      if (currentBatch === beforeRefresh && currentBatch?.id === batch.id) renderBatchPayload(payload);
+    } catch (refreshError) {
+      toast(`暂时无法确认停止状态：${refreshError.message}`);
+    }
+  } finally {
+    if (stopRequestId === batch.id) stopRequestId = "";
+    renderBatch(currentBatch);
   }
 }
 async function refreshConnection() {
@@ -2030,7 +2365,7 @@ let pollBatchPending = false;
 let pollBatchLast = 0;
 async function pollBatch() {
   if (document.hidden || pollBatchPending) return;
-  const batchActive = Boolean(currentBatch && ["running", "stopping"].includes(currentBatch.status));
+  const batchActive = Boolean(currentBatch && (["running", "stopping"].includes(currentBatch.status) || currentBatch.memory_release === "pending"));
   const interval = batchActive ? 1200 : 4800;
   if (pollIdleTicks && Date.now() - pollBatchLast < interval) return;
   pollIdleTicks++;pollBatchLast = Date.now();pollBatchPending = true;
@@ -2068,35 +2403,21 @@ function card(record, index, historyView = null) {
   button.className = "image-card-open";
   button.dataset.recordId = String(record.id);
   button.setAttribute("aria-label", `查看 ${record.filename || "生成结果"}`);
-  button.innerHTML = `<img loading="lazy" decoding="async" fetchpriority="low" src="/api/images/${record.id}/thumbnail" alt="Anima 生成结果"><span class="image-failure" hidden>图片加载失败</span><div class="card-copy"><strong>${escapeHtml(record.filename)}</strong><span>#${record.sequence} · Seed ${record.sample_seed}</span></div>`;
+  button.innerHTML = `<img decoding="async" data-thumbnail-url="/api/images/${record.id}/thumbnail" alt="Anima 生成结果"><span class="image-failure" hidden>图片加载失败</span><div class="card-copy"><strong>${escapeHtml(record.filename)}</strong><span>#${record.sequence} · Seed ${record.sample_seed}</span></div>`;
   button.addEventListener("click", () => {
     if (typeof artworkActivateCard === "function" && artworkActivateCard(article.record)) return;
     openDetail(article.record, { historyView: article.historyView });
   });
-  const image = button.querySelector("img");
-  const markLoaded = () => {
-    article.classList.remove("is-loading");
-    image.classList.add("image-loaded");
-  };
-  image.addEventListener("load", markLoaded, { once: true });
-  const markFailed = (event) => {
-    article.classList.remove("is-loading");
-    event?.target?.classList.add("image-failed");
-    button.querySelector(".image-failure").hidden = false;
-  };
-  image.addEventListener("error", markFailed, { once: true });
-  if (image.complete) {
-    if (image.naturalWidth) markLoaded();else
-    markFailed({ target: image });
-  }
   article.append(button);
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "image-retry";
+  retry.textContent = "重试";
+  retry.setAttribute("aria-label", "重新加载缩略图");
+  retry.hidden = true;
+  article.append(retry);
+  ArtworkThumbnails.attach(article, button.querySelector("img"), retry);
   if (typeof decorateArtworkCard === "function") decorateArtworkCard(article, record, button);
-  if (typeof IntersectionObserver !== "undefined") {
-    card.visibilityObserver ||= new IntersectionObserver((entries) => {
-      for (const entry of entries) entry.target.classList.toggle("is-offscreen", !entry.isIntersecting);
-    }, { rootMargin: "100px" });
-    card.visibilityObserver.observe(article);
-  }
   return article;
 }
 let historyRequest = 0;
@@ -2127,6 +2448,9 @@ function renderHistoryPage(data, historyView = null) {
   const view = historyViewState(historyView),elements = view.elements;
   view.dirty = false;
   const previousPage = view.page;
+  const renderedQuery = typeof historyQueryParams === "function" ? historyQueryParams(view) : "";
+  const queryChanged = view.renderedQuery != null && view.renderedQuery !== renderedQuery;
+  view.renderedQuery = renderedQuery;
   view.page = Number(data.page) || 1;
   view.pages = Number(data.pages) || 1;
   view.total = Number(data.total) || 0;
@@ -2147,16 +2471,17 @@ function renderHistoryPage(data, historyView = null) {
     if (typeof decorateArtworkCard === "function") decorateArtworkCard(node, record, button);
     retained.add(node);
     if (elements.gallery.children[index] !== node) elements.gallery.insertBefore(node, elements.gallery.children[index] || null);
-    if (fresh && previousPage === view.page && existing.size && typeof StudioMotion !== "undefined") {
+    if (fresh && !queryChanged && previousPage === view.page && existing.size && typeof StudioMotion !== "undefined") {
       node.hidden = true;
       StudioMotion.presence(node, true, { from: { opacity: 0, y: 6 }, manageInert: false });
     }
   });
   for (const node of existing.values()) if (!retained.has(node)) {
-    card.visibilityObserver?.unobserve(node);
+    ArtworkThumbnails.remove(node);
     node.remove();
   }
-  if (previousPage !== view.page && typeof StudioMotion !== "undefined") {
+  ArtworkThumbnails.refresh();
+  if ((previousPage !== view.page || queryChanged) && typeof StudioMotion !== "undefined") {
     StudioMotion.spring(elements.gallery, "page", { opacity: 1 }, {
       initial: { opacity: .4 }, response: .2,
       onUpdate: (value) => {elements.gallery.style.opacity = value.opacity;},
@@ -2174,6 +2499,20 @@ function renderHistoryPage(data, historyView = null) {
   elements.nextPage.disabled = view.page >= view.pages;
   elements.historyCount.textContent = historyUnavailable ? "历史存储不可用" : `${data.total || 0} 张图片`;
   if (typeof artworkHistoryRendered === "function") artworkHistoryRendered(view);
+  const filtered = typeof historyFiltersActive === "function" && historyFiltersActive(view);
+  if (!historyUnavailable && filtered && !view.items.length) {
+    elements.emptyState.querySelector("strong").textContent = "没有匹配的作品";
+    elements.emptyState.querySelector("small").textContent = "可以调整条件，或清除内容筛选后继续浏览";
+  }
+  let clearFilters = elements.emptyState.querySelector(".history-empty-clear");
+  if (filtered && !view.items.length && !historyUnavailable && !clearFilters) {
+    clearFilters = document.createElement("button");
+    clearFilters.type = "button"; clearFilters.className = "button ghost compact history-empty-clear";
+    clearFilters.textContent = "清除内容筛选";
+    clearFilters.addEventListener("click", () => { if (typeof historyFiltersClear === "function") historyFiltersClear(); });
+    elements.emptyState.append(clearFilters);
+  }
+  if (clearFilters) clearFilters.hidden = !filtered || Boolean(view.items.length) || historyUnavailable;
   updatePreviewNavigation();
 }
 
@@ -2182,6 +2521,7 @@ async function loadHistory(page = historyPage, historyView = null) {
   // 与 loadPool 相同的竞态守卫:快速翻页时丢弃乱序到达的旧响应。
   const requestId = ++view.requestId;
   const queryKey = typeof historyQueryKey === "function" ? historyQueryKey(view) : "";
+  if (typeof historyFiltersHistoryLoading === "function") historyFiltersHistoryLoading(view);
   try {
     const params = typeof historyQueryParams === "function" ? historyQueryParams(view) : "";
     const data = await request(`/api/history?page=${page}&limit=24${params}`);
@@ -2189,10 +2529,16 @@ async function loadHistory(page = historyPage, historyView = null) {
     // Removing a collection's last page must land on a valid page, not an empty
     // offset beyond the new total. The nested read owns a fresh request token.
     if (Number(data.page) > Number(data.pages) && Number(data.pages) > 0) return loadHistory(Number(data.pages), view);
+    if (typeof historyFiltersHistoryResponse === "function" && historyFiltersHistoryResponse(data, view) === false) return;
     renderHistoryPage(data, view);
     return data;
   } catch (error) {
     if (view.closed || requestId !== view.requestId) return;
+    if (typeof historyFiltersHistoryError === "function") {
+      const handled = await historyFiltersHistoryError(error, view);
+      if (handled || view.closed || requestId !== view.requestId
+        || (typeof historyQueryKey === "function" && queryKey !== historyQueryKey(view))) return;
+    }
     toast(error.message);
   }
 }
@@ -2233,21 +2579,23 @@ function renderDetail(record) {
 
   const settings = normalizeSettings(record.settings || {});
   const stats = [
-  ["尺寸", `${settings.width} × ${settings.height}`],
-  ["采样", `${settings.sampler_name} / ${settings.scheduler} / ${settings.steps} steps / CFG ${settings.cfg}`],
-  ["图像种子", record.sample_seed],
-  ["提示词种子", record.prompt_seed],
-  ["人物", `${settings.female_count || 0} 女 / ${settings.male_count || 0} 男`]];
-
-  ui.detailStats.innerHTML = stats.
-  map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).
-  join("");
+    ["尺寸", `${settings.width} × ${settings.height}`],
+    ["采样", `${settings.sampler_name} / ${settings.scheduler} / ${settings.steps} steps / CFG ${settings.cfg}`],
+    ["图像种子", record.sample_seed],
+    ["提示词种子", record.prompt_seed],
+    ["人物", `${settings.female_count || 0} 女 / ${settings.male_count || 0} 男`],
+    ["负向条件", settings.zero_negative ? "置零" : "使用负面提示词"],
+  ];
+  ui.detailNegative.closest("label").firstChild.textContent = settings.zero_negative ? "负面提示词 · 编码后条件置零" : "负面提示词";
+  ui.detailStats.innerHTML = stats
+    .map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+    .join("");
   const selected = record.resolved_selection || {};
   const activeLoras = (settings.loras || []).filter((item) => item.enabled);
-  const loraText = activeLoras.length ?
-  activeLoras.map((item) => `${escapeHtml(item.filename)} × ${escapeHtml(item.strength)}`).join("、") :
-  "未使用";
-  ui.detailSelection.innerHTML = `<span class="kicker">ACTUAL DRAW</span><div>${SECTIONS.map((section) => `<span><b>${SECTION_META[section].label}</b>${(selected[section] || []).map((item) => escapeHtml(item.title)).join("、") || "未使用"}</span>`).join("")}<span><b>LoRA</b>${loraText}</span></div>${loraRuntimeMarkup(record.lora_runtime)}`;
+  const loraText = activeLoras.length
+    ? activeLoras.map((item) => `${escapeHtml(item.filename)} × ${escapeHtml(item.strength)}`).join("、")
+    : "未使用";
+  ui.detailSelection.innerHTML = `<span class="kicker">ACTUAL DRAW</span><div>${SECTIONS.map((section) => `<span><b>${SECTION_META[section].label}</b>${(selected[section] || []).map((item) => escapeHtml(item.title)).join("、") || "未使用"}</span>`).join("")}<span><b>LoRA</b>${loraText}</span></div>${loraRuntimeMarkup(record.lora_runtime)}${typeof resourceResolutionRecordMarkup === "function" ? resourceResolutionRecordMarkup(record) : ""}`;
 }
 
 function updateDetailRecord(record) {
@@ -2262,6 +2610,7 @@ function updateDetailRecord(record) {
 }
 function openDetail(record, { origin = "random", returnFocus = null, historyView = null } = {}) {
   if (!record) return;
+  if (typeof historyFiltersSuspendPainting === "function") historyFiltersSuspendPainting();
   closeImagePreview({ immediate: true, restoreFocus: false });
   detailContext = { origin, returnFocus: returnFocus || document.activeElement, historyView: historyViewState(historyView) };
   if (typeof showHistoryDetail === "function") showHistoryDetail();
@@ -2507,9 +2856,19 @@ async function loadHistoryPageForPreview(page, historyView = null) {
   const cached = view.cache.get(page);
   if (cached && cached.historyQueryKey === queryKey) return cached;
   const params = typeof historyQueryParams === "function" ? historyQueryParams(view) : "";
-  const data = await request(`/api/history?page=${page}&limit=24${params}`);
-  if (view.closed || typeof historyQueryKey === "function" && queryKey !== historyQueryKey(view)) return null;
-  cacheHistoryPage(data, queryKey, view);
+  let data;
+  try { data = await request(`/api/history?page=${page}&limit=24${params}`); }
+  catch (error) {
+    if (view.closed || (typeof historyQueryKey === "function" && queryKey !== historyQueryKey(view))) return null;
+    if (typeof historyFiltersHistoryError === "function") {
+      const handled = await historyFiltersHistoryError(error, view);
+      if (handled || view.closed || (typeof historyQueryKey === "function" && queryKey !== historyQueryKey(view))) return null;
+    }
+    throw error;
+  }
+  if (view.closed || (typeof historyQueryKey === "function" && queryKey !== historyQueryKey(view))) return null;
+  if (typeof historyFiltersHistoryResponse === "function" && historyFiltersHistoryResponse(data, view) === false) return null;
+  cacheHistoryPage(data, null, view);
   return data;
 }
 
@@ -3343,12 +3702,14 @@ function regenerationReasons(mode) {
 
 function renderRegenerationOptions() {
   if (!regenerationOptions || !selectedRecord) return;
+  if (typeof updateHistoricalResourceLabels === "function") updateHistoricalResourceLabels();
   const issues = regenerationOptions.modes?.replay?.resourceIssues || regenerationOptions.resourceIssues || [];
   const issueText = issues.length ?
   `<strong>无法生成</strong><span>${issues.map((item) => `${escapeHtml(item.label)}：${escapeHtml(item.name)}`).join("<br>")}</span>` :
   `<strong>资源检查通过</strong><span>模型、已启用 LoRA、高清模型与采样资源均可用。</span>`;
   ui.replayStatus.dataset.state = issues.length ? "error" : "ok";
   ui.replayStatus.innerHTML = issueText;
+  if (typeof renderHistoricalResourceChanges === "function") renderHistoricalResourceChanges(ui.replayStatus, "replay");
   ui.variantStatus.dataset.state = issues.length ? "error" : "ok";
   ui.variantStatus.innerHTML = issueText;
   ui.replaySeedSummary.innerHTML = `<span><b>图像种子</b>${escapeHtml(selectedRecord.sample_seed)}</span><span><b>提示词种子</b>${escapeHtml(selectedRecord.prompt_seed)}</span>`;
@@ -3430,8 +3791,11 @@ function updateVariantDrawer() {
     content_redraw: "重新抽取所选内容",
     settings_reroll: "按此配置再抽"
   };
-  ui.confirmVariant.textContent = labels[mode];
+  const resolution = regenerationOptions?.modes?.[mode];
+  const resourceChanged = resolution?.resourceChanged ?? resolution?.replacements?.some(item => item.reason !== "path_normalized");
+  ui.confirmVariant.textContent = `${resourceChanged ? "使用兼容模型 · " : ""}${labels[mode]}`;
   const available = Boolean(regenerationOptions?.modes?.[mode]?.available);
+  const issues = regenerationOptions?.modes?.[mode]?.resourceIssues ?? regenerationOptions?.resourceIssues ?? [];
   const reasons = [...regenerationReasons(mode)];
   if (mode === "content_redraw") {
     for (const [section, value] of Object.entries(regenerationOptions?.sections || {})) {
@@ -3439,14 +3803,18 @@ function updateVariantDrawer() {
       reasons.push(value.preserveReason || `请同时重抽 ${section}：缺少可靠的历史快照`);
     }
   }
-  ui.confirmVariant.disabled = !available || reasons.length > 0 || mode === "content_redraw" && !sections.length;
-  if (reasons.length && !(regenerationOptions?.resourceIssues || []).length) {
+  ui.confirmVariant.disabled = !available || issues.length > 0 || reasons.length > 0 || (mode === "content_redraw" && !sections.length);
+  if (issues.length) {
     ui.variantStatus.dataset.state = "error";
-    ui.variantStatus.innerHTML = `<strong>当前方式不可用</strong><span>${reasons.map(escapeHtml).join("<br>")}</span>`;
-  } else if (!(regenerationOptions?.resourceIssues || []).length) {
+    ui.variantStatus.innerHTML = `<strong>无法生成</strong><span>${issues.map(item => `${escapeHtml(item.label)}：${escapeHtml(item.name)}`).join("<br>")}</span>`;
+  } else if (reasons.length || !available) {
+    ui.variantStatus.dataset.state = "error";
+    ui.variantStatus.innerHTML = `<strong>当前方式不可用</strong><span>${reasons.map(escapeHtml).join("<br>") || "请重新检查所选方式。"}</span>`;
+  } else {
     ui.variantStatus.dataset.state = "ok";
     ui.variantStatus.textContent = "资源检查通过，所选方式可用。";
   }
+  if (typeof renderHistoricalResourceChanges === "function") renderHistoricalResourceChanges(ui.variantStatus, mode);
 }
 
 async function submitRegeneration(mode, count = 1, sections = []) {
@@ -3461,6 +3829,7 @@ async function submitRegeneration(mode, count = 1, sections = []) {
       method: "POST",
       body: JSON.stringify(body)
     });
+    if (typeof notifyResourceReplacements === "function") notifyResourceReplacements(state.resource_resolution?.replacements || [], selectedRecord.settings || {});
     toast(state.status === "queued" ? `已加入队列,第 ${state.position} 位` : "批次已开始");
     closeRegenerationDrawers(false);
     suppressDetailReturnFocus();
@@ -3793,6 +4162,7 @@ function confirmPoolSelection() {
   if (!session.closed && !ui.confirmPool.disabled) session.finish(session.result());
 }
 async function openPool(section) {
+  if (typeof invalidateCustomImport === "function") invalidateCustomImport();
   if (characterPickerSession()) return;
   invalidatePoolContext();
   const revision = poolContextRevision;
@@ -3810,6 +4180,8 @@ async function openPool(section) {
   ui.drawerBackdrop.classList.remove("closing");
   animatePoolSurface(ui.poolDrawer, ui.drawerBackdrop, true);
   ui.poolTitle.textContent = `${SECTION_META[section].label}池`;
+  const reviewCharacters = typeof document !== "undefined" ? document.getElementById("reviewPoolCharacters") : null;
+  if (reviewCharacters) reviewCharacters.hidden = section !== "character";
   ui.poolKicker.textContent = "PROMPT POOL";
   ui.poolSearch.value = view.query;
   ui.poolSort.value = view.sort;
@@ -3843,6 +4215,7 @@ function hideDrawerBackdrop() {
 }
 
 function closePool() {
+  if (typeof invalidateCustomImport === "function") invalidateCustomImport();
   const picker = characterPickerSession();
   if (picker) {picker.finish(null);return;}
   invalidatePoolContext();
@@ -4466,6 +4839,7 @@ function categoryDisplay(value) {
 function itemBadges(item) {
   const values = [];
   if (activeSection === "character") {
+    if (item.character_status === "needs_review") values.push("角色标签待确认");
     values.push(item.gender === "1girl" ? "女性" : item.gender === "1boy" ? "男性" : "未标注");
     if (item.hair) values.push(`${item.hair} hair`);
     if (item.eye) values.push(`${item.eye} eyes`);
@@ -4984,6 +5358,127 @@ function selectCurrentPage(checked) {
   return poolSelectionChanged();
 }
 
+function characterAnalysisRequest(payload) {
+  return request("/api/custom-prompts/character-analysis", { method: "POST", body: JSON.stringify(payload) });
+}
+function customCharacterInput() {
+  return { prompt: ui.customPrompt.value, title: ui.customTitle.value, subtitle: ui.customSubtitle.value, copyright: ui.customSeries.value };
+}
+function disposeCustomCharacter() {
+  clearTimeout(customCharacterTimer);
+  customCharacterController?.dispose();
+  customCharacterController = null;
+}
+function setupCustomCharacter(item) {
+  disposeCustomCharacter();
+  const root = document.getElementById("customCharacterClassification");
+  if (!root || typeof CharacterClassification === "undefined") return;
+  root.hidden = activeSection !== "character";
+  if (root.hidden) { root.replaceChildren(); return; }
+  const session = customEditorSession, profile = currentProfile();
+  customCharacterController = CharacterClassification.createController({
+    root, initial: item, getInput: customCharacterInput, analyze: characterAnalysisRequest,
+    current: () => session === customEditorSession && profile === currentProfile() && activeSection === "character" && ui.customDialog.open,
+  });
+  if (ui.customPrompt.value.trim()) void customCharacterController.refresh(false).catch(() => {});
+}
+function customCharacterInputChanged() {
+  if (!customCharacterController) return;
+  customCharacterController.invalidate();
+  clearTimeout(customCharacterTimer);
+  const controller = customCharacterController;
+  customCharacterTimer = setTimeout(() => { if (controller === customCharacterController) void controller.refresh(false).catch(() => {}); }, 300);
+}
+async function openCharacterReview(characters = null) {
+  if (currentProfile() !== "anima") return;
+  if (activeSection !== "character" || !ui.poolDrawer.classList.contains("open")) await openPool("character");
+  if (currentProfile() !== "anima" || activeSection !== "character") return;
+  characterReviewIds = characters ? new Set(characters.map(item => item.id)) : null;
+  const dialog = document.getElementById("characterReviewDialog");
+  if (!dialog) return;
+  motionDialog(dialog, true);
+  await refreshCharacterReview();
+}
+async function refreshCharacterReview() {
+  const dialog = document.getElementById("characterReviewDialog"), list = document.getElementById("characterReviewList"), hint = document.getElementById("characterReviewHint");
+  if (!dialog?.open || !list || !hint) return;
+  const epoch = ++characterReviewEpoch;
+  hint.textContent = "正在读取待确认角色…";
+  try {
+    const payload = await request("/api/custom-prompts?section=character&model_profile=anima");
+    if (epoch !== characterReviewEpoch || !dialog.open) return;
+    const items = (payload.items || []).filter(item => item.character_status === "needs_review" && (!characterReviewIds || characterReviewIds.has(item.id)));
+    hint.textContent = items.length ? `${items.length} 个角色需要确认。完整模式仍可用；另外两种模式需先确认有效候选池中的角色。` : "当前范围内的角色均已完成分类，可以关闭此窗口后重新提交。";
+    list.replaceChildren(...items.map(item => {
+      const row = document.createElement("div");
+      row.className = "character-review-row";
+      const pending = (item.character_parts || []).filter(part => part.role === "unknown").length;
+      row.innerHTML = `<span><strong>${escapeHtml(item.title)}</strong><small>${pending ? `${pending} 个标签待确认` : "请确认是否没有独立触发词"}</small></span><button type="button" class="button ghost compact">查看并确认</button>`;
+      row.querySelector("button").addEventListener("click", () => openCustom(item));
+      return row;
+    }));
+  } catch (error) { if (epoch === characterReviewEpoch && dialog.open) hint.textContent = error.message; }
+}
+function disposeImportCharacters() {
+  for (const controller of importCharacterControllers) controller.dispose();
+  importCharacterControllers.clear();
+}
+function importCharacterReady(row) {
+  return row.item?.section !== "character" || (typeof CharacterClassification !== "undefined" && CharacterClassification.isReady(row.item) && !row._classificationPending && !row._classificationError);
+}
+function updateImportCommitState() {
+  const preview = importPreview;
+  if (!preview) { ui.commitImport.disabled = true; return; }
+  const selected = preview.rows.filter(row => row.status !== "error" && row.action !== "skip");
+  ui.commitImport.disabled = preview.saving || !ui.importBundleName.value.trim() || !selected.length || selected.some(row => !importCharacterReady(row));
+  const counter = ui.importSummary?.querySelector?.("[data-character-pending-count]");
+  if (counter) {
+    const pending = preview.rows.filter(row => row.status !== "error" && row.item?.section === "character" && !importCharacterReady(row)).length;
+    counter.textContent = `角色分类待确认 ${pending}`;
+    counter.hidden = !pending;
+  }
+}
+function updateImportCharacterDraft(row, value, state) {
+  // Keep manual label edits even if changing a destination or another row
+  // rebuilds this preview while its read-only validation is still in flight.
+  if (value) Object.assign(row.item, value);
+  row._classificationPending = state.pending;
+  row._classificationError = state.error;
+}
+function attachImportCharacter(element, row, preview, select) {
+  if (row.item?.section !== "character" || row.status === "error" || typeof CharacterClassification === "undefined") return;
+  const details = document.createElement("details"), summary = document.createElement("summary"), content = document.createElement("div");
+  details.className = "character-import-details";
+  const update = () => {
+    const ready = importCharacterReady(row);
+    details.dataset.review = String(!ready);
+    summary.textContent = row._classificationPending ? "正在核对角色分类…" : ready ? "查看角色分类与三种模式" : "角色标签待确认 · 展开处理";
+    for (const option of select.options) if (option.value !== "skip") option.disabled = !ready;
+    if (!CharacterClassification.isReady(row.item) && row.action !== "skip") { row.action = "skip"; select.value = "skip"; }
+    updateImportCommitState();
+  };
+  details.append(summary, content);
+  let controller = null;
+  details.addEventListener("toggle", () => {
+    row._classificationOpen = details.open;
+    if (!details.open || controller || preview !== importPreview) return;
+    controller = CharacterClassification.createController({
+      root: content, initial: row.item, getInput: () => row.item, analyze: characterAnalysisRequest,
+      current: () => preview === importPreview && customImportCurrent(preview.context), disabled: () => preview.saving,
+      onChange: (value, state) => {
+        if (preview !== importPreview) return;
+        updateImportCharacterDraft(row, value, state);
+        update();
+      },
+    });
+    importCharacterControllers.add({ dispose() { controller.dispose(); row._classificationPending = false; } });
+    if (!preview.saving) void controller.refresh(false).catch(() => {});
+  });
+  element.append(details);
+  details.open = !!row._classificationOpen;
+  update();
+}
+
 function openCustom(item = null) {
   ++customEditorSession;
   const error = document.getElementById("customMutationError");
@@ -5019,6 +5514,7 @@ function openCustom(item = null) {
   ui.customGroupChecks.innerHTML = `<div class="inline-empty">尚未创建自定义分组，可在随机池侧栏新建。</div>`;
   ui.deleteCustom.hidden = !item;
   motionDialog(ui.customDialog, true);
+  if (typeof setupCustomCharacter === "function") setupCustomCharacter(item);
 }
 async function saveCustom(event) {
   event.preventDefault();
@@ -5026,8 +5522,17 @@ async function saveCustom(event) {
   const context = { model_profile: currentProfile(), section: activeSection },session = customEditorSession,previousId = editingCustom?.id;
   customWriteBusy = true;
   try {
-    await normalizePromptFields({ custom_prompt: ui.customPrompt.value });
+    // Character classification refers to the exact original tag text. Keep it
+    // unchanged; generation still applies the user's usual prompt rules later.
+    if (context.section !== "character") await normalizePromptFields({ custom_prompt: ui.customPrompt.value });
     if (session !== customEditorSession || context.model_profile !== currentProfile() || context.section !== activeSection) return;
+    let classified = null;
+    if (context.section === "character" && typeof customCharacterController !== "undefined" && customCharacterController) {
+      const controller = customCharacterController;
+      classified = await controller.ensure();
+      if (session !== customEditorSession || controller !== customCharacterController || context.model_profile !== currentProfile() || context.section !== activeSection) return;
+      if (classified.prompt !== ui.customPrompt.value) throw new Error("角色提示词已改变，请等待重新识别后保存");
+    }
     const payload = {
       section: context.section,
       model_profile: context.model_profile,
@@ -5045,13 +5550,15 @@ async function saveCustom(event) {
       filter(Boolean),
       groupIds: [...ui.customGroupChecks.querySelectorAll("input:checked")].map((input) => input.value)
     };
-    const item = previousId ?
-    await request(`/api/custom-prompts/${previousId}?model_profile=${encodeURIComponent(context.model_profile)}`, { method: "PUT", body: JSON.stringify(payload) }) :
-    await request("/api/custom-prompts", { method: "POST", body: JSON.stringify(payload) });
+    if (classified) Object.assign(payload, CharacterClassification.fields(classified));
+    const item = previousId
+      ? await request(`/api/custom-prompts/${previousId}?model_profile=${encodeURIComponent(context.model_profile)}`, { method: "PUT", body: JSON.stringify(payload) })
+      : await request("/api/custom-prompts", { method: "POST", body: JSON.stringify(payload) });
     if (session === customEditorSession && context.model_profile === currentProfile() && context.section === activeSection && !selectionHas(activeSection, item.id)) toggleSelection(activeSection, item.id, true);
     if (typeof poolSourceChanged === "function") poolSourceChanged({ ...context, ...item, updatedItemIds: item.updatedItemIds || [item.id] });
     if (session !== customEditorSession || context.model_profile !== currentProfile() || context.section !== activeSection) return;
     motionDialog(ui.customDialog, false);
+    if (typeof refreshCharacterReview === "function") void refreshCharacterReview();
     toast(previousId ? "自定义项及关联收藏已更新" : "自定义项已加入随机池");
   } catch (error) {
     const message = typeof poolMutationError === "function" ? poolMutationError(error, context) : error.message;
@@ -5144,8 +5651,24 @@ function renderImportTargetGroups() {
     })
   );
 }
-function openImportDialog() {
+function invalidateCustomImport() {
+  if (typeof disposeImportCharacters === "function") disposeImportCharacters();
+  importReadGate.cancel();
+  importViewEpoch.invalidate();
   importPreview = null;
+  ui.commitImport.disabled = true;
+  ui.importSummary.hidden = true;
+  ui.importRows.replaceChildren();
+}
+function customImportContext() {
+  return { model_profile: currentProfile(), section: activeSection, file: ui.importFile.files?.[0], owner: importViewEpoch.capture() };
+}
+function customImportCurrent(context) {
+  return context.owner.current() && context.model_profile === currentProfile() && context.section === activeSection
+    && context.file === ui.importFile.files?.[0] && ui.importDialog.open;
+}
+function openImportDialog() {
+  invalidateCustomImport();
   const label = SECTION_META[activeSection].label;
   ui.importDialogTitle.textContent = `${label}池批量导入`;
   ui.importJsonTemplate.href = `/api/custom-prompts/templates/${activeSection}/json?model_profile=${encodeURIComponent(currentProfile())}`;
@@ -5162,33 +5685,43 @@ function openImportDialog() {
   motionDialog(ui.importDialog, true);
 }
 async function previewImportFile() {
+  invalidateCustomImport();
   const file = ui.importFile.files?.[0];
   if (!file) return;
-  const format = file.name.toLowerCase().endsWith(".csv") ?
-  "csv" :
-  file.name.toLowerCase().endsWith(".json") ?
-  "json" :
-  "";
+  const context = customImportContext(), token = importReadGate.next();
+  const current = () => token.current() && customImportCurrent(context);
+  const format = file.name.toLowerCase().endsWith(".csv")
+    ? "csv"
+    : file.name.toLowerCase().endsWith(".json")
+      ? "json"
+      : "";
   if (!format) {
+    ui.importHint.textContent = "只支持 JSON 或 CSV 文件";
     toast("只支持 JSON 或 CSV 文件");
     return;
   }
   ui.importBundleName.value = file.name.replace(/\.[^.]+$/, "").trim();
   ui.importHint.textContent = `正在校验 ${file.name}`;
+  const bundleName = ui.importBundleName.value;
   try {
-    importPreview = await request("/api/custom-prompts/import/preview", {
+    const content = await file.text();
+    if (!current()) return;
+    const payload = await request("/api/custom-prompts/import/preview", {
       method: "POST",
+      signal: token.signal,
       body: JSON.stringify({
         format,
-        content: await file.text(),
-        section: activeSection,
-        model_profile: currentProfile(),
-        bundleName: ui.importBundleName.value
-      })
+        content,
+        section: context.section,
+        model_profile: context.model_profile,
+        bundleName,
+      }),
     });
-    importPreview.filename = file.name;
+    if (!current()) return;
+    importPreview = { ...payload, filename: file.name, context, saving: false };
     renderImportPreview();
   } catch (error) {
+    if (!current()) return;
     importPreview = null;
     ui.commitImport.disabled = true;
     ui.importHint.textContent = error.message;
@@ -5196,10 +5729,14 @@ async function previewImportFile() {
   }
 }
 function renderImportPreview() {
+  if (!importPreview || !customImportCurrent(importPreview.context)) return;
+  const preview = importPreview;
+  if (typeof disposeImportCharacters === "function") disposeImportCharacters();
   const summary = importPreview.summary || {};
   ui.importHint.textContent = `${importPreview.filename} · 已完成校验`;
   ui.importSummary.hidden = false;
-  ui.importSummary.innerHTML = `<span>新增 ${summary.new || 0}</span><span>冲突 ${summary.conflict || 0}</span><span>错误 ${summary.error || 0}</span>`;
+  const pendingCharacters = preview.rows.filter(row => row.item?.section === "character" && !importCharacterReady(row)).length;
+  ui.importSummary.innerHTML = `<span>新增 ${summary.new || 0}</span><span>冲突 ${summary.conflict || 0}</span><span>错误 ${summary.error || 0}</span><span data-character-pending-count ${pendingCharacters ? "" : "hidden"}>角色分类待确认 ${pendingCharacters}</span>`;
   const labels = { new: "新增", conflict: "冲突", error: "错误" };
   ui.importRows.replaceChildren(
     ...importPreview.rows.map((row, index) => {
@@ -5215,41 +5752,50 @@ function renderImportPreview() {
       element.innerHTML = `<span>#${row.row}</span><span class="import-status">${labels[row.status]}</span><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small><select aria-label="导入操作" ${row.status === "error" ? "disabled" : ""}>${row.status === "new" ? '<option value="create">导入</option><option value="skip">跳过</option>' : row.status === "conflict" ? '<option value="skip">跳过</option><option value="overwrite">覆盖</option>' : '<option value="skip">跳过</option>'}</select>`;
       const select = element.querySelector("select");
       select.value = row.action;
+      select.disabled ||= preview.saving;
       select.addEventListener("change", () => {
-        importPreview.rows[index].action = select.value;
+        if (preview !== importPreview || preview.saving) return;
+        preview.rows[index].action = select.value;
         renderImportPreview();
       });
+      attachImportCharacter(element, row, preview, select);
       return element;
     })
   );
-  ui.commitImport.disabled =
-  !ui.importBundleName.value.trim() ||
-  !importPreview.rows.some((row) => row.status !== "error" && row.action !== "skip");
+  updateImportCommitState();
 }
 async function commitCustomImport() {
-  if (!importPreview) return;
-  const preview = importPreview,context = { model_profile: currentProfile(), section: activeSection };
-  ui.commitImport.disabled = true;
+  const preview = importPreview;
+  if (!preview || preview.saving || !customImportCurrent(preview.context) || !ui.importBundleName.value.trim()
+    || !preview.rows.some(row => row.status !== "error" && row.action !== "skip")) return;
+  if (preview.rows.some(row => row.status !== "error" && row.action !== "skip" && row.item?.section === "character" && !importCharacterReady(row))) {
+    toast("请先确认所选角色的标签分类，或将该条目设为跳过"); return;
+  }
+  const context = preview.context;
+  const current = () => preview === importPreview && customImportCurrent(context);
+  const payload = clone({ rows: preview.rows, section: context.section, model_profile: context.model_profile,
+    targetGroupIds: selectedImportGroupIds(), bundleName: ui.importBundleName.value });
+  preview.saving = true;
+  renderImportPreview();
   try {
     const result = await request("/api/custom-prompts/import", {
       method: "POST",
-      body: JSON.stringify({
-        rows: preview.rows,
-        section: context.section,
-        model_profile: context.model_profile,
-        targetGroupIds: selectedImportGroupIds(),
-        bundleName: ui.importBundleName.value
-      })
+      body: JSON.stringify(payload),
     });
-    if (typeof poolSourceChanged === "function") poolSourceChanged({ ...context, ...result });
-    if (preview !== importPreview || context.model_profile !== currentProfile() || context.section !== activeSection) return;
-    motionDialog(ui.importDialog, false);
+    if (typeof poolSourceChanged === "function") poolSourceChanged({ model_profile: context.model_profile, section: context.section, ...result });
+    if (current()) { invalidateCustomImport(); motionDialog(ui.importDialog, false); }
     toast(`${result.bundleName}：新增 ${result.imported}，更新 ${result.updated}，跳过 ${result.skipped}`);
   } catch (error) {
-    ui.commitImport.disabled = false;
     const message = typeof poolMutationError === "function" ? poolMutationError(error, context) : error.message;
-    if (preview === importPreview) ui.importHint.textContent = message;
+    if (current()) ui.importHint.textContent = message;
     toast(message);
+  } finally {
+    preview.saving = false;
+    if (current()) {
+      const message = ui.importHint.textContent;
+      renderImportPreview();
+      ui.importHint.textContent = message;
+    }
   }
 }
 
@@ -5339,7 +5885,7 @@ function populateModelSelect(select, values, selected, missingReason = "当前�
 }
 function refreshCurrentModelSelection() {
   const selected = ui.model_name.value || profileDrafts[currentProfile()]?.model_name || "";
-  const values = resourcesLoaded && resourceInventoryProfile === currentProfile() ? resources.models : [];
+  const values = resourcesLoaded && resourceInventoryProfile === currentProfile() ? (typeof resourceCatalogChoices === "function" ? resourceCatalogChoices(`${currentProfile()}.model`, resources.models) : resources.models) : [];
   // Resolve legacy basenames against the complete inventory before filtering by profile.
   // An incompatible exact path must never be replaced by a similarly named compatible file.
   const allNames = resourcesLoaded && resourceInventoryProfile === currentProfile() ?
@@ -5363,24 +5909,15 @@ function profileEntries() {
 }
 function updateProfileResources() {
   const profile = profileConfig(currentProfile());
-  const available = profile.available || {};
-  const missing = [
-  ...(available.clip === false ? [profile.clip_name || "CLIP"] : []),
-  ...(available.vae === false ? [profile.vae_name || "VAE"] : [])];
-
-  ui.modelProfileHint.textContent = missing.length ?
-  `${profileLabel(currentProfile())}：缺少 ${missing.join("、")}` :
-  `${profileLabel(currentProfile())} 会自动切换绑定模型、编码方式与采样参数。`;
-  const boundSeed = resolveInventoryPath(profile.seedvr2_model || "", resources.seedvr2_models || []);
-  if (boundSeed && resources.seedvr2_models?.includes(boundSeed) && !ui.seedvr2_model_name.value) ensureSelectValue(ui.seedvr2_model_name, boundSeed);
+  ui.modelProfileHint.textContent = `${profileLabel(currentProfile())} 使用兼容的主模型、文本编码器与 VAE；缺失时自动选择可用模型。`;
   ui.seedvr2_model_name.title = profile.seedvr2_model ? `档案默认：${profile.seedvr2_model}` : "请选择 SeedVR2 模型";
-  ui.modelProfileHint.dataset.profileReady = String(!missing.length && available.model !== false);
-  ui.model_name.title = modelSelectionIssue() || `${profileLabel(currentProfile())} 主模型`;
+  ui.model_name.title = `${profileLabel(currentProfile())} 主模型`;
 }
 function profileOptionsFromResources() {
   return [{ id: "anima", label: "Anima" }];
 }
 async function loadResources({ refresh = false } = {}) {
+  if (typeof invalidateResourceResolution === "function") invalidateResourceResolution();
   const cache = loadResources.cache ||= { generation: 0, values: new Map(), pending: new Map() };
   const selectedProfile = currentProfile();
   if (refresh && !cache.pending.get(selectedProfile)?.refresh) {cache.generation++;cache.values.clear();cache.pending.clear();}
@@ -5424,6 +5961,7 @@ async function loadResources({ refresh = false } = {}) {
       model_items: Array.isArray(payload.model_items) ? payload.model_items : [],
       profile_models: payload.profile_models && typeof payload.profile_models === "object" ? payload.profile_models : {},
       model_assignments: payload.model_assignments || {},
+      resource_catalog: Array.isArray(payload.resource_catalog) ? payload.resource_catalog : undefined,
       seedvr2_models: Array.isArray(payload.seedvr2_models) ? payload.seedvr2_models : [],
       seedvr2_vaes: Array.isArray(payload.seedvr2_vaes) ? payload.seedvr2_vaes : [],
       upscale_models: Array.isArray(payload.upscale_models) ? payload.upscale_models : [],
@@ -5463,6 +6001,7 @@ async function loadResources({ refresh = false } = {}) {
     for (const id of ["latent_sampler_name", "latent_second_sampler_name", "seedvr2_sampler_name", "face_sampler"].filter((id) => ui[id])) ui[id].disabled = resources.samplers.length === 0;
     for (const id of ["latent_sampler_scheduler", "latent_second_scheduler", "seedvr2_scheduler", "face_scheduler"].filter((id) => ui[id])) ui[id].disabled = resources.schedulers.length === 0;
     applyNodeResourceControls();
+    if (typeof populateCompatibleResources === "function") populateCompatibleResources();
     if (typeof sharedParameterResources === "function") sharedParameterResources();
   } catch (error) {
     if (generation !== cache.generation || requestId !== resourceRequest || selectedProfile !== currentProfile()) return;
@@ -5490,6 +6029,8 @@ function pipelineFlowText(enabled) {
 }
 function updateRepairControls() {
   refreshCurrentModelSelection();
+  if (typeof refreshInheritedDualControls === "function") refreshInheritedDualControls();
+  const version = currentPipelineVersion();
   const upscalers = {
     pixel_hires: Boolean(ui.pixel_hires_enabled?.checked),
     post_sampler: ui.latent_second_sampler_enabled.checked,
@@ -5499,10 +6040,19 @@ function updateRepairControls() {
     nvidia: ui.nvidia_upscale_enabled.checked,
     face: ui.face_refine_enabled.checked
   };
+  const stageLabel = (id, title, description) => {
+    const label = ui[id]?.closest?.("label");
+    const strong = label?.querySelector?.("strong"), small = label?.querySelector?.("small");
+    if (strong) strong.textContent = title;
+    if (small) small.textContent = description;
+  };
+  stageLabel("latent_upscale_enabled", "潜空间放大", "放大后采样重绘");
+  stageLabel("latent_second_sampler_enabled", "整图后采样", "重绘整图细节");
+  stageLabel("dlss_enabled", "DLSS", "导出前增强画面");
   const activeCount = Object.values(upscalers).filter(Boolean).length;
   if (ui.pipelineFlow) ui.pipelineFlow.textContent = pipelineFlowText(upscalers);
   const baseLabel = ui.base_mode.value === "dual_sampler" ? "底图－双采样器" : "普通底图";
-  ui.repairSummary.textContent = `${profileLabel(currentProfile())} · ${baseLabel} · ${activeCount} 项后处理`;
+  ui.repairSummary.textContent = `${profileLabel(currentProfile())} · v${version} · ${baseLabel} · ${activeCount} 项后处理`;
   ui.latentUpscaleFields.classList.toggle("disabled", !upscalers.latent);
   ui.latentUpscaleFields.hidden = !upscalers.latent;
   if (ui.latentDoubleSamplingHint) ui.latentDoubleSamplingHint.hidden = !upscalers.latent || !upscalers.post_sampler;
@@ -5512,14 +6062,16 @@ function updateRepairControls() {
   ui.latentSecondSamplerFields.classList.toggle("disabled", !upscalers.post_sampler);
   ui.latent_upscale_scale.disabled = !upscalers.latent;
   ui.latent_upscale_method.disabled = !upscalers.latent;
-  for (const id of Object.values(LATENT_SAMPLER_IDS)) if (ui[id]) ui[id].disabled = !upscalers.latent;
-  ui.latent_second_sampler_enabled.disabled = false;
+  for (const id of Object.values(LATENT_SAMPLER_IDS)) if (ui[id]) {
+    ui[id].disabled = !upscalers.latent;
+  }
   for (const id of Object.values(POST_SAMPLER_IDS)) ui[id].disabled = !upscalers.post_sampler;
   ui.pixelHiresFields?.classList.toggle("disabled", !upscalers.pixel_hires);
   ui.dlssFields?.classList.toggle("disabled", !upscalers.dlss);
   if (ui.pixel_hires_model_name) ui.pixel_hires_model_name.disabled = !upscalers.pixel_hires || !resourcesLoaded;
-  for (const id of ["pixel_hires_percent", "pixel_hires_upscale_method"]) if (ui[id]) ui[id].disabled = !upscalers.pixel_hires || upscalers.post_sampler;
-  if (ui.pixelHiresResizeHint) ui.pixelHiresResizeHint.textContent = upscalers.post_sampler ? "后采样已开启，跳过缩图" : "按原生放大结果缩图";
+  const skipPixelResize = version < 5 && upscalers.post_sampler;
+  for (const id of ["pixel_hires_percent", "pixel_hires_upscale_method"]) if (ui[id]) ui[id].disabled = !upscalers.pixel_hires || skipPixelResize;
+  if (ui.pixelHiresResizeHint) ui.pixelHiresResizeHint.textContent = skipPixelResize ? `v${version}：后采样已开启，按旧规则跳过缩图` : "按原生放大结果缩图";
   ui.seedvr2_model_name.disabled = !upscalers.seedvr2 || !resourcesLoaded;
   ui.seedvr2_vae_name.disabled = !upscalers.seedvr2 || !resourcesLoaded;
   for (const id of ["seedvr2_weight_dtype", "seedvr2_scale_by", "seedvr2_color_correction_method", ...Object.values(SEED_SAMPLER_IDS), ...Object.values(SEED_TILE_IDS.encode), ...Object.values(SEED_TILE_IDS.decode)]) ui[id].disabled = !upscalers.seedvr2;
@@ -5527,39 +6079,7 @@ function updateRepairControls() {
   for (const id of ["nvidia_dlss_style", "nvidia_dlss_intensity", "nvidia_dlss_local_tone", "nvidia_dlss_local_struct", "nvidia_dlss_output_mix"]) ui[id].disabled = !upscalers.dlss;
   for (const id of Object.values(UPSCALER_CONTROL_IDS.face_refine).filter((id) => id !== "face_refine_enabled")) ui[id].disabled = !upscalers.face;
   if (typeof sharedParameterVisibility === "function") sharedParameterVisibility();
-
-  const settings = readSettings();
-  const profile = profileConfig(currentProfile());
-  const warnings = [];
-  if (resourceError) warnings.push(resourceError);
-  if (resourcesLoaded && profile.missing?.length) warnings.push(`${profileLabel(currentProfile())} 缺少资源：${profile.missing.join("、")}`);
-  warnings.push(...generationClassificationIssues(settings));
-  if (resourcesLoaded && upscalers.seedvr2 && settings.upscalers.seedvr2.model_name && resources.seedvr2_models.length && !resources.seedvr2_models.includes(settings.upscalers.seedvr2.model_name)) warnings.push(`SeedVR2 模型不可用：${settings.upscalers.seedvr2.model_name}`);
-  if (resourcesLoaded && upscalers.face && settings.upscalers.face_refine.upscaler_model && !resources.upscale_models.includes(settings.upscalers.face_refine.upscaler_model)) warnings.push(`脸部放大模型不可用：${settings.upscalers.face_refine.upscaler_model}`);
-  const advertisedAvailability = (inventory, names) => {
-    if (inventory == null) return null;
-    if (Array.isArray(inventory)) {
-      const available = new Set(inventory.map((item) => String(item).toLowerCase()));
-      return names.some((name) => available.has(name.toLowerCase()));
-    }
-    if (typeof inventory !== "object") return false;
-    const advertised = names.filter((name) => Object.prototype.hasOwnProperty.call(inventory, name));
-    if (!advertised.length) return null;
-    return advertised.some((name) => inventory[name] === true);
-  };
-  if (resourcesLoaded && upscalers.nvidia) {
-    const nvidiaNode = advertisedAvailability(resources.nodes, ["NvidiaUpscale", "RTXVideoSuperResolution"]);
-    const nvidiaPlugin = advertisedAvailability(resources.plugins, ["nvidia_upscale"]);
-    if ((nvidiaNode !== null || nvidiaPlugin !== null) && nvidiaNode !== true && nvidiaPlugin !== true) {
-      warnings.push("N 卡放大节点不可用：RTXVideoSuperResolution");
-    }
-  }
-  if (resourcesLoaded && !resources.samplers.length) warnings.push("ComfyUI 当前没有可用 Sampler");
-  if (resourcesLoaded && !resources.schedulers.length) warnings.push("ComfyUI 当前没有可用 Scheduler");
-  if (resourcesLoaded && !resources.samplers.includes(settings.sampler_name)) warnings.push(`Sampler 不可用：${settings.sampler_name}`);
-  if (resourcesLoaded && !resources.schedulers.includes(settings.scheduler)) warnings.push(`Scheduler 不可用：${settings.scheduler}`);
-  ui.resourceWarning.hidden = warnings.length === 0;
-  ui.resourceWarning.textContent = warnings.join("；");
+  if (typeof renderResourceResolution === "function") renderResourceResolution();
   updateProfileResources();
   updateGenerationAvailability();
 }
@@ -5570,8 +6090,12 @@ let ownershipRequest = 0;
 function renderResourceOwnership() {
   const query = ui.ownershipSearch.value.trim().toLocaleLowerCase();
   const filtered = ownershipItems.filter((item) => `${item.name || ""} ${item.folder || ""} ${item.basename || ""} ${item.base_model || ""} ${item.classification_reason || ""}`.toLocaleLowerCase().includes(query));
-  ui.ownershipSummary.textContent = `${ownershipItems.length} 项资源 · ${ownershipItems.filter((item) => !item.model_profile).length} 项未识别或不支持 · 分类来自 LoRA Manager`;
+  const catalog = ui.ownershipKind.value !== "loras";
+  ui.ownershipSummary.textContent = catalog
+    ? `${ownershipItems.length} 项资源 · ${ownershipItems.filter(item => item.status === "unknown").length} 项待指定用途`
+    : `${ownershipItems.length} 项 LoRA · 分类来自 LoRA Manager`;
   ui.ownershipList.replaceChildren(...filtered.map((item) => {
+    if (catalog && typeof renderResourceUsageItem === "function") return renderResourceUsageItem(item);
     const row = document.createElement("article");
     row.className = "ownership-row";
     const copy = document.createElement("div");
@@ -5605,9 +6129,11 @@ async function loadResourceOwnership({ refresh = false } = {}) {
   ui.ownershipSummary.textContent = "正在读取资源清单…";
   ui.ownershipList.replaceChildren();
   try {
-    const payload = await request(`/api/resource-ownership?kind=${encodeURIComponent(kind)}${refresh ? "&refresh=1" : ""}`);
+    const payload = await request(kind === "loras"
+      ? `/api/resource-ownership?kind=loras${refresh ? "&refresh=1" : ""}`
+      : `/api/resources?model_profile=${encodeURIComponent(currentProfile())}${refresh ? "&refresh=1" : ""}`);
     if (requestId !== ownershipRequest || kind !== ui.ownershipKind.value) return;
-    ownershipItems = Array.isArray(payload.items) ? payload.items : [];
+    ownershipItems = kind === "loras" ? (Array.isArray(payload.items) ? payload.items : []) : (payload.resource_catalog || []).filter(item => item.kind === kind);
     renderResourceOwnership();
   } catch (error) {
     if (requestId !== ownershipRequest || kind !== ui.ownershipKind.value) return;
@@ -5633,153 +6159,244 @@ async function refreshResourceClassification() {
   }
 }
 
-const PRESET_SETTING_KEYS = [
-"pipeline_version",
-"workbench", "generation_mode", "clip_name", "vae_name", "clip_type",
-"model_profile",
-"model_name",
-
-"base_mode",
-"base_denoise",
-
-"dual",
-"upscalers",
-"loras",
-"lora_managed_triggers",
-"manual_artist",
-"quality_prompt",
-"extra_prompt",
-"negative_prompt",
-"width",
-"height",
-"steps",
-"cfg",
-"sampler_name",
-"scheduler"];
-
-function presetSnapshot() {
-  const settings = readSettings();
-  return Object.fromEntries(PRESET_SETTING_KEYS.filter((key) => settings[key] !== undefined).map((key) => [key, clone(settings[key])]));
+let presetScrollObserver = null;
+let presetScrollFrame = null;
+let presetScrollNeedsMeasure = false;
+let presetObservedRows = [];
+const PRESET_EDGE_PREVIEW = 24;
+function measurePresetScroll() {
+  const list = ui.presetList, wrapper = ui.presetScroll;
+  if (!list || !wrapper) return;
+  const rows = [...list.children].slice(0, 6);
+  if (presetScrollObserver && (rows.length !== presetObservedRows.length || rows.some((row, index) => row !== presetObservedRows[index]))) {
+    for (const row of presetObservedRows) presetScrollObserver.unobserve(row);
+    for (const row of rows) presetScrollObserver.observe(row);
+    presetObservedRows = rows;
+  }
+  const heights = rows.map(row => row.getBoundingClientRect().height);
+  if (heights.length && heights[0] > 0) {
+    const gap = Number.parseFloat(getComputedStyle(list).rowGap) || 0;
+    const height = heights.reduce((sum, value) => sum + value, 0) + (rows.length - 1) * gap
+      + (list.children.length > 6 ? gap + PRESET_EDGE_PREVIEW : 0);
+    const value = `${height}px`;
+    if (list.style.maxHeight !== value) list.style.maxHeight = value;
+  } else if (!rows.length) {
+    list.style.removeProperty("max-height");
+  }
+  const nativeWidth = Math.max(0, list.offsetWidth - list.clientWidth);
+  // Overlay scrollbars occupy no layout width. Give their hover-expanded track
+  // a clear lane so the content mask cannot also fade native scroll controls.
+  const overlay = nativeWidth === 0 && list.scrollHeight > list.clientHeight + 1 ? 12 : 0;
+  for (const [key, value] of [["--preset-scrollbar-width", `${nativeWidth || overlay}px`], ["--preset-overlay-gutter", `${overlay}px`]]) {
+    if (list.style.getPropertyValue(key) !== value) list.style.setProperty(key, value);
+  }
 }
-async function loadStylePresets() {
+function syncPresetScrollEdges() {
+  const list = ui.presetList, wrapper = ui.presetScroll;
+  if (!list || !wrapper) return;
+  const remaining = Math.max(0, list.scrollHeight - list.clientHeight);
+  const overflow = remaining > 1;
+  const position = Math.max(0, Math.min(remaining, list.scrollTop));
+  const top = overflow && position > 1 ? Math.min(PRESET_EDGE_PREVIEW, position) : 0;
+  const bottom = overflow && remaining - position > 1 ? Math.min(PRESET_EDGE_PREVIEW, remaining - position) : 0;
+  wrapper.classList.toggle("can-scroll-up", top > 0);
+  wrapper.classList.toggle("can-scroll-down", bottom > 0);
+  for (const [edge, distance] of [["top", top], ["bottom", bottom]]) {
+    const key = `--preset-fade-${edge}`, value = `${Math.round(distance * 100) / 100}px`;
+    if (list.style.getPropertyValue(key) !== value) list.style.setProperty(key, value);
+  }
+  list.tabIndex = overflow ? 0 : -1;
+}
+function schedulePresetScroll(measure = false) {
+  presetScrollNeedsMeasure ||= measure;
+  if (presetScrollFrame !== null) return;
+  presetScrollFrame = requestAnimationFrame(() => {
+    presetScrollFrame = null;
+    if (presetScrollNeedsMeasure) { presetScrollNeedsMeasure = false; measurePresetScroll(); }
+    syncPresetScrollEdges();
+  });
+}
+function updatePresetScroll() {
+  measurePresetScroll();
+  syncPresetScrollEdges();
+}
+function revealPresetFocus(event) {
+  const list = ui.presetList, target = event.target;
+  if (target === list || !target.closest?.(".preset-row")) return;
+  requestAnimationFrame(() => {
+    if (!list.contains(document.activeElement)) return;
+    const masked = getComputedStyle(list).maskImage !== "none";
+    const edge = masked ? PRESET_EDGE_PREVIEW : 0;
+    const viewport = list.getBoundingClientRect(), focus = document.activeElement.getBoundingClientRect();
+    const top = viewport.top + (list.scrollTop > 1 ? edge : 0) + 3;
+    const bottom = viewport.bottom - (list.scrollTop + list.clientHeight < list.scrollHeight - 1 ? edge : 0) - 3;
+    const offset = focus.top < top ? focus.top - top : focus.bottom > bottom ? focus.bottom - bottom : 0;
+    if (offset) { list.scrollTop += offset; syncPresetScrollEdges(); }
+  });
+}
+function initializePresetScroll() {
+  ui.presetList.addEventListener("scroll", () => schedulePresetScroll(), { passive: true });
+  ui.presetList.addEventListener("focusin", revealPresetFocus);
+  if (typeof ResizeObserver !== "undefined") {
+    presetScrollObserver = new ResizeObserver(() => schedulePresetScroll(true));
+    presetScrollObserver.observe(ui.presetList);
+  }
+  document.fonts?.ready.then(() => schedulePresetScroll(true));
+  document.fonts?.addEventListener("loadingdone", () => schedulePresetScroll(true));
+  updatePresetScroll();
+}
+function stylePresetItemProfile(item) {
+  return normalizeProfileId(item.settings?.model_profile || item.model_profile || "anima");
+}
+function syncStylePresetControls() {
+  const busy = stylePresetCreates.has(currentProfile());
+  const protectedStore = typeof config !== "undefined" && config.storage_status?.style_presets?.read_only;
+  ui.savePreset.disabled = busy || Boolean(protectedStore);
+  ui.savePreset.textContent = busy ? "保存中…" : "保存当前";
+}
+function stylePresetContextChanged() {
+  stylePresetViewEpoch.invalidate();
+  if (typeof StylePresetManager !== "undefined") StylePresetManager.contextChanged();
+  const profile = currentProfile();
+  if (stylePresetProfile !== profile) {
+    stylePresetReadGate.cancel();
+    stylePresets = [];
+    stylePresetProfile = profile;
+    renderStylePresets();
+  }
+  setPresetFeedback();
+  syncStylePresetControls();
+}
+async function stylePresetWriteCompleted(profile, message) {
+  // A committed write belongs to its original profile even after navigation.
+  // Only its list needs refreshing; the new form must retain its own contents.
+  toast(`${profileLabel(profile)}：${message}`);
+  if (profile === currentProfile()) {
+    stylePresetReadGate.cancel();
+    await loadStylePresets();
+  }
+}
+async function loadStylePresets({ refreshManager = true } = {}) {
   const requestedProfile = currentProfile();
-  const requestId = ++stylePresetRequest;
+  const token = stylePresetReadGate.next();
   if (stylePresetProfile && stylePresetProfile !== requestedProfile) {
     stylePresets = [];
     renderStylePresets();
   }
   stylePresetProfile = requestedProfile;
   try {
-    const data = await request(`/api/style-presets?model_profile=${encodeURIComponent(requestedProfile)}`);
-    if (requestId !== stylePresetRequest || requestedProfile !== currentProfile()) return;
-    stylePresets = data.items || [];
+    const data = await request(`/api/style-presets?model_profile=${encodeURIComponent(requestedProfile)}`, { signal: token.signal });
+    if (!token.current() || requestedProfile !== currentProfile()) return;
+    stylePresets = (data.items || []).filter(item => stylePresetItemProfile(item) === requestedProfile);
     renderStylePresets();
   } catch (error) {
-    if (requestId !== stylePresetRequest || requestedProfile !== currentProfile()) return;
+    if (!token.current() || requestedProfile !== currentProfile()) return;
     toast(error.message);
   }
+  if (refreshManager && typeof StylePresetManager !== "undefined") await StylePresetManager.refresh();
 }
 function setPresetFeedback(message = "", type = "error") {
   ui.presetError.textContent = message;
   ui.presetError.hidden = !message;
   ui.presetError.dataset.type = type;
-  ui.presetName.setAttribute("aria-invalid", String(Boolean(message) && type === "error"));
 }
 function renderStylePresets() {
+  const active = document.activeElement;
+  const focusedId = active?.closest?.("[data-preset-id]")?.dataset.presetId;
+  const focusedAction = active?.classList?.contains("preset-apply") ? ".preset-apply"
+    : ["favorite", "update", "rename", "delete"].map(key => `[data-preset-${key}]`).find(selector => active?.matches?.(selector));
+  const scrollTop = ui.presetList.scrollTop;
+  stylePresets = stylePresets.filter(item => stylePresetItemProfile(item) === currentProfile());
   ui.presetSummary.textContent = `${stylePresets.length} 个预设`;
   ui.presetEmpty.hidden = stylePresets.length > 0;
   ui.presetList.replaceChildren(
     ...stylePresets.map((item) => {
       const row = document.createElement("div");
+      row.dataset.presetId = item.id;
       row.className = `preset-row${item.favorite ? " favorite" : ""}`;
       const activeLoras = (item.settings?.loras || []).filter((lora) => lora.enabled).length;
       const settings = item.settings || {};
       const modelShort = profileLabel(settings.model_profile || "anima");
       const metaParts = [
-      modelShort,
-      `${settings.width || "?"}×${settings.height || "?"}`,
-      `${settings.steps || "?"} 步`,
-      settings.base_mode === "dual_sampler" ? "双采样底图" : "普通底图",
-      settings.upscalers?.latent?.enabled ? "潜空间放大" : "无潜空间放大"];
-
+        modelShort,
+        item.include?.size ? `${settings.width}×${settings.height}` : "当前尺寸",
+        `${settings.steps || "?"} 步`,
+        settings.base_mode === "dual_sampler" ? "双采样底图" : "普通底图",
+        item.include?.repair ? "携带放大修复" : "当前放大修复",
+      ];
       if (activeLoras) metaParts.push(`${activeLoras} LoRA`);
       row.innerHTML = `<button class="preset-apply" type="button" title="${escapeHtml(settings.model_profile || "anima")}"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(metaParts.join(" · "))}</small></button><div class="preset-actions"><button type="button" data-preset-favorite title="${item.favorite ? "取消收藏" : "收藏"}" aria-label="${item.favorite ? "取消收藏" : "收藏"}">${item.favorite ? "★" : "☆"}</button><button type="button" data-preset-update title="用当前设置覆盖" aria-label="用当前设置覆盖">↻</button><button type="button" data-preset-rename title="重命名" aria-label="重命名">✎</button><button type="button" data-preset-delete title="删除" aria-label="删除">×</button></div>`;
-      row.querySelector(".preset-apply").addEventListener("click", () => {
-        if (typeof randomWorkbenchApplyPreset === "function") randomWorkbenchApplyPreset(item);else
-        applySettings({ ...readSettings(), ...item.settings });
-        schedulePersist();
-        toast(`已应用预设：${item.name}`);
-      });
-      row.
-      querySelector("[data-preset-favorite]").
-      addEventListener("click", () => updateStylePreset(item, { favorite: !item.favorite }));
+      row.querySelector(".preset-apply").addEventListener("click", () => applyStylePreset(item));
+      row
+        .querySelector("[data-preset-favorite]")
+        .addEventListener("click", () => updateStylePreset(item, { favorite: !item.favorite }));
       row.querySelector("[data-preset-update]").addEventListener("click", () => {
-        if (confirm(`用当前设置覆盖“${item.name}”？`)) updateStylePreset(item, { settings: presetSnapshot() });
+        StylePresetManager.overwrite(item);
       });
       row.querySelector("[data-preset-rename]").addEventListener("click", () => {
-        const name = prompt("新的预设名称", item.name);
-        if (name?.trim()) updateStylePreset(item, { name: name.trim() });
+        StylePresetManager.edit(item);
       });
       row.querySelector("[data-preset-delete]").addEventListener("click", () => deleteStylePreset(item));
       return row;
     })
   );
+  ui.presetList.scrollTop = scrollTop;
+  if (focusedId && focusedAction) {
+    [...ui.presetList.children].find(row => row.dataset.presetId === focusedId)?.querySelector(focusedAction)?.focus({ preventScroll: true });
+  }
+  updatePresetScroll();
 }
 async function createStylePreset() {
   if (ui.savePreset.disabled) return;
-  const name = ui.presetName.value.trim();
-  if (!name) {
-    setPresetFeedback("请输入预设名称");
-    ui.presetName.focus();
-    return;
-  }
-  if (stylePresets.some((item) => item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase())) {
-    setPresetFeedback("已有同名预设，请改名或使用覆盖按钮");
-    ui.presetName.focus();
-    return;
-  }
-  const originalLabel = ui.savePreset.textContent;
-  ui.savePreset.disabled = true;
-  ui.savePreset.textContent = "保存中…";
-  setPresetFeedback("正在写入本地预设…", "pending");
+  return StylePresetManager.create();
+}
+async function applyStylePreset(item, { isCurrent = () => true, onError } = {}) {
   try {
-    const created = await request("/api/style-presets", {
-      method: "POST",
-      body: JSON.stringify({ name, favorite: false, model_profile: currentProfile(), settings: presetSnapshot() })
-    });
-    const favoriteCount = stylePresets.findIndex((item) => !item.favorite);
-    stylePresets.splice(favoriteCount < 0 ? stylePresets.length : favoriteCount, 0, created);
-    ui.presetName.value = "";
-    renderStylePresets();
-    setPresetFeedback(`已保存“${created.name}”`, "success");
-    toast("风格预设已保存");
+    if (await randomWorkbenchApplyPreset(item, { isCurrent }) === false) return false;
+    schedulePersist();
+    toast(`已应用预设：${item.name}`);
+    return true;
   } catch (error) {
-    setPresetFeedback(error.message);
-    toast(error.message);
-  } finally {
-    ui.savePreset.disabled = false;
-    ui.savePreset.textContent = originalLabel;
+    if (onError) { if (isCurrent()) onError(error); }
+    else toast(`预设加载失败，当前草稿未更改：${error.message}`);
+    return false;
   }
 }
 async function updateStylePreset(item, changes) {
+  if (stylePresetWrites.has(item.id)) return;
+  const profile = stylePresetItemProfile(item);
+  if (changes.settings && (currentProfile() !== profile
+    || changes.settings.model_profile && normalizeProfileId(changes.settings.model_profile) !== profile)) {
+    toast("不能跨模型档案覆盖风格预设，请在当前档案另存新预设");
+    return;
+  }
+  const payload = clone({ ...changes, model_profile: profile });
+  stylePresetWrites.add(item.id);
   try {
     await request(`/api/style-presets/${encodeURIComponent(item.id)}`, {
       method: "PUT",
-      body: JSON.stringify({ ...changes, model_profile: currentProfile() })
+      body: JSON.stringify(payload),
     });
-    await loadStylePresets();
+    await stylePresetWriteCompleted(profile, `已更新风格预设“${item.name}”`);
   } catch (error) {
-    toast(error.message);
+    toast(`${profileLabel(profile)}：${error.message}`);
+  } finally {
+    stylePresetWrites.delete(item.id);
   }
 }
 async function deleteStylePreset(item) {
-  if (!confirm(`删除预设“${item.name}”？`)) return;
+  if (stylePresetWrites.has(item.id)) return;
+  if (!await StylePresetManager.confirm({ title: "删除风格预设", message: `删除“${item.name}”？预设与封面将被移除。`, confirmLabel: "删除", danger: true })) return;
+  if (stylePresetWrites.has(item.id)) return;
+  const profile = stylePresetItemProfile(item);
+  stylePresetWrites.add(item.id);
   try {
-    await request(`/api/style-presets/${encodeURIComponent(item.id)}?model_profile=${encodeURIComponent(currentProfile())}`, { method: "DELETE" });
-    await loadStylePresets();
-    toast("风格预设已删除");
+    await request(`/api/style-presets/${encodeURIComponent(item.id)}?model_profile=${encodeURIComponent(profile)}`, { method: "DELETE" });
+    await stylePresetWriteCompleted(profile, `已删除风格预设“${item.name}”`);
   } catch (error) {
-    toast(error.message);
+    toast(`${profileLabel(profile)}：${error.message}`);
+  } finally {
+    stylePresetWrites.delete(item.id);
   }
 }
 function setPromptRuleError(message = "") {
@@ -6086,9 +6703,13 @@ async function removeArtistFavorite(name) {
 async function submitBatch(settings, seeds = null) {
   // 统一的批次提交入口:主表单、复现、变体共用;in-flight 守卫防双击重复入队。
   if (submitInFlight) return false;
+  if (typeof currentBatch !== "undefined" && currentBatch?.memory_release === "pending") {
+    toast("正在清缓存与垃圾回收，请稍后再试");
+    return false;
+  }
   settings = clone(settings);
   seeds = seeds ? clone(seeds) : null;
-  const classificationIssues = generationClassificationIssues(settings);
+  const classificationIssues = typeof resolveSubmissionResources === "function" ? [] : generationClassificationIssues(settings);
   if (classificationIssues.length) {
     updateGenerationAvailability();
     toast(classificationIssues.join("；"));
@@ -6097,13 +6718,20 @@ async function submitBatch(settings, seeds = null) {
   submitInFlight = true;
   ui.startButton.disabled = true;
   try {
+    if (typeof resolveSubmissionResources === "function") settings = await resolveSubmissionResources(settings);
+    const submittedResourceKey = typeof resourceResolutionKey === "function" ? resourceResolutionKey(settings) : "";
     const body = seeds ? { ...settings, seeds } : settings;
     const state = await request("/api/batches", { method: "POST", body: JSON.stringify(body) });
-    if (state.status === "queued") toast(`已加入队列,第 ${state.position} 位`);else
-    toast("批次已开始");
+    if (typeof acceptSubmittedResourceResolution === "function") acceptSubmittedResourceResolution(state, settings, submittedResourceKey);
+    else if (typeof notifyResourceReplacements === "function") notifyResourceReplacements(state.resource_resolution?.replacements || [], settings);
+    if (state.status === "queued") toast(`已加入队列,第 ${state.position} 位`);
+    else toast("批次已开始");
     return true;
   } catch (error) {
     toast(error.message);
+    if (error.code === "character_review_required" && typeof openCharacterReview === "function") {
+      await openCharacterReview(error.payload?.characters || null);
+    }
     await refreshConnection();
     return false;
   } finally {
@@ -6131,21 +6759,16 @@ ui.settingsForm.addEventListener("submit", async (event) => {
   }
 });
 ui.settingsForm.addEventListener("input", (event) => {
-  if (event.target.matches("input, textarea, select")) schedulePersist();
+  if (event.target.matches("input, textarea, select")) { schedulePersist(); updateGenerationAvailability(); }
 });
-ui.settingsForm.addEventListener("change", schedulePersist);
+ui.settingsForm.addEventListener("change", event => {
+  if (typeof clearDraftResourceReplacement === "function") clearDraftResourceReplacement(event.target.id);
+  schedulePersist(); updateGenerationAvailability();
+});
 document.addEventListener("input", (event) => {
   if (promptFieldForElement(event.target)) invalidatePromptNormalization();
 });
-ui.stopButton.addEventListener("click", async () => {
-  if (!currentBatch) return;
-  try {
-    // 停止 = 中断当前批次并清空队列(队列条目可单独用 × 移除)
-    renderBatchPayload(await request(`/api/batches/${currentBatch.id}/stop`, { method: "POST" }));
-  } catch (error) {
-    toast(error.message);
-  }
-});
+ui.stopButton.addEventListener("click", stopCurrentBatch);
 ui.queueBadge?.addEventListener("click", () => {
   const open = !ui.queuePanel.classList.contains("open") && currentQueue.length > 0;
   setQueuePanelOpen(open);
@@ -6288,18 +6911,16 @@ ui.detailDialog.addEventListener("cancel", (event) => {
     return;
   }
   if (inDetail && closeDetailActionPanels({ restoreFocus: true })) return;
-  if (typeof historyDetailBack === "function" && historyDetailBack()) return;
   invalidateHistoryTransfer();
   motionDialog(ui.detailDialog, false);
 });
 for (const button of document.querySelectorAll("[data-detail-action]")) {
   button.addEventListener("click", () => toggleDetailActionPanel(button.dataset.detailAction));
 }
-ui.restoreSettings.addEventListener("click", () => {
+ui.restoreSettings.addEventListener("click", async () => {
   if (!selectedRecord) return;
   try {
-    if (typeof randomWorkbenchRestoreHistory === "function") randomWorkbenchRestoreHistory(selectedRecord);else
-    applySettings(selectedRecord.settings);
+    if (await randomWorkbenchRestoreHistory(selectedRecord) === false) return;
     suppressDetailReturnFocus();
     closeImagePreview({ immediate: true, restoreFocus: false });
     motionDialog(ui.detailDialog, false);
@@ -6404,6 +7025,11 @@ ui.cancelFavoriteSelection.addEventListener("click", () => motionDialog(ui.favor
 ui.addCustom.addEventListener("click", () => openCustom());
 ui.importCustom.addEventListener("click", openImportDialog);
 ui.customForm.addEventListener("submit", saveCustom);
+for (const input of [ui.customTitle, ui.customSubtitle, ui.customSeries, ui.customPrompt]) input.addEventListener("input", customCharacterInputChanged);
+ui.customDialog.addEventListener("close", disposeCustomCharacter);
+ui.customDialog.addEventListener("cancel", disposeCustomCharacter);
+for (const id of ["reviewCharacters", "reviewPoolCharacters"]) document.getElementById(id)?.addEventListener("click", () => { void openCharacterReview().catch(error => toast(error.message)); });
+for (const button of document.querySelectorAll("[data-close-character-review]")) button.addEventListener("click", () => { ++characterReviewEpoch; motionDialog(document.getElementById("characterReviewDialog"), false); });
 ui.cancelCustom.addEventListener("click", () => motionDialog(ui.customDialog, false));
 ui.closeCustom.addEventListener("click", () => motionDialog(ui.customDialog, false));
 ui.deleteCustom.addEventListener("click", deleteCustomItem);
@@ -6416,20 +7042,17 @@ ui.importBundleName.addEventListener("input", () => {
   if (importPreview) renderImportPreview();
 });
 ui.commitImport.addEventListener("click", commitCustomImport);
-ui.closeImport.addEventListener("click", () => motionDialog(ui.importDialog, false));
-ui.cancelImport.addEventListener("click", () => motionDialog(ui.importDialog, false));
+ui.closeImport.addEventListener("click", () => { invalidateCustomImport(); motionDialog(ui.importDialog, false); });
+ui.cancelImport.addEventListener("click", () => { invalidateCustomImport(); motionDialog(ui.importDialog, false); });
+ui.importDialog.addEventListener("cancel", invalidateCustomImport);
+ui.importDialog.addEventListener("close", invalidateCustomImport);
 ui.manageArtists.addEventListener("click", openArtistDialog);
 ui.saveCurrentArtists.addEventListener("click", saveCurrentArtistFavorites);
 ui.closeArtists.addEventListener("click", () => motionDialog(ui.artistDialog, false));
 ui.cancelArtists.addEventListener("click", () => motionDialog(ui.artistDialog, false));
 ui.savePreset.addEventListener("click", createStylePreset);
-ui.presetName.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    createStylePreset();
-  }
-});
-ui.presetName.addEventListener("input", () => setPresetFeedback());
+ui.manageStylePresets.addEventListener("click", () => StylePresetManager.open());
+initializePresetScroll();
 ui.manual_artist.addEventListener("input", () => {
   normalizeArtistField(false);
   schedulePersist();
@@ -6453,7 +7076,10 @@ ui.manual_artist.addEventListener("blur", () => {
   normalizePromptElement(ui.manual_artist);
 });
 for (const input of [ui.quality_prompt, ui.extra_prompt, ui.negative_prompt, ui.customPrompt])
-input.addEventListener("blur", () => normalizePromptElement(input));
+  input.addEventListener("blur", () => {
+    if (input === ui.customPrompt && activeSection === "character") return;
+    normalizePromptElement(input);
+  });
 ui.undoPromptNormalization.addEventListener("click", undoPromptNormalization);
 ui.managePromptRules.addEventListener("click", openPromptRuleDialog);
 ui.promptRuleForm.addEventListener("submit", savePromptRule);
@@ -6471,7 +7097,7 @@ ui.model_profile.addEventListener("change", () => {
   schedulePersist();
   void refreshProfileData();
 });
-ui.model_name.addEventListener("change", () => {
+for (const control of [ui.model_name, ui.clip_name, ui.vae_name].filter(Boolean)) control.addEventListener("change", () => {
   saveCurrentProfileDraft();
   updateRepairControls();
   schedulePersist();
@@ -6563,8 +7189,10 @@ ui.extra_prompt.addEventListener("input", forgetRemovedManagedTriggers);
 ui.female_count.addEventListener("input", updatePeopleTotal);
 ui.male_count.addEventListener("input", updatePeopleTotal);
 ui.resetSettings.addEventListener("click", () => {
+  if (pipelineContractState.persistenceBlocked) { toast("原草稿加载失败且仍已保留；请使用“清除本地草稿”后重新加载。"); return; }
   if (!confirm("恢复全部模板默认设置？")) return;
   const profile = currentProfile();
+  pipelineContractState.persistenceBlocked = false;
 
   applySettings(typeof randomWorkbenchDefaultSettings === "function" ? randomWorkbenchDefaultSettings(profile) : { ...profileSettingsDefaults(profile), model_profile: profile });
   schedulePersist();
@@ -6572,9 +7200,17 @@ ui.resetSettings.addEventListener("click", () => {
 });
 ui.clearDraft.addEventListener("click", () => {
   if (!confirm("清除本地草稿并恢复默认设置？收藏不会被删除。")) return;
+  const restart = pipelineContractState.persistenceBlocked;
+  pipelineContractState.persistenceBlocked = false;
   localStorage.removeItem(DRAFT_KEY);
 
   localStorage.removeItem(VIEW_KEY);
+  if (restart) {
+    // pagehide runs before reload; keep its autosave from recreating the
+    // explicitly cleared draft from the partially initialized form.
+    pipelineContractState.persistenceBlocked = true;
+    window.location.reload(); return;
+  }
   poolViews = Object.fromEntries(SECTIONS.map((section) => [section, defaultView()]));
   applySettings(typeof randomWorkbenchDefaultSettings === "function" ? randomWorkbenchDefaultSettings(defaults.model_profile) : defaults);
   ui.draftStatus.textContent = "本地草稿已清除";
@@ -6604,7 +7240,7 @@ async function initialize() {
     // 启动期数据文件恢复等服务端警告(如坏文件已备份重建)逐条提示。
     for (const warning of payload.warnings || []) toast(warning);
     loadStoredView();
-    const restored = loadStoredDraft();
+    const restored = await loadStoredDraft();
     if (!restored) {
       applySettings(typeof randomWorkbenchDefaultSettings === "function" ? randomWorkbenchDefaultSettings(defaults.model_profile) : defaults);
       ui.draftStatus.textContent = "使用模板默认设置";
@@ -6614,6 +7250,7 @@ async function initialize() {
     if (typeof initializeArtworkFavorites === "function") initializeArtworkFavorites();
     initializeRandomWorkbench();
     initializePoolLifecycle();
+    if (typeof historyFiltersInit === "function") historyFiltersInit();
     initializeLoraManager();
     if (typeof StudioMotion !== "undefined") {
       StudioMotion.bindDisclosures(document);

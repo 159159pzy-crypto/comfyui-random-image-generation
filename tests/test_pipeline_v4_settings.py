@@ -21,7 +21,7 @@ def test_v4_roundtrip_and_removed_version_rejection():
     assert settings["upscalers"]["latent"]["sampler"]["steps"] == 9
     assert settings["upscalers"]["post_sampler"]["steps"] == 6
     assert upgrade_pipeline_settings(settings) == settings
-    for version in (1, 2, 3, 5):
+    for version in (1, 2, 3, 6):
         with pytest.raises(WorkflowError):
             upgrade_pipeline_settings({"pipeline_version": version})
 

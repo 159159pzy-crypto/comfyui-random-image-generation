@@ -244,6 +244,11 @@ def node_input_issues(
     return issues
 
 
+def pixel_hires_resizes(settings: dict[str, Any]) -> bool:
+    """v5 honors pixel shrinking independently of downstream sampling."""
+    return settings.get("pipeline_version", 4) >= 5 or not settings["upscalers"]["post_sampler"]["enabled"]
+
+
 def enabled_postprocess_parameter_issues(
     settings: dict[str, Any], resources: dict[str, Any]
 ) -> list[dict[str, str]]:
@@ -270,7 +275,7 @@ def enabled_postprocess_parameter_issues(
     if stages.get("pixel_hires", {}).get("enabled"):
         pixel = stages["pixel_hires"]
         check("UpscaleModelLoader", {"model_name": pixel["model_name"]}, "像素高清模型")
-        if not stages.get("post_sampler", {}).get("enabled"):
+        if pixel_hires_resizes(settings):
             check(
                 "ImageScaleBy",
                 {
@@ -330,6 +335,8 @@ def random_sampling_resource_issues(
             )
         issues.extend(node_input_issues(resources, node_type, values, label))
 
+    if settings.get("zero_negative"):
+        node_inputs("ConditioningZeroOut", {}, "负向条件零化")
     if settings["base_mode"] == "normal":
         issues.extend(
             node_input_issues(

@@ -1,36 +1,43 @@
 /* Shared parameter behavior; stored workbench and sampling-mode drafts remain independent. */
 const RANDOM_DUAL_KEYS = ["switch_step", "scale", "second_cfg", "second_sampler_name", "second_scheduler", "upscale_method", "model_format", "half_precision"];
 const NVIDIA_DLSS_KEYS = ["style", "intensity", "local_tone", "local_struct", "output_mix"];
-const sharedParameterState = { latent: { model_format: "Wan 2.1", half_precision: true }, dual: {}, dlss: {}, modes: {}, activeMode: null, applying: false };
-
-
-
-
-
-
-
+const sharedParameterState = { latent: { model_format: "Wan 2.1", half_precision: true }, dual: {}, dualLegacy: false, dualInitial: null, dlss: {}, modes: {}, activeMode: null, applying: false };
 function randomDualDefaults() {
+  // Historical partial snapshots keep their original second-pass settings.
   return { switch_step: 15, scale: 1, second_cfg: 8, second_sampler_name: "euler", second_scheduler: "simple", upscale_method: "sesqui", model_format: "Wan 2.1", half_precision: true };
 }
-function sharedSamplingDefaults(mode = "normal") {
-  return { steps: mode === "dual_sampler" ? 30 : 20, cfg: 8, sampler_name: "euler", scheduler: "simple", base_denoise: 1, dual: randomDualDefaults(), seedMode: "fixed", seed: "0" };
+function sharedSamplingDefaults(mode = "normal", profile = typeof currentProfile === "function" ? currentProfile() : "anima") {
+  const bound = typeof profileConfig === "function" ? profileConfig(profile) : {};
+  const settings = typeof profileSettingsDefaults === "function" ? profileSettingsDefaults(profile) : {};
+  const sampling = { ...settings, ...bound.defaults };
+  return { steps: sampling.steps, cfg: sampling.cfg, sampler_name: sampling.sampler_name, scheduler: sampling.scheduler,
+    base_denoise: settings.base_denoise ?? 1,
+    dual: { ...randomDualDefaults(), ...settings.dual, ...bound.dual_defaults }, seedMode: "fixed", seed: "0" };
+}
+function sharedUpscalerDefaults(profile, settings) {
+  const bound = typeof profileConfig === "function" ? profileConfig(profile) : {};
+  const upscalers = normalizeUpscalers(settings, null, profile, 5);
+  Object.assign(upscalers.post_sampler, bound.post_sampler_defaults);
+  Object.assign(upscalers.latent.sampler, bound.latent_sampler_defaults);
+  Object.assign(upscalers.face_refine, bound.face_refine_defaults);
+  return upscalers;
 }
 function randomDualFromSettings(settings = {}) {
   const explicit = settings.dual;
   if (explicit && typeof explicit === "object") return Object.fromEntries(RANDOM_DUAL_KEYS.map((key) => [key, explicit[key] ?? randomDualDefaults()[key]]));
   return { ...randomDualDefaults(), switch_step: 15, scale: settings.upscalers?.latent?.scale_by ?? 1.5,
     second_cfg: settings.cfg ?? 4, second_sampler_name: settings.sampler_name || "er_sde",
-    second_scheduler: settings.scheduler || "simple", upscale_method: settings.upscalers?.latent?.upscale_method || "bilinear" };
+    second_scheduler: settings.scheduler || "simple", upscale_method: settings.upscalers?.latent?.upscale_method || "bilinear",
+    model_format: settings.upscalers?.latent?.model_format || "Wan 2.1", half_precision: settings.upscalers?.latent?.half_precision ?? true };
 }
 function randomWorkbenchDefaultSettings(profile = "anima") {
   const settings = JSON.parse(JSON.stringify(profileSettingsDefaults(profile)));
-  const upscalers = normalizeUpscalers(settings.upscalers, null, profile, settings.pipeline_version ?? 4);
+  const upscalers = sharedUpscalerDefaults(profile, settings.upscalers);
   Object.assign(upscalers.latent, { upscale_method: "sesqui", model_format: "Wan 2.1", half_precision: true, scale_by: 1.5 });
-  Object.assign(upscalers.face_refine, { steps: 8, cfg_scale: 1, sampler: "res_2m_ode", scheduler: "beta57", denoise_strength: .3 });
   const mode = settings.base_mode === "dual_sampler" ? "dual_sampler" : "normal";
-  const sampling = sharedSamplingDefaults(mode);
-  delete sampling.seedMode;delete sampling.seed;
-  return { ...settings, ...sampling, pipeline_version: 4, base_mode: mode, model_profile: profile, workbench: "random", upscalers };
+  const sampling = sharedSamplingDefaults(mode, profile);
+  delete sampling.seedMode; delete sampling.seed;
+  return { ...settings, ...sampling, pipeline_version: 5, base_mode: mode, model_profile: profile, workbench: "random", upscalers };
 }
 function sharedLatentFormat(value, fallback = "Wan 2.1") {
   return String(value || "").startsWith("legacy:") ? fallback : value || fallback;
@@ -47,6 +54,7 @@ function sharedLatentMethodChoice(element, method, format) {
 }
 function setRandomDualControls(settings) {
   const values = randomDualFromSettings(settings);
+  sharedParameterState.dualLegacy = settings.dual == null;
   sharedParameterState.dual = { ...values };
   for (const key of RANDOM_DUAL_KEYS) {
     const element = document.getElementById(`random_dual_${key}`);
@@ -56,6 +64,7 @@ function setRandomDualControls(settings) {
     element.value = values[key];
   }
   sharedLatentMethodChoice(document.getElementById("random_dual_model_format"), values.upscale_method, values.model_format);
+  sharedParameterState.dualInitial = JSON.stringify(readRandomDualControls());
 }
 function readRandomDualControls() {
   return Object.fromEntries(RANDOM_DUAL_KEYS.map((key) => {
@@ -63,6 +72,17 @@ function readRandomDualControls() {
     if (key === "model_format") return [key, sharedLatentFormat(element?.value, sharedParameterState.dual.model_format || "Wan 2.1")];
     return [key, element ? element.type === "checkbox" ? element.checked : element.type === "number" ? Number(element.value) : element.value : sharedParameterState.dual[key] ?? randomDualDefaults()[key]];
   }));
+}
+function readRandomDualSettings() {
+  const values = readRandomDualControls();
+  if (sharedParameterState.dualLegacy && JSON.stringify(values) === sharedParameterState.dualInitial) return null;
+  return values;
+}
+function refreshInheritedDualControls() {
+  if (!sharedParameterState.dualLegacy || readRandomDualSettings() !== null) return;
+  setRandomDualControls({ dual: null, cfg: Number(ui.cfg.value), sampler_name: ui.sampler_name.value, scheduler: ui.scheduler.value,
+    upscalers: { latent: { scale_by: Number(ui.latent_upscale_scale.value), upscale_method: ui.latent_upscale_method.value,
+      ...sharedParameterState.latent } } });
 }
 function sharedParametersApply(settings, raw = settings) {
   sharedParameterState.applying = true;
@@ -84,7 +104,7 @@ function sharedParametersApply(settings, raw = settings) {
 function sharedSamplingCapture() {
   return { steps: Number(ui.steps.value), cfg: Number(ui.cfg.value), sampler_name: ui.sampler_name.value, scheduler: ui.scheduler.value,
     base_denoise: Number(ui.base_denoise?.value ?? 1),
-    dual: readRandomDualControls(), seedMode: document.getElementById("randomSeedMode")?.value || "fixed", seed: document.getElementById("randomSampleSeed")?.value || "0" };
+    dual: readRandomDualSettings(), dualDisplay: readRandomDualControls(), seedMode: document.getElementById("randomSeedMode")?.value || "fixed", seed: document.getElementById("randomSampleSeed")?.value || "0" };
 }
 function sharedSamplingDrafts() {
   if (sharedParameterState.activeMode) sharedParameterState.modes[sharedParameterState.activeMode] = sharedSamplingCapture();
@@ -101,9 +121,9 @@ function sharedSamplingModeChanged() {
   if (sharedParameterState.activeMode) sharedParameterState.modes[sharedParameterState.activeMode] = sharedSamplingCapture();
   const next = sharedParameterState.modes[mode] || sharedSamplingDefaults(mode);
   for (const key of ["steps", "cfg", "sampler_name", "scheduler", "base_denoise"]) setControl(key, next[key]);
-
-  setRandomDualControls({ dual: next.dual });
-  const seedMode = document.getElementById("randomSeedMode"),seed = document.getElementById("randomSampleSeed");
+  setRandomDualControls({ dual: next.dual ?? next.dualDisplay });
+  if (next.dual == null && next.dualDisplay) sharedParameterState.dualLegacy = true;
+  const seedMode = document.getElementById("randomSeedMode"), seed = document.getElementById("randomSampleSeed");
   if (seedMode) seedMode.value = next.seedMode || "fixed";
   if (seed) seed.value = next.seed ?? "0";
   sharedParameterState.activeMode = mode;
@@ -122,15 +142,30 @@ function sharedParameterVisibility() {
   }
   const modeTitle = document.getElementById("baseSamplingTitle");
   if (modeTitle) modeTitle.textContent = dual ? "双采样" : "底图";
-  const order = dual ? ["steps", "random_dual_switch_step", "random_dual_scale", "random_dual_model_format", "randomSeedControls", "cfg", "sampler_name", "scheduler", "random_dual_second_cfg", "random_dual_second_sampler_name", "random_dual_second_scheduler"] :
-  ["steps", "cfg", "sampler_name", "scheduler", "base_denoise", "randomSeedControls"];
+  const order = dual ? ["steps", "random_dual_switch_step", "random_dual_scale", "random_dual_model_format", "randomSeedControls", "cfg", "sampler_name", "scheduler", "baseZeroNegativeControls", "random_dual_second_cfg", "random_dual_second_sampler_name", "random_dual_second_scheduler"]
+    : ["steps", "cfg", "sampler_name", "scheduler", "base_denoise", "randomSeedControls", "baseZeroNegativeControls"];
   for (const [index, id] of order.entries()) {
     const node = document.getElementById(id);
-    const field = id === "randomSeedControls" ? node : node?.closest?.("label");
+    const field = ["randomSeedControls", "baseZeroNegativeControls"].includes(id) ? node : node?.closest?.("label");
     if (field?.style) field.style.order = String(index);
   }
-  for (const [id, title] of [["steps", dual ? "总步数" : "步数"], ["cfg", dual ? "CFG 1" : "CFG"], ["sampler_name", dual ? "采样器 1" : "采样器"], ["scheduler", dual ? "调度器 1" : "调度器"]]) {
-    const label = ui[id]?.closest?.("label")?.querySelector("span");if (label) label.textContent = title;
+  for (const [id, title] of [["steps", dual ? "第一轮步数" : "步数"], ["cfg", dual ? "CFG 1" : "CFG"], ["sampler_name", dual ? "采样器 1" : "采样器"], ["scheduler", dual ? "调度器 1" : "调度器"]]) {
+    const label = ui[id]?.closest?.("label")?.querySelector("span"); if (label) label.textContent = title;
+  }
+  const dualFormat = document.getElementById("random_dual_model_format");
+  const dualFormatLabel = dualFormat?.closest?.("label")?.querySelector("span");
+  if (dualFormatLabel) dualFormatLabel.textContent = String(dualFormat.value).startsWith("legacy:") ? "旧放大算法" : "潜空间格式";
+  const dualHint = document.getElementById("dualSamplingHint");
+  if (dualHint) {
+    dualHint.hidden = !dual;
+    const stepsText = String(ui.steps.value).trim();
+    const startText = String(document.getElementById("random_dual_switch_step")?.value ?? "").trim();
+    const steps = Number(stepsText), start = Number(startText);
+    const valid = stepsText !== "" && startText !== "" && Number.isInteger(steps) && steps >= 1 && steps <= 150
+      && Number.isInteger(start) && start >= 0 && start < steps;
+    dualHint.textContent = valid
+      ? `第一轮 0→${steps}；第二轮 ${start}→${steps}；计划 ${steps}＋${steps - start}＝${steps * 2 - start} 步。`
+      : "请填写有效步数；第二轮起始步须小于第一轮步数。";
   }
 
   const denoise = ui.base_denoise?.closest?.("label");if (denoise) denoise.hidden = dual;
@@ -172,14 +207,15 @@ function sharedParameterResources() {
 function sharedParameterResourceIssues(settings) {
   const issues = [];
   if (typeof resourcesLoaded === "undefined" || !resourcesLoaded) return issues;
-  const post = settings.upscalers || {};
+  const version = Number(settings.pipeline_version ?? 4);
+  const post = normalizeUpscalers(settings.upscalers, null, settings.model_profile || "anima", version);
   const available = Array.isArray(resources.node_types) && resources.node_types.length ? new Set(resources.node_types) : null;
-  const requireNodes = (enabled, label, names) => {if (enabled && available) for (const name of names) if (!available.has(name)) issues.push(`${label}节点不可用：${name}`);};
-  requireNodes(post.pixel_hires?.enabled, "像素高清", ["UpscaleModelLoader", "ImageUpscaleWithModel", ...(!post.post_sampler?.enabled ? ["ImageScaleBy"] : [])]);
+  const requireNodes = (enabled, label, names) => { if (enabled && available) for (const name of names) if (!available.has(name)) issues.push(`${label}节点不可用：${name}`); };
+  requireNodes(post.pixel_hires?.enabled, "像素高清", ["UpscaleModelLoader", "ImageUpscaleWithModel", ...(version >= 5 || !post.post_sampler?.enabled ? ["ImageScaleBy"] : [])]);
   requireNodes(post.nvidia?.enabled, "N 卡 VSR", ["RTXVideoSuperResolution"]);
   requireNodes(post.dlss?.enabled, "DLSS", ["DLSS5NeuralRender"]);
   requireNodes(post.post_sampler?.enabled, "整图后采样", ["KSampler"]);
-  if (Number(settings.pipeline_version ?? 4) >= 4 && post.latent?.enabled) {
+  if (version >= 4 && post.latent?.enabled) {
     requireNodes(true, "潜空间放大", [post.latent.upscale_method === "sesqui" ? "SesquiLatentUpscale" : "LatentUpscaleBy", "KSampler"]);
     if (!(resources.samplers || []).includes(post.latent.sampler?.sampler_name)) issues.push(`潜空间采样器不可用：${post.latent.sampler?.sampler_name || "未选择"}`);
     if (!(resources.schedulers || []).includes(post.latent.sampler?.scheduler)) issues.push(`潜空间调度器不可用：${post.latent.sampler?.scheduler || "未选择"}`);
@@ -200,16 +236,17 @@ function sharedParameterResourceIssues(settings) {
 }
 function adaptPostprocessSettings(settings, source) {
   settings.base_denoise = source?.base_denoise ?? settings.base_denoise ?? 1;
-  settings.dual = randomDualFromSettings(source);
-  settings.upscalers = normalizeUpscalers(settings.upscalers || source?.upscalers);
-  settings.pipeline_version = 4;
+  settings.dual = source?.dual == null ? null : clone(source.dual);
+  settings.pipeline_version = Number(source?.pipeline_version ?? 4);
+  settings.upscalers = normalizeUpscalers(settings.upscalers || source?.upscalers, null, "anima", settings.pipeline_version);
   return settings;
 }
 function initializeSharedParameters() {
   const seed = document.getElementById("randomSeedControls"),base = document.getElementById("baseSamplingFields");
   if (seed && base) base.append(seed);
   ui.base_mode.addEventListener("change", sharedSamplingModeChanged);
-  for (const key of RANDOM_DUAL_KEYS) document.getElementById(`random_dual_${key}`)?.addEventListener("change", () => {sharedParameterVisibility();schedulePersist();});
+  for (const key of RANDOM_DUAL_KEYS) document.getElementById(`random_dual_${key}`)?.addEventListener("change", () => { sharedParameterState.dualLegacy = false; sharedParameterVisibility(); schedulePersist(); });
+  document.getElementById("random_dual_switch_step")?.addEventListener("input", sharedParameterVisibility);
   for (const [id, target] of [["random_dual_model_format", "random_dual_upscale_method"]]) document.getElementById(id)?.addEventListener("change", () => {
     const selected = document.getElementById(id).value;
     ensureSelectValue(document.getElementById(target), selected.startsWith("legacy:") ? selected.slice(7) : "sesqui");

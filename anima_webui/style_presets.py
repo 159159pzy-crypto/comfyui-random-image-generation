@@ -4,8 +4,8 @@ import asyncio
 import copy
 import functools
 import json
-import logging
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -13,119 +13,64 @@ from pathlib import Path
 from typing import Any
 
 from .async_utils import serialized_mutation
+from .model_profiles import DEFAULT_MODEL_PROFILE, ModelProfileError, normalize_model_profile
 from .persistence import StorageProtection, backup_for_migration
+from .preset_contract import normalize_include, normalize_source, preset_settings, resolve_settings
 from .prompt_rules import PromptRuleStore
-from .model_profiles import (
-    DEFAULT_MODEL_PROFILE,
-    ModelProfileError,
-    get_model_profile,
-    normalize_model_profile,
-)
-from .workflow import DEFAULT_SETTINGS, WorkflowError, upgrade_pipeline_settings, validate_settings
+from .workflow import DEFAULT_SETTINGS, WorkflowError
 
 
-logger = logging.getLogger(__name__)
+# Capture accepts full settings; preset_contract emits only allowed fields.
+PRESET_SETTING_KEYS = tuple(DEFAULT_SETTINGS)
+MAX_PRESETS = 256
+MAX_GROUPS = 128
+MAX_TAGS = 64
+STORE_VERSION = 4
+_COVER_ID = re.compile(r"^[a-f0-9]{64}$")
+_ITEM_KEYS = {"id", "name", "favorite", "model_profile", "settings", "include", "source",
+              "groups", "tags", "cover_id", "created_at", "updated_at", "favorite_at"}
+
+
+def _profile(value: Any) -> str:
+    try:
+        return normalize_model_profile(value)
+    except ModelProfileError as error:
+        raise WorkflowError(str(error)) from error
 
 
 def _locked(method: Any) -> Any:
-    """变更方法整体串行化:内存修改在事件循环线程完成,写盘经 to_thread 让出循环。"""
-
     @functools.wraps(method)
     @serialized_mutation
     async def wrapper(self: "StylePresetStore", *args: Any, **kwargs: Any) -> Any:
         self.ensure_writable()
-        previous_items = copy.deepcopy(self.items)
+        previous = copy.deepcopy((self.items, self.groups))
         try:
             return await method(self, *args, **kwargs)
         except Exception:
-            self.items = previous_items
+            self.items, self.groups = previous
             raise
-
     return wrapper
 
 
-PRESET_SETTING_KEYS = (
-    "pipeline_version",
-    "workbench",
-    "generation_mode",
-    "model_profile",
-    "model_name",
-    "clip_name",
-    "vae_name",
-    "clip_type",
-    "loras",
-    "lora_managed_triggers",
-    "manual_artist",
-    "quality_prompt",
-    "extra_prompt",
-    "negative_prompt",
-    "width",
-    "height",
-    "steps",
-    "cfg",
-    "sampler_name",
-    "scheduler",
-    "base_mode",
-    "base_denoise",
-    "dual",
-    "upscalers",
-)
-# v2 snapshots are intentionally free of controls that no longer exist in
-# the UI.  ``PRESET_SETTING_KEYS`` still accepts those names at the import
-# boundary so a v1 JSON file can be migrated without data loss before its
-# obsolete controls are dropped.
-V2_PRESET_SETTING_KEYS = tuple(
-    key
-    for key in PRESET_SETTING_KEYS
-    if key not in {"hires", "detailers", "cfg_zero_star", "second_sampler"}
-)
-MAX_PRESETS = 256
+def _name(value: Any, label: str = "风格预设") -> str:
+    if not isinstance(value, str) or not 1 <= len(value.strip()) <= 100:
+        raise WorkflowError(f"{label}名称需要 1-100 个字符")
+    return value.strip()
 
 
-def preset_settings(
-    value: Any,
-    prompt_rules: PromptRuleStore | None = None,
-    *,
-    force_model_profile: str | None = None,
-) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise WorkflowError("风格预设 settings 必须是对象")
-    unknown = set(value) - set(PRESET_SETTING_KEYS)
-    if unknown:
-        raise WorkflowError(f"风格预设包含未知参数: {', '.join(sorted(unknown))}")
-    # Start from the public defaults.  Copying DEFAULT_SETTINGS wholesale
-    # would reintroduce v1 keys and cause validate_settings to serialize them
-    # into every newly saved preset.
-    candidate = {
-        key: copy.deepcopy(DEFAULT_SETTINGS[key])
-        for key in V2_PRESET_SETTING_KEYS
-        if key in DEFAULT_SETTINGS
-    }
-    # Presets are snapshots.  Legacy snapshots are migrated before validation
-    # so removed v1 controls cannot leak into a new profile's preset.
-    migrated = upgrade_pipeline_settings(value)
-    if force_model_profile is not None:
-        forced_profile = normalize_model_profile(force_model_profile)
-        profile = get_model_profile(forced_profile)
-        migrated.update(
-            {
-                "model_profile": forced_profile,
-                "clip_name": profile["clip_name"],
-                "vae_name": profile["vae_name"],
-                "clip_type": profile["clip_type"],
-            }
-        )
-    candidate.update(migrated)
-    if force_model_profile is None and "model_profile" in value:
-        candidate["model_profile"] = value["model_profile"]
-    if prompt_rules is not None:
-        candidate, _ = prompt_rules.normalize_settings(candidate, model_profile=candidate.get("model_profile", "anima"))
-    normalized = validate_settings(candidate)
-    return {
-        key: copy.deepcopy(normalized[key])
-        for key in V2_PRESET_SETTING_KEYS
-        if key in normalized
-    }
+def _strings(value: Any, label: str, maximum: int, *, fold: bool = False) -> list[str]:
+    if not isinstance(value, list) or len(value) > maximum:
+        raise WorkflowError(f"{label}必须是最多 {maximum} 项的数组")
+    result, seen = [], set()
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip() or len(entry.strip()) > 100:
+            raise WorkflowError(f"{label}每项需要 1-100 个字符")
+        entry = entry.strip()
+        identity = entry.casefold() if fold else entry
+        if identity not in seen:
+            seen.add(identity)
+            result.append(entry)
+    return result
 
 
 class StylePresetStore(StorageProtection):
@@ -136,171 +81,251 @@ class StylePresetStore(StorageProtection):
         self.prompt_rules = prompt_rules
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.items: list[dict[str, Any]] = []
+        self.groups: list[dict[str, Any]] = []
         self.load_warnings: list[str] = []
         self._lock = asyncio.Lock()
         self.reload()
 
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _group_ids(self, values: Any, profile: str) -> list[str]:
+        ids = _strings(values, "预设分组", MAX_GROUPS)
+        available = {group["id"] for group in self.groups if group["model_profile"] == profile}
+        if set(ids) - available:
+            raise WorkflowError("预设分组不存在或属于其他模型档案")
+        return ids
+
+    def _normalize_group(self, payload: Any) -> dict[str, str]:
+        if not isinstance(payload, dict) or set(payload) - {"id", "name", "model_profile"}:
+            raise WorkflowError("预设分组格式无效")
+        group_id = payload.get("id")
+        if not isinstance(group_id, str) or not group_id or len(group_id) > 100:
+            raise WorkflowError("预设分组 ID 无效")
+        return {"id": group_id, "name": _name(payload.get("name"), "分组"),
+                "model_profile": _profile(payload.get("model_profile", DEFAULT_MODEL_PROFILE))}
+
+    def _normalize_item(self, payload: Any, *, legacy: bool = False,
+                        force_model_profile: str | None = None) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) - _ITEM_KEYS:
+            raise WorkflowError("风格预设包含未知字段或不是对象")
+        preset_id = payload.get("id")
+        if not isinstance(preset_id, str) or not preset_id or len(preset_id) > 100:
+            raise WorkflowError("风格预设 ID 无效")
+        favorite = payload.get("favorite", False)
+        if not isinstance(favorite, bool):
+            raise WorkflowError("风格预设 favorite 必须是布尔值")
+        raw = payload.get("settings", {})
+        if not isinstance(raw, dict):
+            raise WorkflowError("风格预设 settings 必须是对象")
+        profile = _profile(force_model_profile or payload.get("model_profile")
+                           or raw.get("model_profile", DEFAULT_MODEL_PROFILE))
+        if force_model_profile is None and "model_profile" in raw and _profile(raw["model_profile"]) != profile:
+            raise WorkflowError("风格预设模型档案不一致")
+        flags = normalize_include(None if legacy else payload.get("include"))
+        origin = normalize_source(None if legacy else payload.get("source"), raw)
+        settings = preset_settings({**raw, "model_profile": profile}, include=flags, source=origin,
+                                   force_model_profile=force_model_profile)
+        groups = self._group_ids(payload.get("groups", []), profile)
+        cover = payload.get("cover_id")
+        if cover is not None and (not isinstance(cover, str) or not _COVER_ID.fullmatch(cover)):
+            raise WorkflowError("风格预设 cover_id 必须是有效图片 ID 或 null")
+        created = payload.get("created_at") or self._now()
+        updated = payload.get("updated_at") or created
+        if not isinstance(created, str) or not isinstance(updated, str):
+            raise WorkflowError("风格预设时间格式无效")
+        favorite_at = payload.get("favorite_at")
+        if favorite_at is not None and not isinstance(favorite_at, str):
+            raise WorkflowError("风格预设收藏时间格式无效")
+        # Older files used the last update for favorite ordering. Preserve that
+        # order when introducing a separate, server-owned favorite timestamp.
+        favorite_at = (favorite_at or updated) if favorite else None
+        return {
+            "id": preset_id, "name": _name(payload.get("name")), "favorite": favorite,
+            "model_profile": profile, "settings": settings, "include": flags, "source": origin,
+            "groups": groups, "tags": _strings(payload.get("tags", []), "预设标签", MAX_TAGS, fold=True),
+            "cover_id": cover, "created_at": created, "updated_at": updated, "favorite_at": favorite_at,
+        }
+
+    @staticmethod
+    def _set_mutation_times(item: dict[str, Any], previous: dict[str, Any] | None, now: str) -> None:
+        ordering_fields = {"favorite", "favorite_at", "updated_at"}
+        content_changed = previous is None or any(
+            value != previous.get(key) for key, value in item.items() if key not in ordering_fields
+        )
+        item["updated_at"] = now if content_changed else previous["updated_at"]
+        item["favorite_at"] = (
+            previous["favorite_at"] if previous and previous["favorite"] else now
+        ) if item["favorite"] else None
+
     def reload(self) -> None:
         self.load_warnings = []
         self.read_only_reason = None
+        # Cover collection needs an authoritative reference set. Informational
+        # migration warnings do not make that set incomplete; dropped presets do.
+        self.cover_references_complete = True
+        self.items, self.groups = [], []
         if not self.path.is_file():
-            self.items = []
+            # A previous corrupt-file recovery may have quarantined the only
+            # source before any new write could persist the incomplete marker.
+            self.cover_references_complete = not any(
+                self.path.parent.glob(f"{self.path.name}.corrupt*.bak")
+            )
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-            values = payload.get("items", []) if isinstance(payload, dict) else []
-            version = payload.get("version", 1) if isinstance(payload, dict) else 1
-            if not isinstance(payload, dict) or version not in {1, 2}:
+            if not isinstance(payload, dict) or type(payload.get("version", 1)) is not int:
                 raise WorkflowError("风格预设文件版本无效")
-            if not isinstance(values, list):
-                raise WorkflowError("风格预设 items 必须是数组")
-            # Version 1 snapshots predate profile namespaces and the v2 repair
-            # schema. Always preserve a backup before persisting normalization, even
-            # when a hand-edited v1 item already happens to contain a profile.
-            migrated_legacy = version == 1
-            # Migrate each snapshot independently.  A single hand-edited or
-            # obsolete entry must not make every previously saved style
-            # disappear.  Keep a warning with the item name so the user can
-            # repair it manually; valid entries remain available immediately.
-            items = []
-            cleaned_legacy = False
-            for index, raw_item in enumerate(values):
-                if not isinstance(raw_item, dict):
-                    self.load_warnings.append(f"风格预设第 {index + 1} 项不是对象,已跳过")
-                    cleaned_legacy = True
-                    continue
+            version = payload.get("version", 1)
+            if version not in {1, 2, 3, 4}:
+                raise WorkflowError("风格预设文件版本无效")
+            if version >= 3:
+                complete = payload.get("cover_references_complete", True)
+                if not isinstance(complete, bool):
+                    raise WorkflowError("风格预设封面引用完整性标记无效")
+                self.cover_references_complete = complete
+            values = payload.get("items", [])
+            raw_groups = payload.get("groups", []) if version >= 3 else []
+            if not isinstance(values, list) or not isinstance(raw_groups, list):
+                raise WorkflowError("风格预设 items/groups 必须是数组")
+            cleaned = False
+            for group in raw_groups:
                 try:
-                    items.append(
-                        self._normalize(
-                            raw_item,
-                            existing=True,
-                            force_model_profile=DEFAULT_MODEL_PROFILE if migrated_legacy else None,
-                        )
-                    )
+                    normalized = self._normalize_group(group)
+                    if any(entry["id"] == normalized["id"] or
+                           entry["model_profile"] == normalized["model_profile"] and
+                           entry["name"].casefold() == normalized["name"].casefold() for entry in self.groups):
+                        raise WorkflowError("分组 ID 或名称重复")
+                    self.groups.append(normalized)
                 except (WorkflowError, TypeError, ValueError) as error:
-                    # v1 exports occasionally contain fields added by a newer
-                    # UI.  Retry with the documented snapshot keys removed
-                    # from the outer envelope; this preserves old settings
-                    # while keeping the strict API validation for new writes.
-                    fallback = dict(raw_item)
-                    raw_settings = fallback.get("settings")
-                    if isinstance(raw_settings, dict):
-                        fallback["settings"] = {
-                            key: value
-                            for key, value in raw_settings.items()
-                            if key in PRESET_SETTING_KEYS
-                        }
-                    try:
-                        items.append(
-                            self._normalize(
-                                fallback,
-                                existing=True,
-                                force_model_profile=DEFAULT_MODEL_PROFILE if migrated_legacy else None,
-                            )
-                        )
-                        self.load_warnings.append(
-                            f"风格预设 {raw_item.get('name') or index + 1} 含旧字段,已自动迁移"
-                        )
-                        cleaned_legacy = True
-                    except (WorkflowError, TypeError, ValueError):
-                        self.load_warnings.append(
-                            f"风格预设 {raw_item.get('name') or index + 1} 无法迁移({error}),已跳过"
-                        )
-                        cleaned_legacy = True
+                    cleaned = True
+                    self.load_warnings.append(f"预设分组无法读取({error}),已跳过")
+            for index, raw in enumerate(values):
+                try:
+                    candidate = copy.deepcopy(raw)
+                    if version < 3 and isinstance(candidate, dict):
+                        candidate = {key: value for key, value in candidate.items() if key in _ITEM_KEYS}
+                        if isinstance(candidate.get("settings"), dict):
+                            candidate["settings"] = {key: value for key, value in candidate["settings"].items()
+                                                     if key in PRESET_SETTING_KEYS}
+                    if isinstance(candidate, dict) and isinstance(candidate.get("groups"), list):
+                        settings = candidate.get("settings")
+                        profile = candidate.get("model_profile", settings.get("model_profile", "anima") if isinstance(settings, dict) else "anima")
+                        known = {group["id"] for group in self.groups if group["model_profile"] == profile}
+                        kept = [group for group in candidate["groups"] if isinstance(group, str) and group in known]
+                        if kept != candidate["groups"]:
+                            cleaned = True
+                            candidate["groups"] = kept
+                    item = self._normalize_item(candidate, legacy=version < 3,
+                                                force_model_profile=DEFAULT_MODEL_PROFILE if version == 1 else None)
+                    if any(entry["id"] == item["id"] for entry in self.items):
+                        raise WorkflowError("预设 ID 重复")
+                    self._ensure_unique_name(item["name"], model_profile=item["model_profile"])
+                    self.items.append(item)
+                except (WorkflowError, TypeError, ValueError) as error:
+                    cleaned = True
+                    self.cover_references_complete = False
+                    name = raw.get("name") if isinstance(raw, dict) else index + 1
+                    self.load_warnings.append(f"风格预设 {name or index + 1} 无法迁移({error}),已跳过")
         except (OSError, UnicodeError, json.JSONDecodeError, WorkflowError) as error:
+            self.cover_references_complete = False
             self._recover_load_failure(error)
-            self.items = []
+            self.items, self.groups = [], []
             return
-        self.items = items
-        if migrated_legacy or cleaned_legacy:
+        if version < STORE_VERSION or cleaned:
             try:
-                backup = backup_for_migration(self.path, 2)
+                backup = backup_for_migration(self.path, STORE_VERSION)
                 if backup is not None:
-                    self.load_warnings.append(
-                        f"风格预设已迁移,原文件备份为 {backup.name}"
-                    )
-                self._write_text(
-                    json.dumps({"version": 2, "items": self.items}, ensure_ascii=False, indent=2)
-                    + "\n"
-                )
+                    self.load_warnings.append(f"风格预设数据格式已迁移升级，原文件备份为 {backup.name}")
+                self._write_text(self._serialized())
             except OSError as error:
                 self._protect_storage(f"风格预设已在内存迁移，但迁移备份或写回失败({error})")
 
     def list(self, model_profile: str | None = None) -> dict[str, Any]:
-        profile_id: str | None = None
-        if model_profile is not None and str(model_profile).strip():
-            try:
-                profile_id = normalize_model_profile(model_profile)
-            except ModelProfileError as error:
-                raise WorkflowError(str(error)) from error
-        visible = self.items
-        if profile_id:
-            visible = [
-                item
-                for item in visible
-                if item["settings"].get("model_profile", DEFAULT_MODEL_PROFILE) == profile_id
-            ]
-        favorites = sorted(
-            (item for item in visible if item["favorite"]),
-            key=lambda item: item["updated_at"],
-            reverse=True,
-        )
-        regular = sorted(
-            (item for item in visible if not item["favorite"]),
-            key=lambda item: item["updated_at"],
-            reverse=True,
-        )
-        return {
-            "items": copy.deepcopy(favorites + regular),
-            "count": len(visible),
-            "model_profile": profile_id,
-        }
+        profile = _profile(model_profile) if model_profile is not None and str(model_profile).strip() else None
+        items = [item for item in self.items if profile is None or item["model_profile"] == profile]
+        items = sorted(items, key=lambda item: (
+            item["favorite"], item["favorite_at"] if item["favorite"] else item["updated_at"], item["updated_at"],
+        ), reverse=True)
+        return {"items": copy.deepcopy(items), "count": len(items), "model_profile": profile,
+                "groups": copy.deepcopy([group for group in self.groups if profile is None or group["model_profile"] == profile])}
+
+    def get(self, preset_id: str, model_profile: str | None = None) -> dict[str, Any]:
+        item = next((item for item in self.items if item["id"] == preset_id), None)
+        if item is None:
+            raise KeyError(preset_id)
+        if model_profile is not None and _profile(model_profile) != item["model_profile"]:
+            raise WorkflowError("不能跨模型档案操作风格预设")
+        return copy.deepcopy(item)
+
+    def resolve(self, preset_id: str, current_settings: Any, model_profile: str | None = None) -> dict[str, Any]:
+        return resolve_settings(self.get(preset_id, model_profile), current_settings)
+
+    def _ensure_unique_name(self, value: Any, excluding_id: str | None = None,
+                            model_profile: Any = DEFAULT_MODEL_PROFILE) -> None:
+        name = _name(value).casefold()
+        profile = _profile(model_profile)
+        if any(item["id"] != excluding_id and item["name"].casefold() == name
+               and item["model_profile"] == profile for item in self.items):
+            raise WorkflowError("已有同名风格预设")
+
+    def _capture(self, payload: dict[str, Any], previous: dict[str, Any] | None = None) -> dict[str, Any]:
+        raw = payload.get("settings", {})
+        if not isinstance(raw, dict):
+            raise WorkflowError("风格预设 settings 必须是对象")
+        profile = _profile(payload.get("model_profile") or raw.get("model_profile")
+                           or (previous or {}).get("model_profile", DEFAULT_MODEL_PROFILE))
+        if "model_profile" in raw and _profile(raw["model_profile"]) != profile:
+            raise WorkflowError("风格预设模型档案不一致")
+        flags = normalize_include(payload.get("include", (previous or {}).get("include")))
+        origin = normalize_source(payload.get("source"), raw)
+        captured = preset_settings({**raw, "model_profile": profile}, self.prompt_rules, include=flags, source=origin)
+        return {**payload, "model_profile": profile, "settings": captured, "include": flags, "source": origin}
 
     @_locked
     async def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) - _ITEM_KEYS:
+            raise WorkflowError("风格预设包含未知字段或不是对象")
         if len(self.items) >= MAX_PRESETS:
             raise WorkflowError(f"风格预设不能超过 {MAX_PRESETS} 个")
-        profile_id = payload.get("model_profile") or (payload.get("settings") or {}).get(
-            "model_profile", DEFAULT_MODEL_PROFILE
-        )
-        self._ensure_unique_name(payload.get("name"), model_profile=profile_id)
+        captured = self._capture(payload)
+        self._ensure_unique_name(payload.get("name"), model_profile=captured["model_profile"])
         now = self._now()
-        item = self._normalize(
-            {
-                **payload,
-                "model_profile": profile_id,
-                "id": f"preset_{uuid.uuid4().hex[:16]}",
-                "created_at": now,
-                "updated_at": now,
-            }
-        )
+        item = self._normalize_item({**captured, "id": f"preset_{uuid.uuid4().hex[:16]}",
+                                     "created_at": now, "updated_at": now, "favorite_at": None})
+        if item["groups"]:
+            item["favorite"] = True
+        self._set_mutation_times(item, None, now)
         self.items.append(item)
         await self._save()
         return copy.deepcopy(item)
 
     @_locked
     async def update(self, preset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        index = next((index for index, item in enumerate(self.items) if item["id"] == preset_id), None)
-        if index is None:
-            raise KeyError(preset_id)
-        current = self.items[index]
-        if "name" in payload:
-            profile_id = payload.get("model_profile") or (
-                payload.get("settings") or current.get("settings") or {}
-            ).get("model_profile", DEFAULT_MODEL_PROFILE)
-            self._ensure_unique_name(
-                payload.get("name"), excluding_id=preset_id, model_profile=profile_id
-            )
-        item = self._normalize(
-            {
-                **current,
-                **payload,
-                "id": preset_id,
-                "created_at": current["created_at"],
-                "updated_at": self._now(),
-            }
-        )
-        self.items[index] = item
+        if not isinstance(payload, dict) or set(payload) - _ITEM_KEYS:
+            raise WorkflowError("风格预设包含未知字段或不是对象")
+        current = self.get(preset_id)
+        for envelope in (payload, payload.get("settings")):
+            if isinstance(envelope, dict) and "model_profile" in envelope and _profile(envelope["model_profile"]) != current["model_profile"]:
+                raise WorkflowError("不能更改已有风格预设的模型档案，请在目标档案另存新预设")
+        changes = {**payload, "model_profile": current["model_profile"]}
+        if "settings" in payload:
+            changes = self._capture(changes, current)
+        else:
+            if "source" in payload and payload["source"] != current["source"]:
+                raise WorkflowError("修改预设来源需要提供当前 settings")
+            flags = normalize_include(payload.get("include", current["include"]))
+            if any(flags[key] and not current["include"][key] for key in flags):
+                raise WorkflowError("新增携带项需要提供当前 settings")
+        merged = {**current, **changes, "id": preset_id, "created_at": current["created_at"],
+                  "updated_at": current["updated_at"], "favorite_at": current["favorite_at"]}
+        self._ensure_unique_name(merged["name"], excluding_id=preset_id, model_profile=current["model_profile"])
+        item = self._normalize_item(merged)
+        if "groups" in payload and set(item["groups"]) - set(current["groups"]):
+            item["favorite"] = True
+        self._set_mutation_times(item, current, self._now())
+        self.items[next(index for index, entry in enumerate(self.items) if entry["id"] == preset_id)] = item
         await self._save()
         return copy.deepcopy(item)
 
@@ -313,86 +338,122 @@ class StylePresetStore(StorageProtection):
         await self._save()
         return True
 
-    @staticmethod
-    def _now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+    def _unique_group(self, group: dict[str, str], excluding_id: str | None = None) -> None:
+        if any(entry["id"] != excluding_id and entry["model_profile"] == group["model_profile"]
+               and entry["name"].casefold() == group["name"].casefold() for entry in self.groups):
+            raise WorkflowError("已有同名预设分组")
 
-    def _ensure_unique_name(
-        self,
-        value: Any,
-        excluding_id: str | None = None,
-        model_profile: Any = DEFAULT_MODEL_PROFILE,
-    ) -> None:
-        name = str(value or "").strip().casefold()
-        try:
-            profile_id = normalize_model_profile(model_profile)
-        except ModelProfileError as error:
-            raise WorkflowError(str(error)) from error
-        if name and any(
-            item["id"] != excluding_id and item["name"].strip().casefold() == name
-            and item["settings"].get("model_profile", DEFAULT_MODEL_PROFILE) == profile_id
-            for item in self.items
-        ):
-            raise WorkflowError("已有同名风格预设")
+    @_locked
+    async def create_group(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise WorkflowError("预设分组必须是对象")
+        if len(self.groups) >= MAX_GROUPS:
+            raise WorkflowError(f"预设分组不能超过 {MAX_GROUPS} 个")
+        group = self._normalize_group({**payload, "id": f"preset_group_{uuid.uuid4().hex[:16]}"})
+        self._unique_group(group)
+        self.groups.append(group)
+        await self._save()
+        return copy.deepcopy(group)
 
-    def _normalize(
-        self,
-        payload: dict[str, Any],
-        existing: bool = False,
-        force_model_profile: str | None = None,
-    ) -> dict[str, Any]:
-        preset_id = str(payload.get("id") or "").strip()
-        name = str(payload.get("name") or "").strip()
-        favorite = payload.get("favorite", False)
-        if not preset_id or not name or len(name) > 100:
-            raise WorkflowError("风格预设名称需要 1-100 个字符")
-        if not isinstance(favorite, bool):
-            raise WorkflowError("风格预设 favorite 必须是布尔值")
-        created_at = str(payload.get("created_at") or "")
-        updated_at = str(payload.get("updated_at") or created_at)
-        if existing and not created_at:
-            created_at = updated_at = StylePresetStore._now()
-        raw_settings = payload.get("settings")
-        if raw_settings is None:
-            raw_settings = {
-                "model_profile": payload.get("model_profile", DEFAULT_MODEL_PROFILE)
-            }
-        if not isinstance(raw_settings, dict):
-            raise WorkflowError("风格预设 settings 必须是对象")
-        if force_model_profile is None and payload.get("model_profile") is not None:
-            raw_settings = {**raw_settings, "model_profile": payload["model_profile"]}
-        normalized_settings = preset_settings(
-            raw_settings,
-            self.prompt_rules,
-            force_model_profile=force_model_profile,
-        )
-        # Top-level profile is a convenience for API filtering; the settings
-        # snapshot remains authoritative when loading a preset.
-        profile_id = normalized_settings.get("model_profile", DEFAULT_MODEL_PROFILE)
-        return {
-            "id": preset_id,
-            "name": name,
-            "favorite": favorite,
-            "model_profile": profile_id,
-            "settings": normalized_settings,
-            "created_at": created_at,
-            "updated_at": updated_at,
-        }
+    @_locked
+    async def update_group(self, group_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise WorkflowError("预设分组必须是对象")
+        index = next((index for index, group in enumerate(self.groups) if group["id"] == group_id), None)
+        if index is None:
+            raise KeyError(group_id)
+        old = self.groups[index]
+        if "model_profile" in payload and _profile(payload["model_profile"]) != old["model_profile"]:
+            raise WorkflowError("不能跨模型档案修改预设分组")
+        group = self._normalize_group({**old, **payload, "id": group_id})
+        self._unique_group(group, group_id)
+        self.groups[index] = group
+        await self._save()
+        return copy.deepcopy(group)
+
+    @_locked
+    async def delete_group(self, group_id: str, model_profile: str) -> bool:
+        profile = _profile(model_profile)
+        group = next((group for group in self.groups if group["id"] == group_id), None)
+        if group is None:
+            return False
+        if group["model_profile"] != profile:
+            raise WorkflowError("不能跨模型档案删除预设分组")
+        self.groups = [group for group in self.groups if group["id"] != group_id]
+        for item in self.items:
+            if group_id in item["groups"]:
+                item["groups"].remove(group_id)
+                item["updated_at"] = self._now()
+        await self._save()
+        return True
+
+    @_locked
+    async def batch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) != {"model_profile", "ids", "action", "value"}:
+            raise WorkflowError("预设批量整理需要 model_profile、ids、action、value")
+        profile = _profile(payload["model_profile"])
+        ids = _strings(payload["ids"], "预设 ID", MAX_PRESETS)
+        if not ids:
+            raise WorkflowError("请先选择预设")
+        selected = [self.get(preset_id, profile) for preset_id in ids]
+        action, value = payload["action"], payload["value"]
+        if not isinstance(action, str):
+            raise WorkflowError("不支持的预设批量操作")
+        if action == "favorite":
+            if not isinstance(value, bool):
+                raise WorkflowError("收藏状态必须是布尔值")
+        elif action in {"groups", "tags"}:
+            if (not isinstance(value, dict) or set(value) != {"mode", "values"}
+                    or not isinstance(value["mode"], str) or value["mode"] not in {"add", "remove", "replace"}):
+                raise WorkflowError("批量分组/标签需要 mode 和 values")
+            values = (self._group_ids(value["values"], profile) if action == "groups"
+                      else _strings(value["values"], "预设标签", MAX_TAGS, fold=True))
+        else:
+            raise WorkflowError("不支持的预设批量操作")
+        now = self._now()
+        for item in selected:
+            previous = copy.deepcopy(item)
+            if action == "favorite":
+                item["favorite"] = value
+            else:
+                old = item[action]
+                identity = (lambda entry: entry.casefold()) if action == "tags" else (lambda entry: entry)
+                if value["mode"] == "replace":
+                    combined = list(values)
+                elif value["mode"] == "remove":
+                    removed = {identity(entry) for entry in values}
+                    combined = [entry for entry in old if identity(entry) not in removed]
+                else:
+                    combined = list(old)
+                    existing = {identity(entry) for entry in old}
+                    combined.extend(entry for entry in values if identity(entry) not in existing)
+                item[action] = (_strings(combined, "预设标签", MAX_TAGS, fold=True) if action == "tags"
+                                else self._group_ids(combined, profile))
+                if action == "groups" and set(item[action]) - set(old):
+                    item["favorite"] = True
+            self._set_mutation_times(item, previous, now)
+        changes = {item["id"]: item for item in selected}
+        self.items = [changes.get(item["id"], item) for item in self.items]
+        await self._save()
+        return self.list(profile)
+
+    def _serialized(self) -> str:
+        return json.dumps({"version": STORE_VERSION, "items": self.items, "groups": self.groups,
+                           "cover_references_complete": self.cover_references_complete},
+                          ensure_ascii=False, indent=2) + "\n"
 
     async def _save(self) -> None:
-        # 快照序列化在事件循环线程完成(状态一致),fsync 等慢速 I/O 移入工作线程。
-        payload = json.dumps({"version": 2, "items": self.items}, ensure_ascii=False, indent=2) + "\n"
-        await asyncio.to_thread(self._write_text, payload)
+        await asyncio.to_thread(self._write_text, self._serialized())
 
     def _write_text(self, text: str) -> None:
         self.ensure_writable()
-        fd, temp_name = tempfile.mkstemp(prefix="style-presets-", suffix=".json", dir=self.path.parent)
+        descriptor, temporary = tempfile.mkstemp(prefix="style-presets-", suffix=".json", dir=self.path.parent)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp_name, self.path)
+            os.replace(temporary, self.path)
         finally:
-            if os.path.exists(temp_name):
-                os.unlink(temp_name)
+            if os.path.exists(temporary):
+                os.unlink(temporary)

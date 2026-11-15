@@ -9,11 +9,12 @@ import time
 from datetime import datetime
 from typing import Any
 
-from .comfy import ComfyAborted, ComfyError, extract_images, extract_positive_prompt
+from .comfy import ComfyAborted, ComfyCleanupSkipped, ComfyError, extract_images, extract_positive_prompt
 from .catalog import PromptCatalog, resolve_history_selection, split_prompt
 from .history import HistoryStore
 from .prompt_rules import PromptRuleStore
 from .model_profiles import get_model_profile
+from .resource_resolution import merge_resource_replacements, resources_changed
 from .lora_binding import (append_trigger_words, binding_policy, manual_settings,
                            resolve_character_loras, runtime_snapshot, validate_frozen_resources)
 from .graph_utils import active_lora_pipelines
@@ -31,6 +32,7 @@ class BatchConflict(RuntimeError):
 MAX_QUEUE = 20
 SHUTDOWN_GRACE = 2.0
 CANCEL_PROMPT_TIMEOUT = 5.0
+MEMORY_RELEASE_TIMEOUT = 5.0
 REGENERATION_MODES = {"replay", "prompt_variant", "content_redraw", "settings_reroll"}
 PROMPT_SECTIONS = ("character", "clothing", "pose", "background", "expression")
 MAX_EXECUTION_NONCE = 2**53 - 1
@@ -91,6 +93,7 @@ class BatchManager:
         self.catalog = catalog
         self.prompt_rules = prompt_rules
         self.lora_library = None
+        self.resource_resolver = None
         # 排队中的批次(仅内存;WebUI 重启后队列清空,历史记录只在真正开跑时创建)。
         self.queue: list[dict[str, Any]] = []
         self.shutting_down = False
@@ -104,6 +107,7 @@ class BatchManager:
         self._preview_seq = 0
         self._preview_epoch = 0
         self._submitted_node_stages: dict[str, tuple[str, str]] = {}
+        self._cancel_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         # start 里的资源校验要 await 多次 ComfyUI 请求,期间若不上锁,
         # 第二个并发 start 也能通过 active() 检查并启动重复批次。
         self._start_lock = asyncio.Lock()
@@ -115,6 +119,8 @@ class BatchManager:
     def _ensure_accepting(self) -> None:
         if self.shutting_down:
             raise BatchConflict("服务正在关闭，无法接受新任务")
+        if self.state and self.state.get("memory_release") == "pending":
+            raise BatchConflict("正在清缓存与垃圾回收，请稍后再试")
 
 
     async def shutdown(self) -> None:
@@ -141,6 +147,8 @@ class BatchManager:
                         if isinstance(result, Exception):
                             logger.warning("关闭时任务收尾失败: %s", result)
             finally:
+                if self._cancel_tasks:
+                    await asyncio.gather(*self._cancel_tasks.values(), return_exceptions=True)
                 self._stop_monitor()
                 if self._monitor_tasks:
                     await asyncio.gather(*self._monitor_tasks, return_exceptions=True)
@@ -277,7 +285,7 @@ class BatchManager:
         return result
 
     async def resource_issues(
-        self, overrides: dict[str, Any], *, resources_resolved: bool = False,
+        self, overrides: dict[str, Any], *, resources_resolved: bool = False, inventory: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         settings = validate_settings(overrides)
         issues: list[dict[str, str]] = []
@@ -286,9 +294,9 @@ class BatchManager:
         for item in settings["loras"]:
             if item["enabled"] and item["filename"].replace("\\", "/").casefold() not in available:
                 issues.append({"type": "lora", "name": item["filename"], "label": "LoRA"})
-        inventory = getattr(self.comfy, "resource_inventory", None)
-        if inventory:
-            resources = await inventory()
+        read_inventory = getattr(self.comfy, "resource_inventory", None)
+        if read_inventory or inventory is not None:
+            resources = inventory if inventory is not None else await read_inventory()
             try:
                 settings = self._resolve_resource_paths(settings, resources, resources_resolved=resources_resolved)
             except WorkflowError as error:
@@ -475,8 +483,17 @@ class BatchManager:
                         "label": "脸部细化节点",
                     }
                 )
-            check("face_refine_sampler", "脸部细化 Sampler", face.get("sampler"), resources.get("samplers"))
-            check("face_refine_scheduler", "脸部细化 Scheduler", face.get("scheduler"), resources.get("schedulers"))
+            def face_choices(field: str, fallback: str) -> Any:
+                spec = resources.get("node_inputs", {}).get("ForbiddenVisionFaceProcessorIntegrated", {}).get(field)
+                if isinstance(spec, list) and spec:
+                    if isinstance(spec[0], list):
+                        return spec[0]
+                    if len(spec) > 1 and isinstance(spec[1], dict) and isinstance(spec[1].get("options"), list):
+                        return spec[1]["options"]
+                return resources.get(fallback)
+
+            check("face_refine_sampler", "脸部细化 Sampler", face.get("sampler"), face_choices("sampler", "samplers"))
+            check("face_refine_scheduler", "脸部细化 Scheduler", face.get("scheduler"), face_choices("scheduler", "schedulers"))
 
         # Keep v1 resource diagnostics meaningful when a caller explicitly
         # submits a legacy settings object during migration tests.
@@ -491,7 +508,8 @@ class BatchManager:
             advertised = set(resources["node_types"])
             missing = {item["name"] for item in issues if item["type"].endswith("_node")}
             for node_name in sorted(required_node_classes(settings) - advertised - missing):
-                issues.append({"type": "pipeline_node", "name": node_name, "label": "当前处理链节点"})
+                label = "清缓存和垃圾回收节点（请安装或更新 ComfyUI-KJNodes 后重启 ComfyUI）" if node_name == "VRAM_Debug" else "当前处理链节点"
+                issues.append({"type": "pipeline_node", "name": node_name, "label": label})
         from .sampling import random_sampling_resource_issues
         issues.extend(random_sampling_resource_issues(settings, resources))
         return issues
@@ -511,7 +529,9 @@ class BatchManager:
         overrides: dict[str, Any],
         seeds: dict[str, int] | None = None,
         regeneration: dict[str, Any] | None = None,
+        resource_resolution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self._ensure_accepting()
         async with self._start_lock:
             self._ensure_accepting()
             ensure_writable = getattr(self.history, "ensure_writable", None)
@@ -550,11 +570,34 @@ class BatchManager:
                 # schema even when an embedded caller submits DEFAULT_SETTINGS
                 # with the four deprecated aliases attached.
                 settings = migrate_settings(settings)
+            if self.resource_resolver is not None:
+                strict = bool(regeneration and regeneration["mode"] in {"replay", "prompt_variant"})
+                resolved = await self.resource_resolver(settings, refresh=True, strict=strict)
+                if resolved["issues"]:
+                    raise WorkflowError("；".join(item["message"] for item in resolved["issues"]))
+                if strict or binding_policy(regeneration) == "preserve_character":
+                    expected = {item["field"]: (item["name"], item["fingerprint"])
+                                for item in (resource_resolution or {}).get("resources", [])
+                                if item.get("fingerprint") and (strict or item.get("kind") == "loras"
+                                                               or str(item.get("field", "")).startswith("loras."))}
+                    current = {item["field"]: (item["name"], item.get("fingerprint", ""))
+                               for item in resolved.get("resources", [])}
+                    if any(current.get(field) != identity for field, identity in expected.items()):
+                        raise WorkflowError("历史资源文件身份已变化，请刷新历史资源状态后重试")
+                settings = resolved["effective_settings"]
+                replacements = merge_resource_replacements((resource_resolution or {}).get("replacements", []), resolved["replacements"])
+                resource_resolution = {"version": 1, "replacements": replacements, "resourceChanged": resources_changed(replacements),
+                                       "resources": copy.deepcopy(resolved.get("resources", []))}
             seeds = validate_seeds(seeds)
             if self.catalog and not (
                 regeneration and regeneration.get("frozen_positive_prompt")
             ):
-                self.catalog.validate_settings(settings)
+                validation_settings = settings
+                if regeneration and regeneration.get("mode") == "content_redraw":
+                    validation_settings = copy.deepcopy(settings)
+                    for section in regeneration.get("fixed_selection") or {}:
+                        validation_settings[f"random_{section}"] = False
+                self.catalog.validate_settings(validation_settings)
             lora_filenames = getattr(self.comfy, "lora_filenames", None)
             if not lora_filenames:
                 raise ComfyError("ComfyUI 客户端无法读取 LoRA 列表")
@@ -565,7 +608,7 @@ class BatchManager:
                     settings, available_loras, allow_basename=not bool(regeneration),
                 )
             resource_inventory = getattr(self.comfy, "resource_inventory", None)
-            if resource_inventory:
+            if resource_inventory and self.resource_resolver is None:
                 resources = await resource_inventory()
                 settings = self._resolve_resource_paths(settings, resources, resources_resolved=bool(regeneration))
                 issues = self._resource_inventory_issues(
@@ -597,6 +640,18 @@ class BatchManager:
                     and settings["model_profile"] == "anima" and settings.get("random_character")
                     and binding_policy(regeneration) == "current"):
                 binding_snapshot = copy.deepcopy(await self.lora_library.binding_snapshot())
+                inspection = getattr(self.comfy, "resource_inspection", None)
+                if inspection and binding_snapshot.get("bindings"):
+                    # The admission resolver has just refreshed this read-only
+                    # inspection cache. Freeze candidate identities without
+                    # loading every candidate into the actual LoRA stack.
+                    inspected = await inspection(refresh=False)
+                    if inspected.get("supported") and isinstance(inspected.get("lora_files"), list):
+                        binding_snapshot["resource_fingerprints"] = {
+                            str(item["name"]).replace("\\", "/").casefold(): item["fingerprint"]
+                            for item in inspected["lora_files"]
+                            if isinstance(item, dict) and item.get("name") and item.get("fingerprint")
+                        }
             self._ensure_accepting()
             if self.active():
                 # 有批次在跑:进入队列,当前批次结束后自动接续。
@@ -608,6 +663,7 @@ class BatchManager:
                     "seeds": seeds,
                     "regeneration": regeneration,
                     "binding_snapshot": binding_snapshot,
+                    "resource_resolution": resource_resolution,
                     "kind": "generation",
                 }
                 self.queue.append(entry)
@@ -616,8 +672,9 @@ class BatchManager:
                     "queue_id": entry["queue_id"],
                     "position": len(self.queue),
                     "count": settings["count"],
+                    "resource_resolution": resource_resolution,
                 }
-            await self._begin_batch(settings, seeds, regeneration, binding_snapshot)
+            await self._begin_batch(settings, seeds, regeneration, binding_snapshot, resource_resolution)
             return self.snapshot()
 
     async def _begin_batch(
@@ -626,11 +683,13 @@ class BatchManager:
         seeds: dict[str, int] | None,
         regeneration: dict[str, Any] | None = None,
         binding_snapshot: dict[str, Any] | None = None,
+        resource_resolution: dict[str, Any] | None = None,
     ) -> None:
         batch_id = uuid.uuid4().hex[:12]
         self.stop_requested = False
         self._clear_preview()
         self._submitted_node_stages = {}
+        self._cancel_tasks = {key: task for key, task in self._cancel_tasks.items() if not task.done()}
         self.state = {
             "id": batch_id,
             "kind": "generation",
@@ -641,10 +700,14 @@ class BatchManager:
             "current": 0,
             "prompt_id": "",
             "error": "",
+            "cancel_state": "not_requested",
+            "memory_release": "not_requested",
+            "memory_release_message": "",
+            "resource_resolution": resource_resolution,
             "settings": settings,
         }
         await self.history.create_batch(batch_id, settings["count"], settings)
-        self.task = asyncio.create_task(self._run(batch_id, settings, seeds, regeneration, binding_snapshot))
+        self.task = asyncio.create_task(self._run(batch_id, settings, seeds, regeneration, binding_snapshot, resource_resolution))
         self._ensure_monitor()
 
     def queue_snapshot(self) -> list[dict[str, Any]]:
@@ -655,6 +718,7 @@ class BatchManager:
                 "count": entry["settings"].get("count", 1),
                 "model_name": entry["settings"].get("model_name", ""),
                 "kind": entry.get("kind", "generation"),
+                "resource_resolution": entry.get("resource_resolution"),
                 "workbench": entry["settings"].get("workbench", "random"),
             }
             for index, entry in enumerate(self.queue)
@@ -676,9 +740,9 @@ class BatchManager:
 
     async def request_stop(self, batch_id: str, clear_queue: bool = True) -> dict[str, Any]:
         async with self._start_lock:
-            return await self._request_stop(batch_id, clear_queue)
+            return await self._request_stop(batch_id, clear_queue, release_memory=True)
 
-    async def _request_stop(self, batch_id: str, clear_queue: bool = True) -> dict[str, Any]:
+    async def _request_stop(self, batch_id: str, clear_queue: bool = True, *, release_memory: bool = False) -> dict[str, Any]:
         if not self.state or self.state["id"] != batch_id:
             raise KeyError(batch_id)
         if clear_queue:
@@ -686,6 +750,8 @@ class BatchManager:
         if self.active() and self.state.get("status") in {"running", "stopping"}:
             self.stop_requested = True
             self.state["status"] = "stopping"
+            if release_memory and self.state.get("memory_release", "not_requested") == "not_requested":
+                self.state.update(memory_release="pending", memory_release_message="任务停止后将清缓存与垃圾回收")
             await self.history.update_batch(batch_id, status="stopping")
             if self.state.get("prompt_id"):
                 await self._interrupt_current()
@@ -737,6 +803,7 @@ class BatchManager:
         seeds: dict[str, int] | None = None,
         regeneration: dict[str, Any] | None = None,
         binding_snapshot: dict[str, Any] | None = None,
+        resource_resolution: dict[str, Any] | None = None,
     ) -> None:
         try:
             for sequence in range(1, settings["count"] + 1):
@@ -768,6 +835,29 @@ class BatchManager:
                 effective_settings, resolved, lora_runtime = await self._prepare_character_loras(
                     settings, resolved, binding_snapshot, regeneration,
                 )
+                image_resource_resolution = copy.deepcopy(resource_resolution)
+                if self.resource_resolver is not None:
+                    # Automatic character LoRAs are part of the submitted
+                    # graph, so inspect the per-image effective stack too.
+                    frozen_check = await self.resource_resolver(effective_settings, refresh=True, strict=True)
+                    identities = {item["field"]: (item["name"], item["fingerprint"])
+                                  for item in (resource_resolution or {}).get("resources", []) if item.get("fingerprint")}
+                    current_identities = {item["field"]: (item["name"], item.get("fingerprint", ""))
+                                          for item in frozen_check.get("resources", [])}
+                    current_loras = {str(item["name"]).replace("\\", "/").casefold(): item.get("fingerprint", "")
+                                     for item in frozen_check.get("resources", []) if item.get("kind") == "loras"}
+                    binding_identities = (binding_snapshot or {}).get("resource_fingerprints", {})
+                    binding_changed = any(
+                        binding_identities.get(name) and current_loras.get(name) != binding_identities[name]
+                        for item in lora_runtime.get("applied", [])
+                        if (name := str(item["filename"]).replace("\\", "/").casefold())
+                    )
+                    if (frozen_check["issues"] or frozen_check["replacements"] or binding_changed
+                            or any(current_identities.get(key) != identity for key, identity in identities.items())):
+                        detail = "；".join(item["message"] for item in frozen_check["issues"])
+                        raise WorkflowError("入队后资源已变化，请重新提交任务：" + (detail or "已冻结的模型不可用或文件已变化"))
+                    image_resource_resolution = {**(image_resource_resolution or {}),
+                                                 "resources": copy.deepcopy(frozen_check.get("resources", []))}
                 if lora_runtime:
                     self.state["lora_runtime"] = copy.deepcopy(lora_runtime)
                     self.state["lora_warning_count"] = self.state.get("lora_warning_count", 0) + len(lora_runtime.get("skipped", []))
@@ -834,6 +924,9 @@ class BatchManager:
                 if lora_runtime:
                     metadata = payload.setdefault("extra_data", {}).setdefault("extra_pnginfo", {}).setdefault("anima_random_webui", {})
                     metadata["lora_runtime"] = copy.deepcopy(lora_runtime)
+                if image_resource_resolution:
+                    metadata = payload.setdefault("extra_data", {}).setdefault("extra_pnginfo", {}).setdefault("anima_random_webui", {})
+                    metadata["resource_resolution"] = copy.deepcopy(image_resource_resolution)
                 self.state["current"] = sequence
                 self.state["prompt_id"] = ""
                 self._clear_preview()
@@ -864,6 +957,8 @@ class BatchManager:
                 if lora_runtime:
                     positive = frozen_positive or resolved["full_prompt"]
                 bound_resources = self._bound_resources(effective_settings)
+                if image_resource_resolution:
+                    bound_resources["resource_resolution"] = copy.deepcopy(image_resource_resolution)
                 for image in images:
                     await self.history.add_image(
                         batch_id=batch_id,
@@ -915,14 +1010,88 @@ class BatchManager:
         """Finish this batch, then dispatch the next owned generation task."""
         self._clear_preview()
         async with self._start_lock:
+            await self._release_stopped_memory()
             while not self.shutting_down and self.queue:
                 entry = self.queue.pop(0)
                 try:
-                    await self._begin_batch(entry["settings"], entry["seeds"], entry.get("regeneration"), entry.get("binding_snapshot"))
+                    await self._begin_batch(entry["settings"], entry["seeds"], entry.get("regeneration"), entry.get("binding_snapshot"), entry.get("resource_resolution"))
                     return
                 except Exception as error:
                     logger.warning("队列任务启动失败: %s", error)
             self._stop_monitor()
+
+    async def _release_stopped_memory(self) -> None:
+        """Finish manual-stop cleanup under _start_lock before any new dispatch.
+
+        This stays in the runner's finally path, never in a detached task. The
+        lock orders our requests. The extension also holds ComfyUI's queue lock
+        until the lightweight cleanup finishes; only its response confirms it.
+        """
+        state = self.state
+        if not state or state.get("memory_release") != "pending":
+            return
+
+        def outcome(value: str, message: str) -> None:
+            state.update(memory_release=value, memory_release_message=message)
+
+        if self.shutting_down or state.get("status") != "stopped":
+            outcome("skipped", "任务未完成停止收尾或服务正在关闭，已跳过清缓存与垃圾回收")
+            return
+        if self.queue:
+            outcome("skipped", "还有本地任务等待执行，已跳过清缓存与垃圾回收")
+            return
+        if state.get("prompt_id") and state.get("cancel_state") != "confirmed":
+            outcome("skipped", "ComfyUI 尚未确认任务停止，已跳过清缓存与垃圾回收")
+            return
+        queue_idle = getattr(self.comfy, "queue_idle", None)
+        cleanup_memory = getattr(self.comfy, "cleanup_memory", None)
+        if queue_idle is None or cleanup_memory is None:
+            outcome("skipped", "当前客户端不支持确认空闲并清缓存与垃圾回收")
+            return
+        release_started = False
+        try:
+            async with asyncio.timeout(MEMORY_RELEASE_TIMEOUT):
+                idle = await queue_idle()
+                if idle is not True:
+                    outcome("skipped", "ComfyUI 队列仍有任务，已跳过清缓存与垃圾回收" if idle is False
+                            else "无法确认 ComfyUI 队列空闲，已跳过清缓存与垃圾回收")
+                    return
+                release_started = True
+                state["memory_release_message"] = "正在清缓存与垃圾回收…"
+                await cleanup_memory()
+            outcome("completed", "清缓存与垃圾回收已完成")
+        except ComfyCleanupSkipped as error:
+            outcome("skipped", str(error))
+        except asyncio.CancelledError:
+            outcome("failed" if release_started else "skipped",
+                    "清理等待已中断，清缓存与垃圾回收完成情况未确认" if release_started
+                    else "清理收尾已中断，已跳过清缓存与垃圾回收")
+            raise
+        except Exception:
+            # A failed/uncertain cleanup never changes the stopped batch result,
+            # retries later, or exposes a transport exception in the UI.
+            outcome("failed" if release_started else "skipped",
+                    "任务已停止，清理请求失败或超时，清缓存与垃圾回收完成情况未确认" if release_started
+                    else "无法确认 ComfyUI 队列空闲，已跳过清缓存与垃圾回收")
+            logger.warning("批次 %s 清缓存与垃圾回收未确认: %s", state.get("id"), state["memory_release_message"])
+
+
+    async def _cancel_prompt_for_state(self, state: dict[str, Any], prompt_id: str) -> None:
+        warning = ""
+        try:
+            async with asyncio.timeout(CANCEL_PROMPT_TIMEOUT):
+                await self._cancel_current_prompt(prompt_id, state.get("kind", "generation"))
+        except (ComfyError, asyncio.TimeoutError):
+            warning = "取消请求未确认，远端任务可能继续执行；请在 ComfyUI 中检查"
+            logger.warning("ComfyUI 任务取消未确认；本地任务将继续收尾: %s", warning)
+        outcome = {"cancel_state": "unconfirmed" if warning else "confirmed"}
+        if warning:
+            outcome["cancel_warning"] = warning
+        if self.state is state and state.get("prompt_id") == prompt_id:
+            state.update(outcome)
+            if not warning:
+                state.pop("cancel_warning", None)
+
 
     def _ensure_monitor(self) -> None:
         if self._monitor_task and not self._monitor_task.done():
@@ -1087,35 +1256,42 @@ class BatchManager:
             await asyncio.sleep(2.0)
 
     async def _interrupt_current(self) -> None:
-        """停止时尽力中断 ComfyUI 正在渲染的任务;失败不影响批次收尾。"""
-        try:
-            async with asyncio.timeout(CANCEL_PROMPT_TIMEOUT):
-                await self._cancel_current_prompt()
-        except (ComfyError, asyncio.TimeoutError) as error:
-            warning = str(error) or "取消请求超时，远端任务可能继续执行"
-            if self.state is not None:
-                self.state["cancel_warning"] = warning
-            logger.warning("ComfyUI 任务取消未确认；本地任务将继续收尾: %s", warning)
+        """Share cancellation and queue confirmation for one owned prompt."""
+        state = self.state
+        if state is None:
+            return
+        prompt_id = state.get("prompt_id")
+        if not prompt_id:
+            state["cancel_state"] = "not_requested"
+            return
+        key = (str(state.get("id", "")), prompt_id)
+        task = self._cancel_tasks.get(key)
+        if task is None:
+            state["cancel_state"] = "pending"
+            task = asyncio.create_task(self._cancel_prompt_for_state(state, prompt_id))
+            self._cancel_tasks[key] = task
+        await asyncio.shield(task)
 
-    async def _cancel_current_prompt(self) -> None:
+    async def _cancel_current_prompt(self, prompt_id: str, kind: str) -> None:
         cancel = getattr(self.comfy, "cancel_prompt", None)
-        prompt_id = (self.state or {}).get("prompt_id")
         if cancel is not None:
-            if prompt_id:
-                await cancel(prompt_id)
-                queued = getattr(self.comfy, "prompt_queued", None)
-                if queued:
-                    for _ in range(40):
-                        if not await queued(prompt_id):
-                            break
-                        await asyncio.sleep(0.1)
-                    else:
-                        raise ComfyError("取消请求后任务仍在 ComfyUI 队列中，远端任务可能继续执行")
-            return
-        interrupt = getattr(self.comfy, "interrupt", None)
-        if interrupt is None:
-            return
-        await interrupt()
+            await cancel(prompt_id)
+        else:
+            interrupt = getattr(self.comfy, "interrupt", None)
+            if interrupt is None:
+                raise ComfyError("当前客户端不支持取消任务")
+            await interrupt()
+        queued = getattr(self.comfy, "prompt_queued", None)
+        if queued is None:
+            raise ComfyError("当前客户端不能确认 ComfyUI 队列状态")
+        for _ in range(40):
+            present = await queued(prompt_id)
+            if present is False:
+                return
+            if present is not True:
+                raise ComfyError("当前客户端返回了无效的队列确认结果")
+            await asyncio.sleep(0.1)
+        raise ComfyError("取消请求后任务仍在 ComfyUI 队列中")
 
     def _resolve_regeneration(
         self,

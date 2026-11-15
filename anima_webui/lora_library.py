@@ -204,6 +204,12 @@ class LoraLibraryService:
         self._binding_lock = asyncio.Lock()
         self._closing = False
         self._inventory_snapshot: dict[str, Any] | None = None
+        self._source_inventory: dict[str, Any] | None = None
+        self._source_identity: tuple[Any, int] | None = None
+        self._inventory_version = 0
+        self._normalized_key: tuple[Any, ...] | None = None
+        self._normalized_store: dict[str, Any] | None = None
+        self._normalized_items: dict[str, dict[str, Any]] = {}
         self._last_synced_at: str | None = None
         self._offline_error: str | None = None
 
@@ -230,20 +236,43 @@ class LoraLibraryService:
     async def available_bindings(self) -> dict[str, Any]:
         return await self.client.resource_classifications("loras", refresh=True)
 
-    async def inventory(self, *, refresh: bool = False, model_profile: str = "all", allow_cached: bool = False) -> list[dict[str, Any]]:
+    async def _inventory_index(self, *, refresh: bool = False, allow_cached: bool = False,
+                               use_snapshot: bool = False) -> dict[str, dict[str, Any]]:
+        if use_snapshot and self._inventory_snapshot is not None:
+            return self._normalized_index()
+        # Ordinary inventory/detail reads retain the client's strict five-second
+        # TTL. Previews and project-local organization reuse known paths; model
+        # files and shared plugin metadata are never changed by these edits.
         try:
             inventory = await self.client.resource_classifications("loras", refresh=refresh)
         except ComfyError as error:
             self._offline_error = str(error)
             if not allow_cached or self._inventory_snapshot is None:
                 raise
-            inventory = copy.deepcopy(self._inventory_snapshot)
         else:
             self._offline_error = None
-            self._inventory_snapshot = copy.deepcopy(inventory)
-            self._last_synced_at = datetime.now(timezone.utc).isoformat()
-        connection = self._connection_state()
-        usage_counts = await self.local_usage() if self.local_usage is not None else {}
+            generation = getattr(self.client, "classification_generation", None)
+            identity = (generation("loras") if callable(generation) else None, id(inventory))
+            if refresh or identity != self._source_identity:
+                self._inventory_snapshot = copy.deepcopy(inventory)
+                # Retain the source object so an embedded client's new object
+                # cannot accidentally reuse its identity after garbage collection.
+                self._source_inventory = inventory
+                self._source_identity = identity
+                self._inventory_version += 1
+                self._last_synced_at = datetime.now(timezone.utc).isoformat()
+        return self._normalized_index()
+
+    def _normalized_index(self) -> dict[str, dict[str, Any]]:
+        key = (self._inventory_version, self.store.data["revision"], getattr(self.trigger_store, "revision", None))
+        if key != self._normalized_key or self._normalized_store is not self.store.data:
+            items = self._normalize_inventory(self._inventory_snapshot)
+            self._normalized_items = {item["id"]: item for item in items}
+            self._normalized_key = key
+            self._normalized_store = self.store.data
+        return self._normalized_items
+
+    def _normalize_inventory(self, inventory: dict[str, Any]) -> list[dict[str, Any]]:
         classifications = inventory.get("items", [])
         raw_items = inventory.get("manager_items")
         roots = inventory.get("roots", [])
@@ -298,30 +327,46 @@ class LoraLibraryService:
                            "display_name": str(raw.get("model_name") or relative.rsplit("/", 1)[-1]),
                            "base_model": str(raw.get("base_model") or "Unknown"), "model_profile": profile,
                            "classification_status": status, "classification_reason": reason,
-                           "available": not connection["offline"] and status == "recognized" and (model_profile == "all" or profile == model_profile),
                            "sha256": sha, "favorite": local.get("favorite", False),
                            "tags": list(local.get("tags", [])), "notes": local.get("notes", ""),
                            "size": raw.get("file_size") or 0, "modified": raw.get("modified") or 0,
-                           "usage_count": usage_counts.get(normalize_lora_path(filename).casefold(), 0), "has_preview": bool(preview),
+                           "has_preview": bool(preview),
                            "preview": f"/api/lora-library/items/{resource_id}/preview" if preview else "", "_preview": preview,
                            "preview_nsfw_level": raw.get("preview_nsfw_level", 0),
                            "trigger_words": words, "source_trigger_words": (raw.get("civitai") or {}).get("trainedWords", []),
                            "trigger_override": overridden, "trigger_metadata_available": True,
                            "default_strength": local.get("default_strength", 1.0), "groupIds": list(local.get("groupIds", [])),
                            "configured": resource_id in saved,
-                           "offline": connection["offline"], "cached": connection["cached"], "writable": connection["writable"],
                            "bindings": copy.deepcopy(bindings_by_resource.get(resource_id, []))})
         return result
+
+    def _current_item(self, item: dict[str, Any], model_profile: str, usage_counts: dict[str, int] | None = None) -> dict[str, Any]:
+        # Do not let a caller, an offline fallback, or an in-flight write mutate
+        # the normalized cache. Runtime flags must never become cached facts.
+        result = copy.deepcopy(item)
+        connection = self._connection_state()
+        result.update({key: connection[key] for key in ("offline", "cached", "writable")})
+        result["usage_count"] = (usage_counts or {}).get(normalize_lora_path(item["filename"]).casefold(), 0)
+        result["available"] = (not connection["offline"] and item["classification_status"] == "recognized"
+                               and (model_profile == "all" or item["model_profile"] == model_profile))
+        return result
+
+    async def inventory(self, *, refresh: bool = False, model_profile: str = "all", allow_cached: bool = False) -> list[dict[str, Any]]:
+        items = await self._inventory_index(refresh=refresh, allow_cached=allow_cached)
+        counts = await self.local_usage() if self.local_usage is not None else {}
+        return [self._current_item(item, model_profile, counts) for item in items.values()]
 
     @staticmethod
     def public(item: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in item.items() if not key.startswith("_")}
 
-    async def item(self, resource_id: str, *, refresh: bool = False, model_profile: str = "all", allow_cached: bool = False) -> dict[str, Any]:
-        result = next((item for item in await self.inventory(refresh=refresh, model_profile=model_profile, allow_cached=allow_cached) if item["id"] == resource_id), None)
+    async def item(self, resource_id: str, *, refresh: bool = False, model_profile: str = "all",
+                   allow_cached: bool = False, use_snapshot: bool = False, include_usage: bool = True) -> dict[str, Any]:
+        result = (await self._inventory_index(refresh=refresh, allow_cached=allow_cached, use_snapshot=use_snapshot)).get(resource_id)
         if result is None:
             raise KeyError(resource_id)
-        return result
+        counts = await self.local_usage() if self.local_usage is not None and include_usage else {}
+        return self._current_item(result, model_profile, counts)
 
     @staticmethod
     def _remember(data: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
@@ -433,7 +478,7 @@ class LoraLibraryService:
         if "groupIds" in updates:
             updates["groupIds"] = _strings(updates["groupIds"], "groupIds", limit=128)
         async with self._item_locks.setdefault(resource_id, asyncio.Lock()):
-            item = await self.item(resource_id, refresh=True)
+            item = await self.item(resource_id, use_snapshot=True)
             def edit(data: dict[str, Any]) -> dict[str, Any]:
                 record = self._remember(data, item)
                 merged = copy.deepcopy(updates)
@@ -752,7 +797,7 @@ def register_lora_routes(app: web.Application, service: LoraLibraryService) -> N
         return web.json_response(value)
 
     async def preview(request: web.Request) -> web.Response:
-        value = await service.item(request.match_info["id"], allow_cached=True)
+        value = await service.item(request.match_info["id"], allow_cached=True, use_snapshot=True, include_usage=False)
         if not value.get("_preview"):
             raise KeyError(value["id"])
         content, content_type, cache_control = await service.client.lora_preview_asset(value["_preview"])

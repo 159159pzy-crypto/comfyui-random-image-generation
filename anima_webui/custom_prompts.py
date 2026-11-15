@@ -17,7 +17,7 @@ from typing import Any
 
 from .async_utils import serialized_mutation
 from .catalog import SECTIONS, CatalogError, PromptCatalog, normalize_text
-from .persistence import StorageProtection, backup_for_migration
+from .persistence import StorageProtection, StorageReadOnlyError, backup_for_migration
 
 
 logger = logging.getLogger(__name__)
@@ -41,18 +41,24 @@ def _locked(method: Any) -> Any:
     return wrapper
 
 
-CUSTOM_DATA_VERSION = 4
+CUSTOM_DATA_VERSION = 5
+GROUP_TREE_VERSION = 4
+CHARACTER_FIELDS = (
+    "character_parts", "character_no_trigger", "character_status", "trigger", "tags",
+)
 MAX_GROUPS_PER_SECTION = 512
 MAX_IMPORT_ROWS = 2000
 LEGACY_FOLDER_NAME = "历史自定义分组"
 UNGROUPED_NAME = "未分组"
 IMPORT_FIELDS = (
     "section", "title", "prompt", "subtitle", "gender", "hair", "eye",
-    "copyright", "groups", "categories", "traits",
+    "copyright", "groups", "categories", "traits", "trigger", "tags",
 )
 TEMPLATE_EXAMPLES = {
     "character": {
-        "title": "示例角色", "prompt": "1girl, silver hair, blue eyes, looking at viewer",
+        "title": "示例角色", "prompt": "example hero, 1girl, silver hair, blue eyes, white shirt, looking at viewer",
+        "trigger": ["example hero"],
+        "tags": ["1girl", "silver hair", "blue eyes", "white shirt", "looking at viewer"],
         "subtitle": "角色模板示例", "gender": "female", "hair": "silver",
         "eye": "blue", "copyright": "原创角色", "groups": ["常用角色"],
         "categories": ["女性角色"], "traits": ["looking at viewer"],
@@ -87,9 +93,12 @@ TEMPLATE_EXAMPLES = {
 class CustomPromptStore(StorageProtection):
     store_name = "custom_prompts"
 
-    def __init__(self, path: str | Path, catalog: PromptCatalog):
+    def __init__(self, path: str | Path, catalog: PromptCatalog, *,
+                 migration_journal_path: str | Path | None = None):
         self.path = Path(path)
         self.catalog = catalog
+        self.migration_journal_path = (Path(migration_journal_path) if migration_journal_path is not None
+                                       else self.path.parent / "favorites-lifecycle-anima.json")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.items: list[dict[str, Any]] = []
         self.groups: dict[str, list[dict[str, Any]]] = {section: [] for section in SECTIONS}
@@ -104,6 +113,7 @@ class CustomPromptStore(StorageProtection):
         self.load_state = "missing"
         self.disk_digest = None
         self.source_completeness = "unverified"
+        self._pending_migration_version: int | None = None
         if not self.path.is_file():
             self.items = []
             self.groups = {section: [] for section in SECTIONS}
@@ -132,8 +142,9 @@ class CustomPromptStore(StorageProtection):
                 for section in SECTIONS
             }
             items = [self._normalize(item) for item in raw_items]
-            if version < CUSTOM_DATA_VERSION:
+            if version < GROUP_TREE_VERSION:
                 groups, items = self._migrate_legacy_tree(groups, items)
+            if version < CUSTOM_DATA_VERSION:
                 self._validate_persisted_data(groups, items, CUSTOM_DATA_VERSION)
             self.groups = groups
             self.items = items
@@ -141,12 +152,11 @@ class CustomPromptStore(StorageProtection):
             self.load_trusted = True
             self.load_state = "loaded"
             if version < CUSTOM_DATA_VERSION:
-                try:
-                    self._backup_before_v4_migration()
-                    self._write_text(self._serialize(self.groups, self.items, self.source_completeness))
-                except OSError as error:
-                    logger.warning("自定义提示词 v4 迁移暂未写回: %s", error)
-                    self._protect_storage(f"自定义提示词已在内存迁移，但迁移备份或写回失败({error})")
+                self._pending_migration_version = version
+                if self.migration_journal_path.exists():
+                    self.load_warnings.append("自定义角色已在内存识别；等待未完成的收藏事务恢复后再升级保存。")
+                else:
+                    self.complete_pending_migration()
         except (OSError, UnicodeError, json.JSONDecodeError, CatalogError, ValueError, TypeError) as error:
             self.load_trusted = False
             self.load_state = "unreadable" if isinstance(error, OSError) else "invalid"
@@ -161,8 +171,40 @@ class CustomPromptStore(StorageProtection):
             # 同时把目录从 set_custom_items 可能留下的半修改状态恢复为无自定义项。
             self.catalog.set_custom_items([])
 
-    @staticmethod
-    def _validate_persisted_data(raw_groups: Any, raw_items: Any, version: int) -> None:
+    @property
+    def migration_pending(self) -> bool:
+        return self._pending_migration_version is not None
+
+    def ensure_writable(self, *, allow_pending_migration: bool = False) -> None:
+        super().ensure_writable()
+        if not allow_pending_migration and self.migration_pending and self.migration_journal_path.exists():
+            raise StorageReadOnlyError(self.path, self.store_name, "未完成的收藏事务尚未恢复，暂不写入或升级角色词库")
+
+    def storage_status(self) -> dict[str, Any]:
+        value = super().storage_status()
+        if not value["read_only"] and self.migration_pending and self.migration_journal_path.exists():
+            value.update(read_only=True, reason="未完成的收藏事务尚未恢复，暂不写入或升级角色词库")
+        return value
+
+    def complete_pending_migration(self) -> None:
+        """Finish only after recovery has checked the original journal hashes."""
+        version = self._pending_migration_version
+        if version is None or self.migration_journal_path.exists():
+            return
+        self.ensure_writable()
+        try:
+            if hashlib.sha256(self.path.read_bytes()).hexdigest() != self.disk_digest:
+                raise OSError("源词库在等待迁移期间发生外部变更")
+            if version < GROUP_TREE_VERSION:
+                self._backup_before_v4_migration()
+            self._backup_before_v5_migration()
+            self._write_text(self._serialize(self.groups, self.items, self.source_completeness))
+            self._pending_migration_version = None
+        except OSError as error:
+            logger.warning("自定义提示词 v5 迁移暂未写回: %s", error)
+            self._protect_storage(f"自定义提示词已在内存迁移，但迁移备份或写回失败({error})")
+
+    def _validate_persisted_data(self, raw_groups: Any, raw_items: Any, version: int) -> None:
         """Validate disk data before permissive API normalization can discard it."""
         if not isinstance(raw_groups, dict) or not isinstance(raw_items, list):
             raise CatalogError("自定义提示词文件的 groups/items 结构无效")
@@ -192,7 +234,7 @@ class CustomPromptStore(StorageProtection):
                 ):
                     raise CatalogError("自定义分组父项无效")
                 if (kind != "group" and parent_id is not None) or (
-                    version < CUSTOM_DATA_VERSION and (kind != "group" or parent_id is not None)
+                    version < GROUP_TREE_VERSION and (kind != "group" or parent_id is not None)
                 ):
                     raise CatalogError("自定义分组层级与文件版本不符")
                 by_id[group_id] = group
@@ -234,6 +276,12 @@ class CustomPromptStore(StorageProtection):
                     raise CatalogError(f"自定义项 {key} 必须是无重复的文本数组")
                 if key == "groupIds" and any(value not in leaf_ids[section] for value in values):
                     raise CatalogError("自定义项包含不存在或非叶子的分组")
+            if section == "character" and version >= CUSTOM_DATA_VERSION:
+                if any(key not in item for key in CHARACTER_FIELDS):
+                    raise CatalogError("自定义角色缺少已保存的标签分类")
+                analyzed = self.catalog.analyze_character(item)
+                if any(analyzed[key] != item[key] for key in CHARACTER_FIELDS):
+                    raise CatalogError("自定义角色标签分类与提示词或状态不一致")
 
     def list(self, section: str | None = None, group_id: str | None = None) -> list[dict[str, Any]]:
         if section and section not in SECTIONS:
@@ -286,7 +334,21 @@ class CustomPromptStore(StorageProtection):
         index = next((index for index, item in enumerate(self.items) if item["id"] == item_id), None)
         if index is None:
             raise KeyError(item_id)
-        item = self._normalize({**self.items[index], **payload, "id": item_id})
+        previous = self.items[index]
+        merged = {**previous, **payload, "id": item_id}
+        if merged.get("section") == "character":
+            prompt_changed = "prompt" in payload and payload["prompt"] != previous["prompt"]
+            explicit_changed = any(key in payload for key in ("trigger", "tags"))
+            if prompt_changed and "character_parts" not in payload:
+                for key in CHARACTER_FIELDS:
+                    if key not in payload:
+                        merged.pop(key, None)
+            elif explicit_changed and "character_parts" not in payload:
+                merged.pop("character_parts", None)
+                merged.pop("character_status", None)
+                if "prompt" not in payload and all(key in payload for key in ("trigger", "tags")):
+                    merged.pop("prompt", None)
+        item = self._normalize(merged, previous=previous)
         self._validate_group_ids(item["section"], item["groupIds"])
         self.items[index] = item
         await self._save()
@@ -437,6 +499,8 @@ class CustomPromptStore(StorageProtection):
                 "groups": "|".join(example["groups"]),
                 "categories": "|".join(example["categories"]),
                 "traits": "|".join(example["traits"]),
+                "trigger": ", ".join(example.get("trigger", [])),
+                "tags": ", ".join(example.get("tags", [])),
             })
             return f"{filename}.csv", "text/csv", ("\ufeff" + buffer.getvalue()).encode("utf-8")
         raise CatalogError("导入模板只支持 json 或 csv")
@@ -473,7 +537,8 @@ class CustomPromptStore(StorageProtection):
                 for name in group_names or [UNGROUPED_NAME]:
                     pending_names.add(self._group_name(name))
                 rows.append({
-                    "row": row_number, "status": status, "action": "skip" if conflict else "create",
+                    "row": row_number, "status": status,
+                    "action": "skip" if conflict or prepared.get("character_status") == "needs_review" else "create",
                     "existingId": conflict["id"] if conflict else "", "item": prepared, "groups": group_names, "error": "",
                 })
             except (CatalogError, ValueError) as error:
@@ -552,6 +617,8 @@ class CustomPromptStore(StorageProtection):
             prepared, embedded_group_names = self._prepare_import_item(raw_row.get("item") or {})
             if prepared["section"] != section:
                 raise CatalogError("导入文件包含其他随机池条目，只能导入当前池")
+            if prepared.get("character_status") == "needs_review":
+                raise CatalogError(f"角色“{prepared['title']}”的标签分类尚未确认，请完成确认或跳过此条目")
             group_names = self._list_value(raw_row.get("groups")) or embedded_group_names
             group_names = [self._group_name(value) for value in group_names] or [UNGROUPED_NAME]
             group_ids: list[str] = list(target_group_ids)
@@ -605,13 +672,16 @@ class CustomPromptStore(StorageProtection):
             "bundleName": bundle["name"] if bundle else bundle_name,
         }
 
-    def _normalize(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _normalize(
+        self, payload: dict[str, Any], *, previous: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         section = str(payload.get("section") or "")
         self._check_section(section)
         title = str(payload.get("title") or "").strip()
-        prompt = str(payload.get("prompt") or "").strip()
+        character = self.catalog.analyze_character(payload, previous=previous) if section == "character" else {}
+        prompt = character["prompt"] if character else str(payload.get("prompt") or "").strip()
         subtitle = str(payload.get("subtitle") or "").strip()
-        if not title or not prompt:
+        if not title or not prompt.strip():
             raise CatalogError("自定义项需要名称和提示词")
         if len(title) > 200 or len(prompt) > 20000 or len(subtitle) > 300:
             raise CatalogError("自定义项内容过长")
@@ -633,6 +703,7 @@ class CustomPromptStore(StorageProtection):
             "eye": str(payload.get("eye") or "").strip().lower() if section == "character" else "",
             "copyright": str(payload.get("copyright") or "").strip() if section == "character" else "",
             "categories": categories, "traits": traits, "groupIds": group_ids,
+            **{key: character[key] for key in CHARACTER_FIELDS if key in character},
         }
 
     def _prepare_import_item(self, raw: Any) -> tuple[dict[str, Any], list[str]]:
@@ -656,7 +727,14 @@ class CustomPromptStore(StorageProtection):
             return [item for item in values]
         if file_format == "csv":
             try:
-                return [dict(row) for row in csv.DictReader(io.StringIO(content.lstrip("\ufeff")))]
+                rows = [dict(row) for row in csv.DictReader(io.StringIO(content.lstrip("\ufeff")))]
+                for row in rows:
+                    # Empty optional columns in an old-style CSV do not mean
+                    # the author explicitly classified every tag as empty.
+                    if not (row.get("trigger") or "").strip() and not (row.get("tags") or "").strip():
+                        row.pop("trigger", None)
+                        row.pop("tags", None)
+                return rows
             except csv.Error as error:
                 raise CatalogError(f"CSV 无法解析: {error}") from error
         raise CatalogError("导入文件只支持 json 或 csv")
@@ -747,6 +825,27 @@ class CustomPromptStore(StorageProtection):
         backup = self.path.with_name(self.path.name + ".pre-v4.bak")
         if not backup.exists():
             shutil.copy2(self.path, backup)
+
+    def _backup_before_v5_migration(self) -> None:
+        """Reserve a fresh backup; never rely on a previous migration attempt."""
+        counter = 0
+        while True:
+            suffix = f"-{counter}" if counter else ""
+            backup = self.path.with_name(f"{self.path.name}.pre-v5{suffix}.bak")
+            try:
+                handle = backup.open("xb")
+            except FileExistsError:
+                counter += 1
+                continue
+            try:
+                with handle:
+                    handle.write(self.path.read_bytes())
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except OSError:
+                backup.unlink(missing_ok=True)
+                raise
+            return
 
     def _remove_unknown_group_ids(self) -> None:
         valid = {

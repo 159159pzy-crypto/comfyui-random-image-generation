@@ -16,6 +16,7 @@
 # Keep development files in Git, but export only the user source package.
 * export-ignore
 /Install.ps1 -export-ignore
+/Install-ComfyExtension.ps1 -export-ignore
 /Start.ps1 -export-ignore
 /Start.cmd -export-ignore
 /run.py -export-ignore
@@ -26,6 +27,9 @@
 /anima_webui -export-ignore
 /anima_webui/*.py -export-ignore
 /anima_webui/zh_names.json -export-ignore
+/anima_webui/comfy_extension -export-ignore
+/anima_webui/comfy_extension/atelier_resources -export-ignore
+/anima_webui/comfy_extension/atelier_resources/*.py -export-ignore
 /static -export-ignore
 /static/*.html -export-ignore
 /static/*.js -export-ignore

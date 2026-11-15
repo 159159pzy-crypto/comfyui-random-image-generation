@@ -147,11 +147,12 @@ def test_pixel_shrink_parameters_are_unused_with_post_sampling():
 
 
 @pytest.mark.parametrize("profile,cfg", [("anima", 4)])
-def test_preset_roundtrip_uses_current_profile_pipeline(profile, cfg):
-    saved = preset_settings({"model_profile": profile})
-    assert saved["pipeline_version"] == 4
+def test_preset_roundtrip_preserves_explicit_legacy_repair_contract(profile, cfg):
+    source = {"workbench": "random", "pipeline_version": 4}
+    saved = preset_settings({"model_profile": profile}, include={"repair": True}, source=source)
+    assert "pipeline_version" not in saved
     assert saved["upscalers"]["post_sampler"]["cfg"] == cfg
-    assert preset_settings(saved) == saved
+    assert preset_settings(saved, include={"repair": True}, source=source) == saved
 
 
 def test_progress_uses_submitted_stage_metadata_without_changing_job_stage():

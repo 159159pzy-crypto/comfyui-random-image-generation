@@ -133,7 +133,7 @@ class StorageApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/api/config")
         self.assertEqual(response.status, 200)
         payload = await response.json()
-        self.assertEqual(set(payload["storage_status"]), set(STORE_FILES))
+        self.assertEqual(set(payload["storage_status"]), set(STORE_FILES) | {"resource_usage"})
         for name, filename in STORE_FILES.items():
             status = payload["storage_status"][name]
             self.assertTrue(status["read_only"])

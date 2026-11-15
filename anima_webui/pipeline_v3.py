@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from .sampling import latent_upscale_node
+from .sampling import latent_upscale_node, pixel_hires_resizes
 
 
 STAGE_LABELS = {
@@ -69,10 +69,10 @@ def needs_main_encode(settings: dict[str, Any]) -> bool:
 def required_node_classes(settings: dict[str, Any]) -> set[str]:
     """Return repair-stage requirements, in addition to existing base checks."""
     stages = settings["upscalers"]
-    required: set[str] = {"PrimitiveInt", "ComfyMathExpression"}
+    required: set[str] = {"PrimitiveInt", "ComfyMathExpression", "VRAM_Debug"}
     if stages["pixel_hires"]["enabled"]:
         required.update({"UpscaleModelLoader", "ImageUpscaleWithModel"})
-        if not stages["post_sampler"]["enabled"]:
+        if pixel_hires_resizes(settings):
             required.add("ImageScaleBy")
     if stages["nvidia"]["enabled"]:
         required.add("RTXVideoSuperResolution")
@@ -109,58 +109,36 @@ def required_node_classes(settings: dict[str, Any]) -> set[str]:
     return required
 
 
-def build_pipeline(
-    api: dict[str, Any],
-    ui_template: dict[str, Any],
-    settings: dict[str, Any],
-    sample_seed: int,
-    prompt_seed: int,
-    filename_prefix: str,
-    *,
-    resource_paths: dict[str, str] | None = None,
-    execution_nonce: int | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def build_pipeline(api: dict[str, Any], ui_template: dict[str, Any], settings: dict[str, Any],
+                   sample_seed: int, prompt_seed: int, filename_prefix: str, *,
+                   resource_paths: dict[str, str] | None = None,
+                   execution_nonce: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     from .graph_utils import _prune_graph
     from .workflow import V2_OUTPUT_ID, WorkflowError, _mapped_resource_name
 
     execution_nonce = 0 if execution_nonce is None else execution_nonce
-    if (
-        type(execution_nonce) is not int
-        or not 0 <= execution_nonce <= MAX_EXECUTION_NONCE
-    ):
+    if type(execution_nonce) is not int or not 0 <= execution_nonce <= MAX_EXECUTION_NONCE:
         raise WorkflowError("execution_nonce 必须是 JavaScript 安全范围内的非负整数")
 
     api = copy.deepcopy(api)
     version = settings["pipeline_version"]
     stages = settings["upscalers"]
-    final_sampler_id = (
-        "701:1246" if settings["base_mode"] == "dual_sampler" else "691:1240"
-    )
+    final_sampler_id = "701:1246" if settings["base_mode"] == "dual_sampler" else "691:1240"
     final_sampler = api[final_sampler_id]["inputs"]
-    inherited = {
-        key: copy.deepcopy(final_sampler[key])
-        for key in ("model", "positive", "negative")
-    }
+    inherited = {key: copy.deepcopy(final_sampler[key]) for key in ("model", "positive", "negative")}
     for node in api.values():
         node.setdefault("_meta", {}).update(pipeline_stage="base")
 
     def add(node_id: str, node_type: str, stage: str, **inputs: Any) -> list[Any]:
-        api[node_id] = {
-            "class_type": node_type,
-            "inputs": inputs,
-            "_meta": {
-                "title": f"{STAGE_LABELS[stage]} · {node_type}",
-                "pipeline_stage": stage,
-            },
-        }
+        api[node_id] = {"class_type": node_type, "inputs": inputs,
+                        "_meta": {"title": f"{STAGE_LABELS[stage]} · {node_type}", "pipeline_stage": stage}}
         return [node_id, 0]
 
     image: list[Any] | None = None
     latent: list[Any] | None = [final_sampler_id, 0]
     latent_stage = "base"
     codec_index = 0
-    encode_config = _TILING
-    decode_config = _TILING
+    encode_config = decode_config = _TILING
 
     def ensure_image() -> list[Any]:
         nonlocal image, codec_index
@@ -168,18 +146,9 @@ def build_pipeline(
             assert latent is not None
             codec_index += 1
             config = decode_config
-            image = add(
-                f"v3:decode:{codec_index}",
-                "VAEDecodeTiled" if config["tiled"] else "VAEDecode",
-                latent_stage,
-                samples=list(latent),
-                vae=["167:58", 0],
-                **(
-                    {k: v for k, v in config.items() if k != "tiled"}
-                    if config["tiled"]
-                    else {}
-                ),
-            )
+            image = add(f"v3:decode:{codec_index}", "VAEDecodeTiled" if config["tiled"] else "VAEDecode",
+                        latent_stage, samples=list(latent), vae=["167:58", 0],
+                        **({k: v for k, v in config.items() if k != "tiled"} if config["tiled"] else {}))
         return list(image)
 
     def ensure_latent(stage: str) -> list[Any]:
@@ -188,232 +157,122 @@ def build_pipeline(
             assert image is not None
             codec_index += 1
             config = encode_config
-            latent = add(
-                f"v3:encode:{codec_index}",
-                "VAEEncodeTiled" if config["tiled"] else "VAEEncode",
-                stage,
-                pixels=list(image),
-                vae=["167:58", 0],
-                **(
-                    {k: v for k, v in config.items() if k != "tiled"}
-                    if config["tiled"]
-                    else {}
-                ),
-            )
+            latent = add(f"v3:encode:{codec_index}", "VAEEncodeTiled" if config["tiled"] else "VAEEncode",
+                         stage, pixels=list(image), vae=["167:58", 0],
+                         **({k: v for k, v in config.items() if k != "tiled"} if config["tiled"] else {}))
             latent_stage = stage
         return list(latent)
 
+    active_stages = [stage for stage in stage_order(version)
+                     if stage in {"base", "export"} or stages[stage]["enabled"]]
+    next_stages = dict(zip(active_stages, active_stages[1:]))
+
+    def finish_stage(stage: str) -> None:
+        """Clean after the last operation, including an already-needed decode.
+
+        Keep latent-to-latent paths intact. Every cleanup remains on the image
+        dependency chain, so the existing execution nonce also invalidates it.
+        Model and conditioning branches retain their normal cache behavior.
+        """
+        nonlocal image, latent
+        node_id = f"v3:cleanup:{stage}"
+        options = {"empty_cache": True, "gc_collect": True, "unload_all_models": False}
+        if image is None and next_stages[stage] in {"latent", "post_sampler"}:
+            assert latent is not None
+            latent = add(node_id, "VRAM_Debug", stage, **options, any_input=list(latent))
+        else:
+            add(node_id, "VRAM_Debug", stage, **options, image_pass=ensure_image())
+            image = [node_id, 1]
+        api[node_id]["_meta"]["title"] = f"{STAGE_LABELS[stage]} · 清缓存与垃圾回收"
+
+    finish_stage("base")
     if stages["pixel_hires"]["enabled"]:
         config = stages["pixel_hires"]
-        model = add(
-            "v3:pixel:model",
-            "UpscaleModelLoader",
-            "pixel_hires",
-            model_name=_mapped_resource_name(config["model_name"], resource_paths),
-        )
-        image = add(
-            "v3:pixel:upscale",
-            "ImageUpscaleWithModel",
-            "pixel_hires",
-            upscale_model=model,
-            image=ensure_image(),
-        )
+        model = add("v3:pixel:model", "UpscaleModelLoader", "pixel_hires",
+                    model_name=_mapped_resource_name(config["model_name"], resource_paths))
+        image = add("v3:pixel:upscale", "ImageUpscaleWithModel", "pixel_hires",
+                    upscale_model=model, image=ensure_image())
         latent = None
-        if not stages["post_sampler"]["enabled"]:
-            image = add(
-                "v3:pixel:resize",
-                "ImageScaleBy",
-                "pixel_hires",
-                image=image,
-                upscale_method=config["upscale_method"],
-                scale_by=config["percent"] / 100,
-            )
-
+        if pixel_hires_resizes(settings):
+            image = add("v3:pixel:resize", "ImageScaleBy", "pixel_hires", image=image,
+                        upscale_method=config["upscale_method"], scale_by=config["percent"] / 100)
+        finish_stage("pixel_hires")
     def nvidia_stage() -> None:
         nonlocal image, latent
         config = stages["nvidia"]
-        image = add(
-            "v3:vsr",
-            "RTXVideoSuperResolution",
-            "nvidia",
-            images=ensure_image(),
-            **{
-                "resize_type": config["resize_type"],
-                "resize_type.scale": config["scale"],
-                "quality": config["quality"],
-            },
-        )
+        image = add("v3:vsr", "RTXVideoSuperResolution", "nvidia", images=ensure_image(),
+                    **{"resize_type": config["resize_type"], "resize_type.scale": config["scale"],
+                       "quality": config["quality"]})
         latent = None
-
     def seedvr2_stage() -> None:
         nonlocal image, latent
         config = stages["seedvr2"]
-        resized = add(
-            "v3:seed:resize",
-            "ImageScaleBy",
-            "seedvr2",
-            image=ensure_image(),
-            upscale_method="lanczos",
-            scale_by=config["scale_by"],
-        )
-        model = add(
-            "v3:seed:model",
-            "UNETLoader",
-            "seedvr2",
-            unet_name=_mapped_resource_name(config["model_name"], resource_paths),
-            weight_dtype=config["weight_dtype"],
-        )
-        vae = add(
-            "v3:seed:vae",
-            "VAELoader",
-            "seedvr2",
-            vae_name=_mapped_resource_name(config["vae_name"], resource_paths),
-        )
-        prepared = add(
-            "v3:seed:prepare", "SeedVR2Preprocess", "seedvr2", resized_images=resized
-        )
-        encoded = add(
-            "v3:seed:encode",
-            "VAEEncodeTiled",
-            "seedvr2",
-            pixels=prepared,
-            vae=vae,
-            **config["encode"],
-        )
-        conditioning = add(
-            "v3:seed:conditioning",
-            "SeedVR2Conditioning",
-            "seedvr2",
-            model=model,
-            vae_conditioning=encoded,
-        )
-        sampled = add(
-            "v3:seed:sample",
-            "KSampler",
-            "seedvr2",
-            model=model,
-            positive=conditioning,
-            negative=[conditioning[0], 1],
-            latent_image=encoded,
-            seed=sample_seed,
-            **config["sampler"],
-        )
-        decoded = add(
-            "v3:seed:decode",
-            "VAEDecodeTiled",
-            "seedvr2",
-            samples=sampled,
-            vae=vae,
-            **config["decode"],
-        )
+        resized = add("v3:seed:resize", "ImageScaleBy", "seedvr2", image=ensure_image(),
+                      upscale_method="lanczos", scale_by=config["scale_by"])
+        model = add("v3:seed:model", "UNETLoader", "seedvr2",
+                    unet_name=_mapped_resource_name(config["model_name"], resource_paths), weight_dtype=config["weight_dtype"])
+        vae = add("v3:seed:vae", "VAELoader", "seedvr2",
+                  vae_name=_mapped_resource_name(config["vae_name"], resource_paths))
+        prepared = add("v3:seed:prepare", "SeedVR2Preprocess", "seedvr2", resized_images=resized)
+        encoded = add("v3:seed:encode", "VAEEncodeTiled", "seedvr2", pixels=prepared, vae=vae, **config["encode"])
+        conditioning = add("v3:seed:conditioning", "SeedVR2Conditioning", "seedvr2", model=model, vae_conditioning=encoded)
+        sampled = add("v3:seed:sample", "KSampler", "seedvr2", model=model, positive=conditioning,
+                      negative=[conditioning[0], 1], latent_image=encoded, seed=sample_seed, **config["sampler"])
+        decoded = add("v3:seed:decode", "VAEDecodeTiled", "seedvr2", samples=sampled, vae=vae, **config["decode"])
         # The reference must precede padding. Using the padded conditioning
         # image here would retain padding and alter downstream geometry.
-        image = add(
-            "v3:seed:finish",
-            "SeedVR2PostProcessing",
-            "seedvr2",
-            images=decoded,
-            original_resized_images=resized,
-            color_correction_method=config["color_correction_method"],
-        )
+        image = add("v3:seed:finish", "SeedVR2PostProcessing", "seedvr2", images=decoded,
+                    original_resized_images=resized, color_correction_method=config["color_correction_method"])
         latent = None
-
     def latent_stage_op() -> None:
         nonlocal latent, latent_stage, image
         config = stages["latent"]
-        resize = latent_upscale_node(
-            ensure_latent("latent"), config, stages["latent"]["scale_by"]
-        )
+        resize = latent_upscale_node(ensure_latent("latent"), config, stages["latent"]["scale_by"])
         latent = add("v3:latent", resize["class_type"], "latent", **resize["inputs"])
-        latent = add(
-            "v4:latent:sample",
-            "KSampler",
-            "latent",
-            latent_image=latent,
-            seed=sample_seed,
-            **inherited,
-            **stages["latent"]["sampler"],
-        )
+        if version >= 4:
+            latent = add("v4:latent:sample", "KSampler", "latent", latent_image=latent,
+                         seed=sample_seed, **inherited, **stages["latent"]["sampler"])
         latent_stage, image = "latent", None
 
     def post_sampler_stage() -> None:
         nonlocal latent, latent_stage, image
-        latent = add(
-            "v3:post",
-            "KSampler",
-            "post_sampler",
-            latent_image=ensure_latent("post_sampler"),
-            seed=sample_seed,
-            **inherited,
-            **{k: v for k, v in stages["post_sampler"].items() if k != "enabled"},
-        )
+        latent = add("v3:post", "KSampler", "post_sampler", latent_image=ensure_latent("post_sampler"),
+                     seed=sample_seed, **inherited,
+                     **{k: v for k, v in stages["post_sampler"].items() if k != "enabled"})
         latent_stage, image = "post_sampler", None
-
     def face_refine_stage() -> None:
         nonlocal image, latent
-        # Face refinement shares the random workbench model and LoRA stack.
         face_inputs = copy.deepcopy(api["1253:1215"]["inputs"])
         face_inputs["image"] = ensure_image()
-        image = add(
-            "v3:face",
-            "ForbiddenVisionFaceProcessorIntegrated",
-            "face_refine",
-            **face_inputs,
-        )
+        image = add("v3:face", "ForbiddenVisionFaceProcessorIntegrated", "face_refine", **face_inputs)
         latent = None
 
-    operations = {
-        "nvidia": nvidia_stage,
-        "seedvr2": seedvr2_stage,
-        "latent": latent_stage_op,
-        "post_sampler": post_sampler_stage,
-        "face_refine": face_refine_stage,
-    }
+    operations = {"nvidia": nvidia_stage, "seedvr2": seedvr2_stage, "latent": latent_stage_op,
+                  "post_sampler": post_sampler_stage, "face_refine": face_refine_stage}
     for stage in stage_order(version):
         if stage in operations and stages[stage]["enabled"]:
             operations[stage]()
+            finish_stage(stage)
     if stages["dlss"]["enabled"]:
-        image = add(
-            "v3:dlss",
-            "DLSS5NeuralRender",
-            "dlss",
-            images=ensure_image(),
-            **{k: v for k, v in stages["dlss"].items() if k != "enabled"},
-        )
+        image = add("v3:dlss", "DLSS5NeuralRender", "dlss", images=ensure_image(),
+                    **{k: v for k, v in stages["dlss"].items() if k != "enabled"})
         latent = None
-    add(
-        V2_OUTPUT_ID,
-        "SaveImage",
-        "export",
-        images=ensure_image(),
-        filename_prefix=filename_prefix,
-    )
+        finish_stage("dlss")
+    add(V2_OUTPUT_ID, "SaveImage", "export", images=ensure_image(), filename_prefix=filename_prefix)
     # A declared input changes ComfyUI's ancestry cache key without changing
     # the actual sampling seed. Keep resource/conditioning branches cacheable.
     # Insert after constant folding so both dynamic inputs survive UI export.
     seed = add("v3:run:seed", "PrimitiveInt", "base", value=sample_seed)
     nonce = add("v3:run:nonce", "PrimitiveInt", "base", value=execution_nonce)
-    add(
-        "v3:run:gate",
-        "ComfyMathExpression",
-        "base",
-        expression="a",
-        **{"values.a": seed, "values.b": nonce},
-    )
-    first_sampler_id = (
-        "701:1245" if settings["base_mode"] == "dual_sampler" else "691:1240"
-    )
+    add("v3:run:gate", "ComfyMathExpression", "base", expression="a",
+        **{"values.a": seed, "values.b": nonce})
+    first_sampler_id = "701:1245" if settings["base_mode"] == "dual_sampler" else "691:1240"
     seed_input = "noise_seed" if settings["base_mode"] == "dual_sampler" else "seed"
     api[first_sampler_id]["inputs"][seed_input] = ["v3:run:gate", 1]
     api = _prune_graph(api, V2_OUTPUT_ID)
     ui = export_ui_workflow(api, ui_template, pipeline_version=version)
     ui.setdefault("extra", {})["pipeline"] = {
-        "version": version,
-        "stages": [
-            key
-            for key in stage_order(version)
-            if key in {"base", "export"} or stages[key]["enabled"]
-        ],
+        "version": version, "stages": active_stages,
         "execution_nonce": execution_nonce,
         "api_prompt": copy.deepcopy(api),
     }
@@ -423,6 +282,7 @@ def build_pipeline(
 # Widget order is part of ComfyUI's editable-workflow format, unlike the API
 # input dictionary. Explicit contracts avoid exporting stale template values.
 _WIDGETS = {
+    "VRAM_Debug": ["empty_cache", "gc_collect", "unload_all_models"],
     "PrimitiveInt": ["value", "@fixed"],
     "ComfyMathExpression": ["expression"],
     "UNETLoader": ["unet_name", "weight_dtype"],
@@ -473,6 +333,7 @@ _WIDGETS = {
     "SaveImage": ["filename_prefix"],
 }
 _OUTPUTS = {
+    "VRAM_Debug": ["*", "IMAGE", "MODEL", "INT", "INT"],
     "PrimitiveInt": ["INT"],
     "ComfyMathExpression": ["FLOAT", "INT", "BOOLEAN"],
     "UNETLoader": ["MODEL"],
@@ -503,9 +364,11 @@ _OUTPUTS = {
 }
 
 
-def export_ui_workflow(
-    api: dict[str, Any], template: dict[str, Any], *, pipeline_version: int = 4
-) -> dict[str, Any]:
+_INPUT_SOCKETS = {"VRAM_Debug": [("any_input", "*"), ("image_pass", "IMAGE"), ("model_pass", "MODEL")]}
+_OUTPUT_NAMES = {"VRAM_Debug": ["any_output", "image_pass", "model_pass", "freemem_before", "freemem_after"]}
+
+
+def export_ui_workflow(api: dict[str, Any], template: dict[str, Any], *, pipeline_version: int = 3) -> dict[str, Any]:
     """Flatten the executable graph into an editable ComfyUI 0.4 workflow.
 
     Preserve custom node socket/widget metadata from the attached templates,
@@ -522,13 +385,8 @@ def export_ui_workflow(
         example = examples.get(kind, {})
         properties = copy.deepcopy(example.get("properties", {}))
         properties.pop("aaaliceControlHostId", None)
-        properties.update(
-            {
-                "Node name for S&R": kind,
-                "pipeline_api_id": key,
-                "pipeline_stage": source.get("_meta", {}).get("pipeline_stage", "base"),
-            }
-        )
+        properties.update({"Node name for S&R": kind, "pipeline_api_id": key,
+                           "pipeline_stage": source.get("_meta", {}).get("pipeline_stage", "base")})
         inputs = source["inputs"]
         widget_names = _WIDGETS.get(kind)
         if widget_names is None:
@@ -541,14 +399,7 @@ def export_ui_workflow(
             if name == "@fixed":
                 values.append("fixed")
                 continue
-            value = inputs.get(
-                name,
-                "default"
-                if name == "device"
-                else "image"
-                if name == "upload"
-                else None,
-            )
+            value = inputs.get(name, "default" if name == "device" else "image" if name == "upload" else None)
             if _link(value):
                 value = 0
             if isinstance(value, dict) and "__value__" in value:
@@ -557,41 +408,36 @@ def export_ui_workflow(
         output_types = _OUTPUTS.get(kind)
         if output_types is None:
             output_types = [out.get("type", "*") for out in example.get("outputs", [])]
-        outputs = [
-            {"name": output_type, "type": output_type, "links": []}
-            for output_type in output_types
-        ]
+        output_names = _OUTPUT_NAMES.get(kind, output_types)
+        outputs = [{"name": name, "type": output_type, "links": []}
+                   for name, output_type in zip(output_names, output_types)]
         stage_index = stage_order(pipeline_version).index(properties["pipeline_stage"])
-        nodes[key] = {
-            "id": ids[key],
-            "type": kind,
-            "title": source.get("_meta", {}).get("title", kind),
-            "pos": [stage_index * 440 + (index % 2) * 40, (index // 2) * 240],
-            "size": [360, max(100, 55 + 26 * len(values))],
-            "flags": {},
-            "order": index,
-            "mode": 0,
-            "inputs": [],
-            "outputs": outputs,
-            "properties": properties,
-            "widgets_values": values,
-        }
+        nodes[key] = {"id": ids[key], "type": kind, "title": source.get("_meta", {}).get("title", kind),
+                      "pos": [stage_index * 440 + (index % 2) * 40, (index // 2) * 240],
+                      "size": [360, max(100, 55 + 26 * len(values))], "flags": {}, "order": index, "mode": 0,
+                      "inputs": [], "outputs": outputs, "properties": properties, "widgets_values": values}
+    def link_type(origin: str, slot: int) -> str:
+        # The wildcard pass-through has a real LATENT/IMAGE source. Preserve
+        # that wire type without changing the node's declared wildcard socket.
+        source = api[origin]
+        if source["class_type"] == "VRAM_Debug" and slot == 0:
+            value = source["inputs"].get("any_input")
+            if _link(value):
+                return link_type(*value)
+        outputs = nodes[origin]["outputs"]
+        return outputs[slot]["type"] if slot < len(outputs) else "*"
+
     links = []
     for key, source in api.items():
         kind = source["class_type"]
-        example_inputs = {
-            item["name"]: item for item in examples.get(kind, {}).get("inputs", [])
-        }
+        example_inputs = {item["name"]: item for item in examples.get(kind, {}).get("inputs", [])}
+        if kind in _INPUT_SOCKETS:
+            example_inputs = {name: {"name": name, "type": socket_type}
+                              for name, socket_type in _INPUT_SOCKETS[kind]}
         # Keep normal sockets even when optional/unconnected; ComfyUI matches
         # their positional slots when configuring the imported node.
-        ordered_names = [
-            name for name, spec in example_inputs.items() if "widget" not in spec
-        ]
-        ordered_names.extend(
-            name
-            for name, value in source["inputs"].items()
-            if _link(value) and name not in ordered_names
-        )
+        ordered_names = [name for name, spec in example_inputs.items() if "widget" not in spec]
+        ordered_names.extend(name for name, value in source["inputs"].items() if _link(value) and name not in ordered_names)
         for name in ordered_names:
             value = source["inputs"].get(name)
             spec = copy.deepcopy(example_inputs.get(name, {"name": name, "type": "*"}))
@@ -599,32 +445,15 @@ def export_ui_workflow(
             if _link(value):
                 origin, slot = value
                 while len(nodes[origin]["outputs"]) <= slot:
-                    nodes[origin]["outputs"].append(
-                        {"name": "*", "type": "*", "links": []}
-                    )
+                    nodes[origin]["outputs"].append({"name": "*", "type": "*", "links": []})
                 output = nodes[origin]["outputs"][slot]
-                spec["type"] = output["type"]
+                wire_type = link_type(origin, slot)
+                spec["type"] = wire_type
                 link_id = len(links) + 1
                 spec["link"] = link_id
-                links.append(
-                    [
-                        link_id,
-                        ids[origin],
-                        slot,
-                        ids[key],
-                        len(nodes[key]["inputs"]),
-                        output["type"],
-                    ]
-                )
+                links.append([link_id, ids[origin], slot, ids[key], len(nodes[key]["inputs"]), wire_type])
                 output["links"].append(link_id)
             nodes[key]["inputs"].append(spec)
-    return {
-        "version": 0.4,
-        "last_node_id": len(nodes),
-        "last_link_id": len(links),
-        "nodes": list(nodes.values()),
-        "links": links,
-        "groups": [],
-        "config": {},
-        "extra": {"pipeline_api_ids": {str(value): key for key, value in ids.items()}},
-    }
+    return {"version": 0.4, "last_node_id": len(nodes), "last_link_id": len(links),
+            "nodes": list(nodes.values()), "links": links, "groups": [], "config": {},
+            "extra": {"pipeline_api_ids": {str(value): key for key, value in ids.items()}}}

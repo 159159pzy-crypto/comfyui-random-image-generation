@@ -1,6 +1,7 @@
 """Run the standalone WebUI quality gates without launcher dependencies."""
 from pathlib import Path
 import shutil
+import re
 import subprocess
 import sys
 import tomllib
@@ -16,11 +17,11 @@ def run(*args: str) -> None:
 def main() -> None:
     metadata = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
     assert metadata['project']['name'] == 'anima-random-webui'
-    assert metadata['project']['version'] == '0.1.1'
+    assert re.fullmatch(r'\d+\.\d+\.\d+', metadata['project']['version'])
     run(sys.executable, '-m', 'ruff', 'check', 'anima_webui', 'tests', 'scripts', 'run.py')
     powershell = shutil.which('powershell.exe') or shutil.which('pwsh')
     if powershell:
-        for name in ('Install.ps1', 'Start.ps1'):
+        for name in ('Install.ps1', 'Start.ps1', 'Install-ComfyExtension.ps1'):
             run(powershell, '-NoProfile', '-NonInteractive', '-Command',
                 '$parseErrors = $null; '
                 f"[System.Management.Automation.Language.Parser]::ParseFile('{name}', "

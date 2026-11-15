@@ -1,31 +1,33 @@
-# Anima Random WebUI 0.1.1 · New Beginning
+# Anima Random WebUI 0.2.0
 
-**纯粹、轻量的 Anima 随机生图工作台。**
+2026-11-15 · 本地源码更新，尚未创建 GitHub Release。
 
-Anima Random WebUI 连接已有的本机 ComfyUI，让你固定喜欢的角色与画风，再通过服装、姿势、背景和表情的随机组合寻找灵感。
+从 [Comfy Image Atelier `602e74f`](https://github.com/159159pzy-crypto/comfy-Image-Atelier/commit/602e74f1d1747bdd8a050d3c2358dc86f2a7bb60) 迁入适用于 Anima 随机台的更新。保持源码启动、独立个人数据及默认端口 8191，继续排除 Krea 2、单图台、图生图、AI 助手、图片反推和 EXE 启动器。
 
-本项目是 [Comfy Image Atelier](https://github.com/159159pzy-crypto/comfy-Image-Atelier) 的精简分支，剔除了 Krea 2、单图工作台、图生图、AI 助手、图片反推和 EXE 启动器等功能，专注于 Anima 随机生图。
+## 日常整理
 
-![Anima 随机工作台：配置词池、模型与采样参数，浏览生成作品和收藏](https://raw.githubusercontent.com/159159pzy-crypto/comfyui-random-image-generation/anima-webui-v0.1.1/docs/readme/random-workbench.png)
+- 作品库支持提示词搜索、五池词条／分组／人物属性的包含与排除条件；分页和详情翻图使用同一筛选。
+- 跨页批量删除提供逐项结果和失败重试，保留仅删记录、连同原图删除及共享原图保护。
+- 风格预设资料库增加搜索、收藏、分组、标签、封面、批量整理和卡片／列表视图。
+- 自定义角色本地分析触发词与特征，未知／冲突标签可人工确认；保留原文、顺序与人工分类，不调用 AI。
+- 图库优先加载可见缩略图、自动重试失败项并限制缓存为 1 GiB；LoRA 清单、封面和本地整理响应更快。
 
-*截图中的作品、模型和 LoRA 为使用示例，不随下载包提供。*
+## 生成与资源
 
-## 可以用它做什么
+- 新建任务采用 v5：像素高清的缩图比例和算法始终生效，开启整图后采样也保持设定尺寸。旧 v4 记录继续按 v4 执行，旧数据缺少版本时按 v4 解释；不恢复 v2／v3。
+- 新建与恢复默认采用 30 步、CFG 4、`er_sde + simple`；双采样第二段同步使用 CFG 4。脸部细化新默认 16 步、CFG 4、降噪 0.30。已有明确参数保留。
+- 新增默认关闭的负向条件零化；负面提示词原文随草稿、预设、历史保存。
+- 新任务和重新抽取类任务可选择兼容替代模型，展示并保存替换记录；原样复现与同词变体要求原资源存在，LoRA 不自动替换。提交及每张执行前检查冻结资源，已记录的文件身份发生变化时拒绝复现。
+- 阶段清理使用 KJNodes `VRAM_Debug`。停止确认且双方队列空闲后，配套扩展清缓存并执行 GC，保留模型；忙碌、缺扩展或失败会明确反馈，不影响停止结果。
 
-- **控制随机范围**：人物、服装、姿势、背景、表情五个词池分别固定或随机，支持中文搜索、特征筛选、收藏及自定义词条导入。
-- **连续探索不同组合**：每批最多生成 1000 张，支持任务排队和固定／随机图像种子。
-- **搭配自己的画风**：浏览 LoRA 封面，管理权重与触发词，为人物绑定 LoRA，保存常用风格预设。
-- **从底图到高清作品**：支持普通采样、双采样，以及 Sesqui、SeedVR2 等可选放大流程；按需要准备对应节点与模型。
-- **沿着满意的结果继续创作**：原样复现、同词变体、局部重抽或按原设置继续抽取，并将作品整理进收藏夹。
+## 升级注意
 
-## 下载与开始使用
+1. 停止 WebUI，备份整个个人数据目录及 ComfyUI 原图；将浏览器草稿保留在原站点端口。
+2. 使用本次本地交付的 0.2.0 源码，安装更新后的项目 Python 依赖。GitHub 已发布的 0.1.1 不包含本次更新。本次本机环境中的 KJNodes 与配套资源扩展已可用，无需重新安装；其他环境按 [README 安装步骤](README.md#开始使用)检查，缺失时补齐节点及其依赖。配套扩展检查通过即可复用，仅需安装或更新时正常关闭 ComfyUI，再按文档执行安装命令并自行启动。
+3. 词库及预设结构升级前自动备份。**新旧预设统一默认不携带尺寸与放大修复**；需要时重新捕获并勾选，旧保存值可从迁移备份找回。
 
-下载 [**AnimaRandomWebUI-0.1.1-source.zip**](https://github.com/159159pzy-crypto/comfyui-random-image-generation/releases/download/anima-webui-v0.1.1/AnimaRandomWebUI-0.1.1-source.zip)，完整解压后使用。
+已有兼容扩展直接复用；脚本不会升级或重启 ComfyUI，不覆盖用户修改，不重复注册同名扩展。LoRA 收藏、标签、备注、触发词覆盖、人物绑定及使用统计仍仅存本项目，不写回共享插件。
 
-1. 准备 **Python 3.11+**，按 [README 安装指南](https://github.com/159159pzy-crypto/comfyui-random-image-generation#开始使用) 配好 ComfyUI、所需节点和模型，并单独启动 ComfyUI。
-2. 在解压目录运行 `Install.ps1` 安装本项目，再按 README 的词库路径配置运行 `Start.ps1`；词库可自动发现时，也可双击 `Start.cmd`。
-3. 浏览器打开 `http://127.0.0.1:8191`，选好模型与词池，开始生成。
+源码包包含运行代码、配套扩展、安装入口及用户文档，不包含个人数据、模型、虚拟环境和开发测试。完整 Git 仓库内的 `docs/acceptance-2026-11-15.md` 记录本次实际检查与 GPU 验收范围。
 
-本版采用源码运行，下载包不包含 Python、ComfyUI、模型或 EXE 启动器。节点安装、模型下载和推荐放大参数均在 README 中说明。已有用户升级前，请备份个人数据目录和 ComfyUI 原图。
-
-[完整项目介绍与使用指南](https://github.com/159159pzy-crypto/comfyui-random-image-generation#readme) · [推荐放大链路](https://github.com/159159pzy-crypto/comfyui-random-image-generation#推荐放大链路) · [反馈问题](https://github.com/159159pzy-crypto/comfyui-random-image-generation/issues)
+[使用指南](docs/guide.md) · [依赖说明](docs/dependencies.md) · [已发布版本](https://github.com/159159pzy-crypto/comfyui-random-image-generation/releases/latest)

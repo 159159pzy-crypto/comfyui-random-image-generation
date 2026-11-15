@@ -18,6 +18,7 @@ from .sampling import (
 )
 from .model_profiles import (
     DEFAULT_MODEL_PROFILE,
+    LEGACY_SAMPLING_DEFAULTS,
     ModelProfileError,
     MODEL_PROFILES,
     get_model_profile,
@@ -66,8 +67,9 @@ PROMPT_SECTIONS = ("character", "clothing", "pose", "background", "expression")
 MAX_SAMPLE_SEED = 1125899906842624
 
 
+CURRENT_PIPELINE_VERSION = 5
 DEFAULT_SETTINGS = {
-    "pipeline_version": 4,
+    "pipeline_version": CURRENT_PIPELINE_VERSION,
     "workbench": "random",
     "generation_mode": "txt2img",
     "dual": copy.deepcopy(DUAL_DEFAULTS),
@@ -109,6 +111,7 @@ DEFAULT_SETTINGS = {
     "quality_prompt": DEFAULT_QUALITY,
     "extra_prompt": "",
     "negative_prompt": DEFAULT_NEGATIVE,
+    "zero_negative": False,
     "width": 832,
     "height": 1216,
     "steps": MODEL_PROFILES[DEFAULT_MODEL_PROFILE]["defaults"]["steps"],
@@ -204,8 +207,24 @@ DEFAULT_SETTINGS = {
 }
 
 
+# Saved partial settings retain 0.1.x defaults; fresh drafts use explicit defaults.
+_LEGACY_DEFAULT_SETTINGS = copy.deepcopy(DEFAULT_SETTINGS)
+_LEGACY_DEFAULT_SETTINGS.update(LEGACY_SAMPLING_DEFAULTS[DEFAULT_MODEL_PROFILE])
+_LEGACY_DEFAULT_SETTINGS["pipeline_version"] = 4
+DEFAULT_SETTINGS["dual"] = copy.deepcopy(MODEL_PROFILES[DEFAULT_MODEL_PROFILE]["dual_defaults"])
+DEFAULT_SETTINGS["upscalers"]["face_refine"].update(MODEL_PROFILES[DEFAULT_MODEL_PROFILE]["face_refine_defaults"])
+
+
 class WorkflowError(ValueError):
     pass
+
+
+def default_settings_for_profile(profile_id: str = DEFAULT_MODEL_PROFILE, workbench: str = "random") -> dict[str, Any]:
+    """Explicit fresh-draft defaults, separate from legacy snapshot normalization."""
+    get_model_profile(profile_id)
+    if workbench != "random":
+        raise WorkflowError("仅支持 Anima 随机工作台 workbench=random")
+    return copy.deepcopy(DEFAULT_SETTINGS)
 
 
 def read_json(path: str | Path) -> dict[str, Any]:
@@ -434,7 +453,7 @@ def _validate_upscalers(
     unknown = set(value) - allowed
     if unknown:
         raise WorkflowError(f"未知放大修复模块: {', '.join(sorted(unknown))}")
-    merged = copy.deepcopy(DEFAULT_SETTINGS["upscalers"])
+    merged = copy.deepcopy(_LEGACY_DEFAULT_SETTINGS["upscalers"])
     for key, item in value.items():
         if not isinstance(item, dict):
             raise WorkflowError(f"upscalers.{key} 必须是对象")
@@ -627,7 +646,7 @@ def _validate_upscalers(
     }
 
     face = merged["face_refine"]
-    face_defaults = DEFAULT_SETTINGS["upscalers"]["face_refine"]
+    face_defaults = _LEGACY_DEFAULT_SETTINGS["upscalers"]["face_refine"]
     if set(face) - set(face_defaults):
         raise WorkflowError("未知 upscalers.face_refine 参数")
     face_values = {**face_defaults, **face}
@@ -711,7 +730,7 @@ def migrate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     if source.get("generation_mode", "txt2img") != "txt2img":
         raise WorkflowError("随机工作台仅支持文生图 generation_mode=txt2img")
     source["pipeline_version"] = _integer(
-        "pipeline_version", source.get("pipeline_version", 4), 4, 4
+        "pipeline_version", source.get("pipeline_version", 4), 4, CURRENT_PIPELINE_VERSION
     )
     source.update(model_profile=profile, workbench="random", generation_mode="txt2img")
     for key in ("clip_name", "vae_name", "clip_type"):
@@ -721,13 +740,15 @@ def migrate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         raise WorkflowError("base_mode 必须是 normal 或 dual_sampler")
     source["base_mode"] = base
     source.setdefault("steps", 30 if base == "dual_sampler" else 20)
+    for key in ("cfg", "sampler_name", "scheduler"):
+        source.setdefault(key, LEGACY_SAMPLING_DEFAULTS[profile][key])
     return source
 
 
 def upgrade_pipeline_settings(
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Keep fresh requests and saved settings on the supported v4 contract."""
+    """Normalize without changing a saved v4/v5 execution contract."""
     return validate_settings(overrides)
 
 
@@ -737,9 +758,10 @@ def validate_settings(overrides: dict[str, Any] | None = None) -> dict[str, Any]
     legacy_pools = "pools" not in source and any(
         source.get(f"random_{s}") for s in PROMPT_SECTIONS
     )
-    settings = copy.deepcopy(DEFAULT_SETTINGS)
+    settings = copy.deepcopy(_LEGACY_DEFAULT_SETTINGS)
     settings.update(source)
     settings["count"] = _integer("生成数量", settings["count"], 1, 1000)
+    settings["zero_negative"] = _boolean("zero_negative", settings["zero_negative"])
     for name in tuple(f"random_{section}" for section in PROMPT_SECTIONS):
         settings[name] = _boolean(name, settings[name])
     for name in tuple(f"random_{section}_count" for section in PROMPT_SECTIONS):
@@ -984,6 +1006,13 @@ def _render_base(
         "positive": ["1010:995", 0],
         "negative": ["1010:1004", 0],
     }
+    if settings["zero_negative"]:
+        api["anima:negative:zero"] = {
+            "class_type": "ConditioningZeroOut",
+            "inputs": {"conditioning": ["1010:1004", 0]},
+            "_meta": {"title": "负向条件零化"},
+        }
+        inherited["negative"] = ["anima:negative:zero", 0]
     empty = "701:496" if settings["base_mode"] == "dual_sampler" else "691:53"
     api[empty] = {
         "class_type": "EmptyLatentImage",

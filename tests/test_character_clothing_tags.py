@@ -121,3 +121,13 @@ def test_mixed_official_features_keep_the_character_and_accessory_details():
         "headphones", "aqua necktie", "bare shoulders", "navel", "aqua nails",
         "neck ribbon", "shoulder tattoo", "mysterious future feature",
     ]
+
+
+def test_imported_custom_clothing_keeps_independent_accessories_and_features():
+    features = ["long blue gradient hair", "white cropped jacket", "black boots", "puff sleeves",
+                "white maid bonnet", "turtleneck shirt", "thigh-high boots", "black and silver scarf",
+                "white thigh high stockings", "blue eyes", "lace details", "alternate costume: silver soldier"]
+    assert [tag for tag in features if not is_character_clothing_tag(tag)] == [
+        "long blue gradient hair", "white maid bonnet", "black and silver scarf", "blue eyes",
+        "lace details", "alternate costume: silver soldier",
+    ]

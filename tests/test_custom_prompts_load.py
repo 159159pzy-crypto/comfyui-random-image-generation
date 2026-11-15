@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from anima_webui.custom_prompts import MAX_GROUPS_PER_SECTION, CustomPromptStore
+from anima_webui.custom_prompts import CUSTOM_DATA_VERSION, MAX_GROUPS_PER_SECTION, CustomPromptStore
 from anima_webui.persistence import StorageReadOnlyError
 
 
@@ -90,7 +90,7 @@ def invalid_document(case):
     elif case == "null_version":
         value["version"] = None
     elif case == "future_version":
-        value["version"] = 5
+        value["version"] = CUSTOM_DATA_VERSION + 1
     elif case == "migration_id_collision":
         value["version"] = 3
         group["id"] = "custom_folder_legacy_pose"
@@ -125,7 +125,7 @@ def test_lossy_source_is_preserved_and_read_only_across_restarts(tmp_path, case)
         assert path.read_bytes() == original
         with pytest.raises(StorageReadOnlyError):
             store.ensure_writable()
-    backups = list(tmp_path.glob("custom.json.v4*.bak"))
+    backups = list(tmp_path.glob(f"custom.json.v{CUSTOM_DATA_VERSION}*.bak"))
     assert len(backups) == 2
     assert all(backup.read_bytes() == original for backup in backups)
     assert not (tmp_path / "custom.json.pre-v4.bak").exists()
@@ -154,6 +154,7 @@ def test_legal_legacy_source_migrates_without_losing_items_or_memberships(tmp_pa
 
 def test_current_source_at_capacity_preserves_tree_and_all_records(tmp_path):
     document = source_document()
+    document["version"] = CUSTOM_DATA_VERSION
     document["groups"]["pose"] = [
         {"id": "folder", "name": "Folder", "kind": "import"},
         {"id": "leaf", "name": "Leaf", "parentId": "folder"},

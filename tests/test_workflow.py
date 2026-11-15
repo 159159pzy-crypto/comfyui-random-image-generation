@@ -34,7 +34,7 @@ def templates():
         {"krea_prompt_pool": {}},
         {"pipeline_version": 2},
         {"pipeline_version": 3},
-        {"pipeline_version": 5},
+        {"pipeline_version": 6},
         {"hires": {}},
         {"detailers": {}},
         {"upscalers": {"latent": {"second_sampler": {}}}},

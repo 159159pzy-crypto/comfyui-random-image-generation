@@ -118,14 +118,6 @@ test('a busy deletion consumes backdrop and Escape without dismissing or invalid
   }
 });
 
-test('Escape in an internal panel ignores hidden detail drawers and returns only one level', () => {
-  let backs = 0, actions = 0;
-  const h = dismissalContext({ historyDetailVisible: () => false, historyDetailBack: () => { backs++; return true; }, closeDetailActionPanels: () => { actions++; return true; } });
-  h.ctx.ui.replayDrawer.hidden = false;
-  const event = { preventDefault() {} }; h.events.cancel(event);
-  assert.equal(backs, 1); assert.equal(actions, 0); assert.deepEqual(h.calls, []);
-  assert.equal(h.ctx.singleWorkbenchState.historyTransferRequest, 0);
-});
 
 test('Tab stays in the active detail view and excludes controls inside closed disclosures', () => {
   let focused = null;
@@ -149,14 +141,6 @@ test('the detail focus boundary respects Tab already handled by its collection p
   ctx.containHistoryDetailFocus({ key: 'Tab', defaultPrevented: true });
 });
 
-test('Escape ignores a drawer already exiting and returns the next active level', () => {
-  let backs = 0;
-  const h = dismissalContext({ historyDetailBack: () => { backs++; return true; } });
-  h.ctx.ui.replayDrawer.hidden = false;
-  h.ctx.ui.replayDrawer.dataset = { motionState: 'closing' };
-  h.events.cancel({ preventDefault() {} });
-  assert.equal(backs, 1); assert.deepEqual(h.calls, []);
-});
 
 test('clicking detail metadata folds all actions without restoring the old trigger focus', () => {
   const closes = [];

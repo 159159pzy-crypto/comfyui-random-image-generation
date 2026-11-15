@@ -64,10 +64,11 @@ def test_modes_preserve_identity_order_and_random_choices(catalog):
 
 def test_custom_fixed_and_other_prompt_sources_are_preserved(catalog):
     catalog.set_custom_items([{"id": "custom:clothed", "section": "character", "title": "My character",
-                               "prompt": "custom hero, white shirt, barefoot, hair bow"}])
+                               "prompt": "custom hero, white shirt, barefoot, hair bow",
+                               "trigger": ["custom hero"], "tags": ["white shirt", "barefoot", "hair bow"]}])
     custom = settings(pools={"character": {"mode": "include", "ids": ["custom:clothed"]}})
     assert catalog.resolve_prompt(custom, 1)["selected"]["character"][0]["prompt"] == (
-        "custom hero, white shirt, barefoot, hair bow"
+        "custom hero, hair bow"
     )
     fixed = settings(random_character=False, fixed_character="fixed hero, white shirt, barefoot",
                      fixed_clothing="black gloves", extra_prompt="detached sleeves")

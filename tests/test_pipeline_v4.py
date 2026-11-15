@@ -96,7 +96,8 @@ def test_every_repair_combination_has_one_connected_sink_and_ordered_stages(
     if "latent" in enabled:
         assert graph["v4:latent:sample"]["inputs"]["latent_image"] == ["v3:latent", 0]
         if "post_sampler" in enabled:
-            assert graph["v3:post"]["inputs"]["latent_image"] == ["v4:latent:sample", 0]
+            assert graph["v3:post"]["inputs"]["latent_image"] == ["v3:cleanup:latent", 0]
+            assert graph["v3:cleanup:latent"]["inputs"]["any_input"] == ["v4:latent:sample", 0]
     meta = result["extra_data"]["extra_pnginfo"]["workflow"]["extra"]["pipeline"]
     assert meta["version"] == 4 and meta["stages"] == ["base", *enabled, "export"]
     assert meta["execution_nonce"] == 654321 and meta["api_prompt"] == graph
@@ -125,9 +126,9 @@ def test_latent_and_post_sampling_inherit_final_base_resources(templates, base):
             "clipStrength": 0.5,
         }
     ]
-    assert graph["v3:seed:resize"]["inputs"]["image"] == ["v3:face", 0]
-    assert graph["v3:vsr"]["inputs"]["images"] == ["v3:seed:finish", 0]
-    assert graph["v3:dlss"]["inputs"]["images"] == ["v3:vsr", 0]
+    assert graph["v3:seed:resize"]["inputs"]["image"] == ["v3:cleanup:face_refine", 1]
+    assert graph["v3:vsr"]["inputs"]["images"] == ["v3:cleanup:seedvr2", 1]
+    assert graph["v3:dlss"]["inputs"]["images"] == ["v3:cleanup:nvidia", 1]
     ui = result["extra_data"]["extra_pnginfo"]["workflow"]
     nodes = {node["properties"]["pipeline_api_id"]: node for node in ui["nodes"]}
     assert nodes["v4:latent:sample"]["widgets_values"] == [
@@ -214,7 +215,7 @@ def test_execution_nonce_invalidates_generation_without_changing_seed_resources(
 
 def test_disabled_optional_stages_have_no_requirements():
     settings = validate_settings({"base_mode": "normal"})
-    assert required_node_classes(settings) == {"PrimitiveInt", "ComfyMathExpression"}
+    assert required_node_classes(settings) == {"PrimitiveInt", "ComfyMathExpression", "VRAM_Debug"}
     settings["upscalers"]["dlss"]["enabled"] = True
     assert "DLSS5NeuralRender" in required_node_classes(settings)
     assert "RTXVideoSuperResolution" not in required_node_classes(settings)

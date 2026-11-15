@@ -14,7 +14,7 @@ function setup() {
   const elements = {};
   const ctx = vm.createContext({
     clone: plain, document: { getElementById: id => elements[id] || null },
-    profileSettingsDefaults: () => ({ model_profile: 'anima', cfg: 4, sampler_name: 'er_sde', scheduler: 'simple', upscalers: { latent: { enabled: false, upscale_method: 'bilinear', scale_by: 1.5 } } }),
+    profileSettingsDefaults: () => ({ model_profile: 'anima', steps: 30, cfg: 4, sampler_name: 'er_sde', scheduler: 'simple', upscalers: { latent: { enabled: false, upscale_method: 'bilinear', scale_by: 1.5 } } }),
     ensureSelectValue: (element, value) => { element.value = value; },
     singleWorkbenchActive: () => false, ui: { base_mode: { value: 'normal' }, steps: { value: '30' }, latent_upscale_method: { value: 'sesqui' }, latent_upscale_scale: {} },
   });
@@ -101,7 +101,7 @@ test('ordinary and dual modes use their first-entry defaults and restore indepen
   ctx.ui.steps.value = '20'; ctx.sharedSamplingRestoreDrafts();
   ctx.ui.steps.value = '27'; ctx.ui.cfg.value = '5.5'; ctx.ui.base_denoise.value = '.74'; elements.randomSampleSeed.value = '123';
   ctx.ui.base_mode.value = 'dual_sampler'; ctx.sharedSamplingModeChanged();
-  assert.deepEqual([ctx.ui.steps.value, ctx.ui.cfg.value, elements.randomSampleSeed.value], ['30', '8', '0']);
+  assert.deepEqual([ctx.ui.steps.value, ctx.ui.cfg.value, elements.randomSampleSeed.value], ['30', '4', '0']);
   assert.equal(ctx.readRandomDualControls().second_cfg, 8);
   ctx.ui.steps.value = '38'; elements.random_dual_second_cfg.value = '6.5'; elements.randomSeedMode.value = 'random';
   ctx.ui.base_mode.value = 'normal'; ctx.sharedSamplingModeChanged();
@@ -133,10 +133,10 @@ test('random first entry honors the model profile base mode while using that mod
   const defaults = ctx.profileSettingsDefaults();
   ctx.profileSettingsDefaults = () => ({ ...defaults, base_mode: 'dual_sampler' });
   const dual = ctx.randomWorkbenchDefaultSettings();
-  assert.equal(dual.base_mode, 'dual_sampler'); assert.equal(dual.steps, 30); assert.equal(dual.cfg, 8);
+  assert.equal(dual.base_mode, 'dual_sampler'); assert.equal(dual.steps, 30); assert.equal(dual.cfg, 4);
   ctx.profileSettingsDefaults = () => ({ ...defaults, base_mode: 'normal' });
   const normal = ctx.randomWorkbenchDefaultSettings();
-  assert.equal(normal.base_mode, 'normal'); assert.equal(normal.steps, 20);
+  assert.equal(normal.base_mode, 'normal'); assert.equal(normal.steps, 30);
 });
 
 test('legacy algorithms are explicit dropdown choices and never leak into model_format serialization', () => {

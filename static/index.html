@@ -14,12 +14,14 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261107-topbar-align-right">
-
-  <link rel="stylesheet" href="/static/history-detail.css?v=20261028-remove-artwork-management">
+  <link rel="stylesheet" href="/static/styles.css?v=20261115-round-controls">
+  <link rel="stylesheet" href="/static/history-detail.css?v=20261110-delete-choice">
+  <link rel="stylesheet" href="/static/history-filters.css?v=20261115-filter-window">
+  <link rel="stylesheet" href="/static/character-classification.css?v=20261111-local-classification">
   <link rel="stylesheet" href="/static/artwork-favorites.css?v=20261029-favorites-motion">
-  <link rel="stylesheet" href="/static/lora-manager.css?v=20261107-pool-entry">
+  <link rel="stylesheet" href="/static/lora-manager.css?v=20261107-remove-pool-lora-entry">
   <link rel="stylesheet" href="/static/pool-browser.css?v=20261107-binding">
+  <link rel="stylesheet" href="/static/style-preset-manager.css?v=20261112-presets-jitter">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 </head>
 <body>
@@ -65,11 +67,11 @@
           <summary><span>风格预设</span><span id="presetSummary" class="summary-value">0 个预设</span><i>+</i></summary>
           <div class="details-content">
             <div class="preset-create-row">
-              <input id="presetName" type="text" maxlength="100" placeholder="预设名称" aria-label="风格预设名称" aria-describedby="presetError">
+              <button id="manageStylePresets" class="button ghost preset-manage-entry" type="button" aria-haspopup="dialog">管理风格预设 <span aria-hidden="true">↗</span></button>
               <button id="savePreset" class="button primary compact" type="button">保存当前</button>
             </div>
             <div id="presetError" class="field-error" role="status" hidden></div>
-            <div id="presetList" class="preset-list"></div>
+            <div id="presetScroll" class="preset-scroll"><div id="presetList" class="preset-list" tabindex="0" aria-label="风格预设列表"></div></div>
             <div id="presetEmpty" class="inline-empty">还没有风格预设。</div>
           </div>
         </details>
@@ -78,7 +80,7 @@
           <div class="section-heading"><h2>提示词池</h2><span id="poolOverview">0 项已选</span></div>
           <div id="animaPromptPoolControls">
           <div id="dimensionList" class="dimension-list"></div>
-          <label class="field"><span>角色标签</span><select id="character_detail" aria-describedby="characterDetailHint"><option value="trigger_tags">触发词 + 特征</option><option value="trigger">仅触发词</option><option value="trigger_tags_no_clothing">触发词 + 特征（剔除服装）</option></select><small id="characterDetailHint" class="field-hint">剔除服装仅处理内置角色的衣物标签，保留配饰与身体特征；触发词仍可能带出默认服装。</small></label>
+          <label class="field"><span>角色标签</span><select id="character_detail" aria-describedby="characterDetailHint"><option value="trigger_tags">触发词 + 特征</option><option value="trigger">仅触发词</option><option value="trigger_tags_no_clothing">触发词 + 特征（剔除服装）</option></select><small id="characterDetailHint" class="field-hint">内置与已确认的自定义角色均支持三种模式。剔除服装保留触发词、配饰与身体特征；触发词仍可能带出默认服装。</small><button id="reviewCharacters" type="button" class="button ghost compact character-review-link">处理待确认角色</button></label>
           <label class="field"><span>固定画师</span><input id="manual_artist" type="text" placeholder="例如 @anmi, @rella" autocomplete="off" spellcheck="false"></label>
           <details class="artist-favorites-section">
             <summary><span>收藏画师</span><span id="artistFavoriteCount" class="summary-value">0 位</span><i>+</i></summary>
@@ -124,9 +126,13 @@
               <option value="anima">Anima</option>
 
             </select></label>
-            <p id="modelProfileHint" class="field-hint">档案会自动切换 UNet、CLIP、VAE、编码方式与采样参数。</p>
-            <label class="field"><span>主模型</span><select id="model_name"><option value="">正在读取模型...</option></select><small class="field-hint">按 LoRA Manager 的 base_model 识别模型；CLIP 与 VAE 随档案绑定。</small></label>
-            <button id="manageResourceOwnership" class="button ghost compact" type="button">模型 / LoRA 分类</button>
+            <p id="modelProfileHint" class="field-hint">选择当前档案兼容的模型；缺失时自动选择可用模型。</p>
+            <label class="field"><span>主模型</span><select id="model_name"><option value="">正在读取模型...</option></select></label>
+            <div class="parameter-grid compact-parameter-grid">
+              <label class="field"><span>文本编码器 / CLIP</span><select id="clip_name"><option value="">正在读取模型...</option></select></label>
+              <label class="field"><span>VAE</span><select id="vae_name"><option value="">正在读取模型...</option></select></label>
+            </div>
+            <button id="manageResourceOwnership" class="button ghost compact" type="button">模型 / LoRA 管理</button>
             <div id="resourceWarning" class="resource-warning" hidden></div>
           </div>
         </details>
@@ -145,16 +151,17 @@
               <label class="field"><span>降噪幅度</span><input id="base_denoise" type="number" min="0" max="1" step="0.01" value="1"></label>
 
               <div id="randomSeedControls"><label class="field"><span>图像种子</span><div class="shared-seed-controls"><input id="randomSampleSeed" aria-label="图像种子" type="number" min="0" max="1125899906842624" step="1" value="0"><select id="randomSeedMode" aria-label="种子方式"><option value="fixed">固定种子</option><option value="random">每次随机</option></select><button id="randomRollSeed" type="button" class="button ghost compact">换一个</button></div></label></div>
+              <div id="baseZeroNegativeControls" class="negative-conditioning-controls"><label id="randomZeroNegativeRow" class="switch-row"><span><strong>负向条件零化</strong><small>将编码后的负向条件置零，保留负面词文本。</small></span><input id="zero_negative" type="checkbox"></label></div>
               <section id="randomDualSection" hidden><div class="parameter-grid compact-parameter-grid">
-                <label class="field"><span>采样器切换步数</span><input id="random_dual_switch_step" type="number" min="0" max="149" step="1" value="15"></label>
-                <label class="field"><span>潜空间放大倍数</span><input id="random_dual_scale" type="number" min="1" max="2" step="0.05" value="1"></label>
-                <label class="field"><span>潜空间缩放方法</span><select id="random_dual_model_format"><option value="Wan 2.1">Wan 2.1</option></select></label>
+                <label class="field"><span>第二轮起始步</span><input id="random_dual_switch_step" type="number" min="0" max="149" step="1" value="15"></label>
+                <label class="field"><span>第二轮前放大倍率</span><input id="random_dual_scale" type="number" min="1" max="2" step="0.05" value="1"></label>
+                <label class="field"><span>潜空间格式</span><select id="random_dual_model_format"><option value="Wan 2.1">Wan 2.1</option></select></label>
                 <label class="field"><span>CFG 2</span><input id="random_dual_second_cfg" type="number" min="0" max="30" step="0.1" value="8"></label>
                 <label class="field"><span>采样器 2</span><select id="random_dual_second_sampler_name"><option value="euler">euler</option></select></label>
                 <label class="field"><span>调度器 2</span><select id="random_dual_second_scheduler"><option value="simple">simple</option></select></label>
                 <label hidden><select id="random_dual_upscale_method"><option value="sesqui">sesqui</option><option value="bilinear">bilinear</option><option value="bislerp">bislerp</option><option value="nearest-exact">nearest-exact</option><option value="area">area</option><option value="bicubic">bicubic</option></select></label>
               </div></section>
-            </div></section>
+            </div><p id="dualSamplingHint" class="field-hint" hidden aria-live="polite"></p></section>
             <div class="sampling-stage sampling-stage-pixel_hires">
               <label class="switch-row"><span><strong>像素高清</strong><small>像素模型放大</small></span><input id="pixel_hires_enabled" type="checkbox"></label>
               <div id="pixelHiresFields" class="repair-parameters parameter-grid">
@@ -169,7 +176,7 @@
               <div id="latentUpscaleFields" class="repair-parameters" hidden>
                 <label class="field"><span>放大倍数</span><input id="latent_upscale_scale" type="number" min="1" max="2" step="0.01"></label>
                 <label class="field"><span>缩放方法</span><select id="latent_upscale_method"><option value="sesqui">Sesqui</option><option value="bilinear">bilinear</option><option value="bislerp">bislerp</option><option value="nearest-exact">nearest-exact</option><option value="area">area</option><option value="bicubic">bicubic</option></select></label>
-                <label id="latentModelFormatField" class="field"><span>模型格式</span><select id="latent_model_format"><option value="Wan 2.1">Wan 2.1</option></select></label>
+                <label id="latentModelFormatField" class="field"><span>潜空间格式</span><select id="latent_model_format" title="匹配潜变量格式，不会切换底图模型"><option value="Wan 2.1">Wan 2.1</option></select></label>
                 <label class="field"><span>步数</span><input id="latent_sampler_steps" type="number" min="1" max="150" step="1"></label>
                 <label class="field"><span>CFG</span><input id="latent_sampler_cfg" type="number" min="0.1" max="30" step="0.1"></label>
                 <label class="field"><span>采样器</span><select id="latent_sampler_name"><option value="">读取中...</option></select></label>
@@ -208,7 +215,7 @@
                 <label class="field"><span>采样遮罩模糊强度</span><input id="face_sampling_mask_blur_strength" type="number" min="0" step="0.01"></label>
                 <label class="field"><span>正向提示词</span><textarea id="face_positive_prompt" rows="2"></textarea></label>
                 <label class="field"><span>负向提示词</span><textarea id="face_negative_prompt" rows="2"></textarea></label>
-                <label class="field"><span>排除区域</span><textarea id="face_exclusions" rows="2"></textarea></label>
+                <label class="field"><span>从脸部提示词中剔除</span><textarea id="face_exclusions" rows="2"></textarea></label>
                 <div class="switch-list sampling-switch-list">
                   <label class="switch-row"><span>启用预放大</span><input id="face_enable_pre_upscale" type="checkbox"></label>
                   <label class="switch-row"><span>替换正向提示词</span><input id="face_replace_positive_prompt" type="checkbox"></label>
@@ -273,6 +280,7 @@
               <details class="pipeline-help">
                 <summary>流程说明</summary>
                 <p class="field-hint">潜空间放大包含采样；与整图后采样同时开启会重绘两次。两者均继承底图最后一段的模型、LoRA 和提示词。</p>
+                <p id="pipelineUpgradeHint" class="field-hint" role="status" hidden>保留原工作流参数和执行规则；保存或生成不会自动升级。</p>
               </details>
             </div>
           </div>
@@ -285,16 +293,38 @@
       <div class="history-header">
         <div class="history-title"><span class="kicker">GENERATED ARCHIVE</span><h1 id="artworkHistoryTitle" tabindex="-1">作品库</h1><p id="historyCount">0 张图片</p></div>
         <div class="history-heading-actions">
-
-        <div class="pager"><button id="prevPage" class="icon-button" type="button" title="上一页" aria-label="上一页">‹</button><span id="pageLabel">1 / 1</span><button id="nextPage" class="icon-button" type="button" title="下一页" aria-label="下一页">›</button></div>
+        <div class="pager"><button id="prevPage" class="icon-button round-icon-button" type="button" title="上一页" aria-label="上一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m15 6-6 6 6 6"/></svg></button><span id="pageLabel">1 / 1</span><button id="nextPage" class="icon-button round-icon-button" type="button" title="下一页" aria-label="下一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m9 6 6 6-6 6"/></svg></button></div>
         </div>
       </div>
-      <div id="artworkToolbar" class="history-home-toolbar artwork-toolbar"></div>
+      <div class="history-browse-toolbar">
+        <div id="artworkToolbar" class="history-home-toolbar artwork-toolbar"></div>
+        <button id="openHistoryFilters" class="history-filter-trigger" type="button" aria-label="筛选作品" title="筛选作品" aria-haspopup="dialog" aria-controls="historyFilterDrawer" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></button>
+      </div>
       <div id="gallery" class="gallery" aria-live="polite"></div>
       <div id="emptyState" class="empty-state"><span class="empty-mark">A</span><strong>等待第一张作品</strong><small>完成生成后会出现在这里</small></div>
       </div>
     </section>
   </main>
+
+  <aside id="historyFilterDrawer" class="history-filter-drawer" role="dialog" aria-modal="false" aria-labelledby="historyFilterTitle" aria-describedby="historyFilterDescription" aria-hidden="true" hidden inert>
+    <header class="history-filter-header">
+      <div><h2 id="historyFilterTitle">筛选作品</h2><p id="historyFilterDescription">根据生成记录筛选</p></div>
+      <button id="historyFilterClear" class="history-filter-text-button" type="button">清除</button>
+      <button id="closeHistoryFilters" class="history-filter-close" type="button" aria-label="关闭作品筛选">×</button>
+    </header>
+    <div class="history-filter-search-area">
+      <label class="history-filter-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input id="historyFilterSearch" type="search" maxlength="500" autocomplete="off" placeholder="搜索提示词或名称" aria-label="搜索作品的生成提示词或名称"></label>
+      <div id="historyFilterConditions" class="history-filter-conditions" aria-label="已选筛选条件" hidden></div>
+      <p id="historyFilterFeedback" class="history-filter-feedback" role="status" hidden></p>
+    </div>
+    <div id="historyFilterBody" class="history-filter-body">
+      <p class="history-filter-help">同池满足任一，不同池同时满足。排除命中时优先。</p>
+      <div id="historyFilterCatalogStatus" class="history-filter-catalog-status" role="status"></div>
+      <button id="historyFilterCatalogRetry" class="history-filter-text-button" type="button" hidden>重试加载分组</button>
+      <div id="historyFilterPools" class="history-filter-pools"></div>
+    </div>
+    <footer class="history-filter-footer"><p id="historyFilterResult" role="status" aria-live="polite">正在读取作品…</p><button id="historyFilterRetry" class="history-filter-text-button" type="button" hidden>重试</button><button id="historyFilterShowResults" class="button primary compact" type="button">查看结果</button></footer>
+  </aside>
 
   <div class="command-deck glass" role="group" aria-label="生成控制">
     <label class="quantity-field"><span>批次数量</span><input id="count" form="settingsForm" type="number" min="1" max="1000" step="1" required></label>
@@ -340,6 +370,7 @@
       <div class="pool-content-actions" role="group" aria-label="管理词条">
       <button id="importCustom" class="button ghost compact" type="button">批量导入</button>
       <button id="addCustom" class="button primary compact" type="button"><span aria-hidden="true">+</span> 自定义</button>
+      <button id="reviewPoolCharacters" class="button ghost compact" type="button" hidden>待确认角色</button>
       </div>
     </div>
     <div class="pool-browser">
@@ -352,7 +383,7 @@
     </div>
     <footer class="drawer-footer">
       <span id="poolSelectionLabel">已选择 0 项</span>
-      <div class="pager"><button id="poolPrev" class="icon-button dark" type="button" title="上一页" aria-label="上一页">‹</button><span id="poolPageLabel">1 / 1</span><button id="poolNext" class="icon-button dark" type="button" title="下一页" aria-label="下一页">›</button></div>
+      <div class="pager"><button id="poolPrev" class="icon-button dark round-icon-button" type="button" title="上一页" aria-label="上一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m15 6-6 6 6 6"/></svg></button><span id="poolPageLabel">1 / 1</span><button id="poolNext" class="icon-button dark round-icon-button" type="button" title="下一页" aria-label="下一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m9 6 6 6-6 6"/></svg></button></div>
       <button id="confirmPool" class="button primary" type="button">完成</button>
     </footer>
   </aside>
@@ -364,7 +395,7 @@
       <p class="field-hint">这里只读取 ComfyUI 的共享模型文件与分类。LoRA 标签、备注、收藏与人物绑定在本项目中独立保存；无法识别或不支持的资源不会用于生成。</p>
       <div class="ownership-actions"><button id="refreshResourceClassification" class="button ghost compact" type="button">刷新分类</button></div>
       <div class="ownership-toolbar">
-        <label class="field"><span>资源类型</span><select id="ownershipKind"><option value="models">主模型</option><option value="loras">LoRA</option></select></label>
+        <label class="field"><span>资源类型</span><select id="ownershipKind"><option value="models">主模型 / 修复模型</option><option value="clips">文本编码器 / CLIP</option><option value="vaes">VAE</option><option value="upscale_models">放大模型</option><option value="loras">LoRA</option></select></label>
         <label class="field"><span>搜索</span><input id="ownershipSearch" type="search" placeholder="按文件名或文件夹搜索"></label>
       </div>
       <p id="ownershipSummary" class="ownership-summary" aria-live="polite">读取中…</p>
@@ -393,8 +424,18 @@
       </div>
       <fieldset class="field group-fieldset"><legend>自定义分组（可多选）</legend><div id="customGroupChecks" class="favorite-groups"></div></fieldset>
       <label class="field"><span>提示词</span><textarea id="customPrompt" rows="6" maxlength="20000" required></textarea></label>
+      <section id="customCharacterClassification" aria-label="角色标签分类" hidden></section>
       <div class="dialog-actions"><button id="deleteCustom" class="button danger" type="button" hidden>删除</button><span></span><button id="cancelCustom" class="button ghost" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
     </form>
+  </dialog>
+
+  <dialog id="characterReviewDialog" class="compact-dialog character-review-dialog" aria-labelledby="characterReviewTitle">
+    <div class="character-review-content">
+      <div class="dialog-heading"><h2 id="characterReviewTitle">待确认角色</h2><button type="button" class="icon-button dark" data-close-character-review aria-label="关闭待确认角色">×</button></div>
+      <p id="characterReviewHint" class="field-hint" role="status"></p>
+      <div id="characterReviewList" class="character-review-list"></div>
+      <div class="dialog-actions"><span></span><span></span><button type="button" class="button primary" data-close-character-review>完成</button></div>
+    </div>
   </dialog>
 
   <dialog id="customGroupDialog" class="compact-dialog">
@@ -538,7 +579,7 @@
           <div id="lmDetailBody" class="lm-detail-body"></div>
         </aside>
       </div>
-      <footer class="lm-footer"><span id="lmFooterHint">点击卡片查看详情 · Ctrl K 搜索</span><div class="lm-pagination"><button id="lmPrev" class="icon-button lm-icon" type="button" aria-label="上一页">‹</button><span id="lmPage">1 / 1</span><button id="lmNext" class="icon-button lm-icon" type="button" aria-label="下一页">›</button></div><button id="lmDone" class="button ghost compact" type="button">完成</button></footer>
+      <footer class="lm-footer"><span id="lmFooterHint">点击卡片查看详情 · Ctrl K 搜索</span><div class="lm-pagination"><button id="lmPrev" class="icon-button round-icon-button" type="button" aria-label="上一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m15 6-6 6 6 6"/></svg></button><span id="lmPage">1 / 1</span><button id="lmNext" class="icon-button round-icon-button" type="button" aria-label="下一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m9 6 6 6-6 6"/></svg></button></div><button id="lmDone" class="button ghost compact" type="button">完成</button></footer>
     </section>
   </dialog>
   <dialog id="lmGroupDialog" class="compact-dialog lm-editor-dialog" aria-labelledby="lmGroupTitle"><form id="lmGroupForm"><div class="dialog-heading"><div><h2 id="lmGroupTitle">新建分组</h2></div><button class="lm-icon" type="button" data-lm-close="lmGroupDialog" aria-label="关闭分组编辑">×</button></div><label class="field"><span>名称</span><input id="lmGroupName" maxlength="100" required placeholder="例如：喜欢的画风"></label><label class="field"><span>所在位置</span><select id="lmGroupParent"><option value="">顶层</option></select></label><p id="lmGroupError" class="field-error" role="alert" hidden></p><div class="lm-editor-actions"><button id="lmGroupDelete" class="lm-text-button danger" type="button" hidden>删除分组</button><span></span><button class="button ghost" type="button" data-lm-close="lmGroupDialog">取消</button><button class="button primary" type="submit">保存</button></div><div id="lmGroupDeleteConfirm" class="lm-inline-confirm" hidden><p>删除此分组及子分组？LoRA 的星标、文件和人物绑定都会保留。</p><button id="lmGroupDeleteCommit" class="button danger compact" type="button">删除分组</button><button id="lmGroupDeleteCancel" class="button ghost compact" type="button">保留</button></div></form></dialog>
@@ -591,21 +632,10 @@
 
   <dialog id="detailDialog" class="detail-dialog history-host" aria-label="作品">
     <header class="history-host-header">
-      <button id="historyDetailBack" class="history-back" type="button" hidden><span aria-hidden="true">‹</span> 返回作品</button>
       <h2 id="historyDetailTitle" tabindex="-1">作品详情</h2>
       <button id="closeDialog" class="dialog-close" type="button" title="关闭" aria-label="关闭">×</button>
     </header>
     <div class="history-host-body">
-    <section id="historyDeletePanel" class="history-internal-panel" aria-labelledby="historyDeleteTitle" hidden>
-      <form id="historyDeleteForm">
-        <h2 id="historyDeleteTitle">删除作品</h2>
-        <p id="historyDeleteSummary"></p>
-        <label class="field"><span>删除方式</span><select id="historyDeleteMode"><option value="record">只删除记录，保留原文件</option><option value="file">永久删除原文件及记录</option></select></label>
-        <p id="historyDeleteWarning" class="field-hint"></p>
-        <p id="historyDeleteResults" class="field-error history-results" role="status"></p>
-        <div class="history-panel-actions"><button type="button" class="button ghost" data-history-back>取消</button><button id="historyDeleteSubmit" type="submit" class="button danger">只删除记录</button></div>
-      </form>
-    </section>
     <div id="historyDetailView" class="detail-layout">
       <figure><img id="detailImage" tabindex="0" role="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="imagePreviewDialog" aria-label="展开全尺寸图片预览" title="点击查看全尺寸图片" alt="生成结果"></figure>
       <div class="detail-copy">
@@ -631,7 +661,7 @@
         <div id="detailDrawerHome" class="detail-drawer-home">
         <section id="replayDrawer" class="regeneration-drawer replay-drawer" aria-labelledby="replayDrawerTitle" hidden>
           <header><div><span class="kicker">REPLAY</span><h3 id="replayDrawerTitle">按原种子重跑</h3></div><button id="closeReplayDrawer" class="icon-button dark" type="button" title="收起" aria-label="收起原种子重跑选项">×</button></header>
-          <p>冻结历史最终提示词，沿用原设置与双种子。资源文件内容被覆盖时无法识别，不承诺像素级一致。</p>
+          <p>冻结历史最终提示词与双种子。缺失模型会使用兼容替代并明确列出；模型变更后不属于严格复现。</p>
           <div id="replaySeedSummary" class="regeneration-seeds"></div>
           <div id="replayStatus" class="regeneration-status" role="status"></div>
           <button id="confirmReplay" class="button primary" type="button" disabled>按原种子重跑</button>
@@ -641,8 +671,8 @@
           <div id="variantStatus" class="regeneration-status regeneration-status-compact" role="status"></div>
           <fieldset id="variantModes" class="regeneration-modes">
             <legend class="sr-only">选择变体方式</legend>
-            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="prompt_variant" checked><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>同提示词变体</strong><small>提示词不变，只换图像种子</small></span><span class="regeneration-mode-badge">推荐</span></label>
-            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="content_redraw"><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>选择内容重抽</strong><small>只改变勾选的内容维度</small></span></label>
+            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="prompt_variant" checked><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>同提示词变体</strong><small>提示词不变，换图像种子；缺失模型使用兼容替代</small></span><span class="regeneration-mode-badge">推荐</span></label>
+            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="content_redraw"><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>选择内容重抽</strong><small>重抽勾选内容，缺失模型使用兼容替代</small></span></label>
             <div id="redrawSections" class="redraw-sections" hidden>
               <label><input type="checkbox" value="character">角色</label>
               <label><input type="checkbox" value="clothing">服装</label>
@@ -650,7 +680,7 @@
               <label><input type="checkbox" value="background">背景</label>
               <label><input type="checkbox" value="expression">表情</label>
             </div>
-            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="settings_reroll"><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>按此配置再抽</strong><small>候选池和设置不变，全部重新随机</small></span></label>
+            <label class="regeneration-mode"><input type="radio" name="regenerationMode" value="settings_reroll"><span class="regeneration-mode-indicator" aria-hidden="true"></span><span class="regeneration-mode-copy"><strong>按此配置再抽</strong><small>沿用配置重新随机，缺失模型使用兼容替代</small></span></label>
           </fieldset>
           <div class="regeneration-footer"><label class="regeneration-count"><span>生成数量</span><input id="variantDrawerCount" type="number" min="1" max="100" value="4"></label><button id="confirmVariant" class="button primary" type="button" disabled>生成同提示词变体</button></div>
         </section>
@@ -669,11 +699,35 @@
     </div>
   </dialog>
 
+  <dialog id="historyDeleteDialog" class="compact-dialog history-delete-dialog" aria-labelledby="historyDeleteTitle" aria-describedby="historyDeleteSummary">
+    <div class="history-delete-content">
+      <header class="history-delete-heading">
+        <h2 id="historyDeleteTitle">删除作品</h2>
+        <button id="closeHistoryDelete" class="icon-button dark" type="button" title="关闭" aria-label="关闭删除作品弹窗">×</button>
+      </header>
+      <p id="historyDeleteSummary" class="history-delete-summary"></p>
+      <div class="history-delete-choices">
+        <button id="historyDeleteRecord" class="history-delete-choice" type="button" data-history-delete-mode="record">
+          <strong>只删除记录</strong>
+          <small>移除作品记录、缩略图和收藏关联，保留原图文件。</small>
+        </button>
+        <button id="historyDeleteFile" class="history-delete-choice" type="button" data-history-delete-mode="file">
+          <strong>同时删除原图</strong>
+          <small>移除作品记录、缩略图和收藏关联，并永久删除原图，不进入回收站。</small>
+        </button>
+      </div>
+      <p id="historyDeleteResults" class="history-results" role="status" aria-live="polite" tabindex="-1"></p>
+      <footer class="history-delete-actions">
+        <button id="cancelHistoryDelete" class="button ghost" type="button" autofocus>取消</button>
+      </footer>
+    </div>
+  </dialog>
+
   <dialog id="imagePreviewDialog" class="image-preview-dialog" aria-labelledby="imagePreviewTitle">
     <div id="imagePreviewVeil" class="image-preview-veil" aria-hidden="true"></div>
-    <button id="closeImagePreview" class="dialog-close" type="button" title="关闭图片预览" aria-label="关闭图片预览">×</button>
-    <button id="imagePreviewPrevious" class="image-preview-nav previous" type="button" title="上一张图片" aria-label="上一张图片">‹</button>
-    <button id="imagePreviewNext" class="image-preview-nav next" type="button" title="下一张图片" aria-label="下一张图片">›</button>
+    <button id="closeImagePreview" class="dialog-close round-icon-button" type="button" title="关闭图片预览" aria-label="关闭图片预览"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    <button id="imagePreviewPrevious" class="image-preview-nav previous round-icon-button" type="button" title="上一张图片" aria-label="上一张图片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m15 6-6 6 6 6"/></svg></button>
+    <button id="imagePreviewNext" class="image-preview-nav next round-icon-button" type="button" title="下一张图片" aria-label="下一张图片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m9 6 6 6-6 6"/></svg></button>
     <div class="image-preview-stage" id="imagePreviewStage">
       <h2 id="imagePreviewTitle" class="sr-only">全尺寸图片预览</h2>
       <img id="imagePreviewImage" class="image-preview-image" alt="全尺寸生成结果" draggable="false" tabindex="0" aria-describedby="imagePreviewHelp" hidden>
@@ -685,18 +739,22 @@
 
   <div id="poolRefreshNotice" class="queue-panel glass open" style="z-index:80" role="status" hidden><p id="poolRefreshMessage"></p><button id="poolRefreshRetry" class="button ghost compact" type="button">重新刷新列表</button></div>
   <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/request-state.js?v=20261107-mutation-context" defer></script>
   <script src="/static/motion.js?v=20261024-motion" defer></script>
-  <script src="/static/workbench-parameters.js?v=20261024-workflow-parameters" defer></script>
-
+  <script src="/static/workbench-parameters.js?v=20261108-experience-v5" defer></script>
+  <script src="/static/artwork-thumbnails.js?v=20261114-thumbnail-recovery" defer></script>
   <script src="/static/shared-favorites.js?v=20261030-source-lifecycle" defer></script>
-
-  <script src="/static/history-detail.js?v=20261029-artwork-favorites" defer></script>
-  <script src="/static/artwork-favorites.js?v=20261029-favorites-motion" defer></script>
+  <script src="/static/history-detail.js?v=20261115-filter-window" defer></script>
+  <script src="/static/history-filter-window.js?v=20261115-filter-window" defer></script>
+  <script src="/static/history-filters.js?v=20261115-filter-window" defer></script>
+  <script src="/static/artwork-favorites.js?v=20261114-thumbnail-recovery" defer></script>
   <script src="/static/detail-actions.js?v=20261027-history-polish" defer></script>
-  <script src="/static/lora-manager.js?v=20261107-settle" defer></script>
+  <script src="/static/lora-manager.js?v=20261112-preview-retry" defer></script>
   <script src="/static/pool-browser.js?v=20261107-binding" defer></script>
-
-  <script src="/static/random-workbench.js?v=1" defer></script>
-  <script src="/static/app.js?v=20261107-pool-entry" defer></script>
+  <script src="/static/random-workbench.js?v=20261115" defer></script>
+  <script src="/static/resource-resolution.js?v=20261110-resource-resolution" defer></script>
+  <script src="/static/character-classification.js?v=20261111-local-classification" defer></script>
+  <script src="/static/style-preset-manager.js?v=20261115-presets-favorites" defer></script>
+  <script src="/static/app.js?v=20261115-filter-window" defer></script>
 </body>
 </html>

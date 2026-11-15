@@ -14,12 +14,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
-from aiohttp import web
+from aiohttp import BodyPartReader, MultipartReader, web
+from aiohttp.http_exceptions import BadHttpMessage
 from aiohttp.web_protocol import RequestPayloadError
 
 from .comfy import ComfyClient, ComfyError
 from .artwork_deletion import ArtworkDeletionService
-from .catalog import CatalogError, PromptCatalog, SECTIONS, resolve_history_selection
+from .catalog import CatalogError, CharacterReviewRequired, PromptCatalog, SECTIONS, resolve_history_selection
 from .persistence import StorageReadOnlyError
 from .custom_prompts import CustomPromptStore
 from .favorites import FavoriteSavePendingError, FavoritesService, FavoritesStore, favorite_key
@@ -27,8 +28,10 @@ from .pool_lifecycle import PoolLifecycleError, PoolLifecycleService
 from .image_location import ImageLocationError, reveal_image
 from .graph_utils import active_lora_pipelines
 from .history import ArtworkCollectionConflict, HistoryStore
+from .history_filters import HistoryFilterError, HistoryFilterService, parse_content_filters, validate_query
 from .http_security import (
     SQLITE_MAX_INTEGER,
+    LimitedMultipartStream,
     parse_authority,
     parse_origin,
     strict_json_loads,
@@ -39,6 +42,7 @@ from .lora_binding import validate_frozen_resources
 from .prompt_rules import PromptRuleStore
 from .runner import BatchConflict, BatchManager, validate_seeds
 from .style_presets import StylePresetStore
+from .style_preset_covers import MAX_IMAGE_BYTES, StylePresetCoverStore
 from .thumbnails import ThumbnailStore
 from .workflow import WorkflowError, WorkflowTemplates, normalize_lora_path, upgrade_pipeline_settings, validate_loras, validate_settings
 from .model_profiles import (
@@ -47,6 +51,9 @@ from .model_profiles import (
     normalize_model_profile,
     profile_public,
 )
+from .resource_service import ResourceService
+from .resource_usage import ResourceUsageStore
+from .resource_resolution import merge_resource_replacements, resources_changed
 from .resource_config import configure_resources
 from .resource_classification import technical_resource_metadata
 
@@ -57,6 +64,8 @@ logger = logging.getLogger(__name__)
 
 # aiohttp 4 将移除字符串 app key;统一使用 AppKey(消除弃用告警)。
 COMFY_KEY: web.AppKey[Any] = web.AppKey("comfy", object)
+HISTORY_FILTERS_KEY: web.AppKey[Any] = web.AppKey("history_filters", object)
+STYLE_PRESET_COVERS_KEY: web.AppKey[Any] = web.AppKey("style_preset_covers", object)
 HISTORY_KEY: web.AppKey[Any] = web.AppKey("history", object)
 MANAGER_KEY: web.AppKey[Any] = web.AppKey("manager", object)
 CATALOG_KEY: web.AppKey[Any] = web.AppKey("catalog", object)
@@ -67,6 +76,7 @@ LORA_TRIGGER_OVERRIDES_KEY: web.AppKey[Any] = web.AppKey("lora_trigger_overrides
 LORA_LIBRARY_KEY: web.AppKey[Any] = web.AppKey("lora_library", object)
 PROMPT_RULES_KEY: web.AppKey[Any] = web.AppKey("prompt_rules", object)
 THUMBNAILS_KEY: web.AppKey[Any] = web.AppKey("thumbnails", object)
+RESOURCE_USAGES_KEY: web.AppKey[Any] = web.AppKey("resource_usages", object)
 ARTWORK_DELETION_KEY: web.AppKey[Any] = web.AppKey("artwork_deletion", object)
 ALLOWED_HOSTNAMES_KEY: web.AppKey[frozenset[str]] = web.AppKey(
     "allowed_hostnames", frozenset
@@ -229,6 +239,10 @@ async def error_middleware(request: web.Request, handler: Any) -> web.StreamResp
                                       "recovery_required": False}, status=503)
     except ArtworkCollectionConflict as error:
         response = web.json_response(error.payload, status=409)
+    except HistoryFilterError as error:
+        response = web.json_response(error.payload, status=error.status)
+    except CharacterReviewRequired as error:
+        response = web.json_response({"error": str(error), "code": "character_review_required", "characters": error.pending}, status=400)
     except WorkflowError as error:
         response = web.json_response({"error": str(error)}, status=400)
     except CatalogError as error:
@@ -349,7 +363,8 @@ def create_app(
     thumbnails = ThumbnailStore(storage / "history-thumbnails", client, history=history)
     catalog = PromptCatalog(root, anima_tools_dir)
     custom_prompts = CustomPromptStore(
-        custom_prompts_path or storage / "custom_prompts.json", catalog
+        custom_prompts_path or storage / "custom_prompts.json", catalog,
+        migration_journal_path=storage / "favorites-lifecycle-anima.json",
     )
     favorite_store = FavoritesStore(storage / "favorites.json")
     favorites = FavoritesService(favorite_store, catalog)
@@ -366,12 +381,16 @@ def create_app(
     style_presets = StylePresetStore(
         style_presets_path or storage / "style_presets.json", prompt_rules
     )
+    style_preset_covers = StylePresetCoverStore(storage / "style-preset-covers", style_presets)
     pool_lifecycle = PoolLifecycleService(storage, custom_prompts, profile_favorites)
+    history_filters = HistoryFilterService(history, catalog, pool_lifecycle)
     templates = WorkflowTemplates.load(root / "templates")
     startup_defaults = configure_resources(templates, resource_paths)
     manager = BatchManager(templates, history, client, catalog, prompt_rules)
     manager.lora_library = lora_library
     artwork_deletion = ArtworkDeletionService(history, thumbnails)
+    resource_usages = ResourceUsageStore(storage / "resource_usage.json")
+    resource_service = ResourceService(client, resource_usages)
 
     startup_warnings = [
         *catalog.load_warnings,
@@ -382,12 +401,15 @@ def create_app(
         *lora_library_store.load_warnings,
         *prompt_rules.load_warnings,
         *favorite_store.load_warnings,
+        *resource_usages.load_warnings,
     ]
 
-    app = web.Application(middlewares=[error_middleware, local_only_middleware], client_max_size=16 * 1024 * 1024)
+    app = web.Application(middlewares=[error_middleware, local_only_middleware], client_max_size=MAX_IMAGE_BYTES + 1024 * 1024)
     app[ALLOWED_HOSTNAMES_KEY] = frozenset(LOCAL_HOSTNAMES)
     app[COMFY_KEY] = client
     app[HISTORY_KEY] = history
+    app[HISTORY_FILTERS_KEY] = history_filters
+    app[STYLE_PRESET_COVERS_KEY] = style_preset_covers
     app[MANAGER_KEY] = manager
     app[CATALOG_KEY] = catalog
     app[CUSTOM_PROMPTS_KEY] = custom_prompts
@@ -398,6 +420,7 @@ def create_app(
     app[PROMPT_RULES_KEY] = prompt_rules
     app[THUMBNAILS_KEY] = thumbnails
     app[ARTWORK_DELETION_KEY] = artwork_deletion
+    app[RESOURCE_USAGES_KEY] = resource_usages
     cleanup_task: asyncio.Task[None] | None = None
 
     async def favorite_keys(section: str, collection: str = "") -> set[str] | None:
@@ -437,7 +460,7 @@ def create_app(
                 },
                 "storage_status": {
                     store.store_name: {**store.storage_status(), "path": str(store.path)}
-                    for store in (history, custom_prompts, style_presets, lora_trigger_overrides, lora_library_store, prompt_rules, favorite_store)
+                    for store in (history, custom_prompts, style_presets, lora_trigger_overrides, lora_library_store, prompt_rules, favorite_store, resource_usages)
                 },
                 "warnings": startup_warnings,
             }
@@ -831,10 +854,8 @@ def create_app(
             )
         except ValueError as error:
             raise WorkflowError(str(error)) from error
-        classified = await client.resource_classifications(
-            "models", refresh=_query_bool(request, "refresh")
-        )
-        inventory = dict(await client.resource_inventory())
+        inventory = await resource_service.inventory(refresh=_query_bool(request, "refresh"))
+        classified = {"items": inventory["model_items"], "source": inventory["source"], "manager_url": inventory["manager_url"]}
         inventory.setdefault("clips", [])
         inventory.setdefault("vaes", [])
         inventory.setdefault("seedvr2_models", [])
@@ -842,10 +863,11 @@ def create_app(
         inventory.setdefault("nodes", {})
         inventory.setdefault("plugins", {})
         model_items = [technical_resource_metadata(item) for item in classified["items"]]
-        model_names = [item["name"] for item in model_items]
+        model_names = list(inventory.get("models", []))
         full_inventory = dict(inventory)
         full_inventory["models"] = model_names
-        model_ownership = {item["name"]: item["model_profile"] for item in model_items}
+        model_ownership = {item["name"]: ("anima" if "anima.model" in item.get("roles", []) else None)
+                           for item in inventory["resource_catalog"] if item["kind"] == "models"}
         inventory["model_items"] = model_items
         inventory["source"] = classified["source"]
         inventory["manager_url"] = classified["manager_url"]
@@ -935,19 +957,157 @@ def create_app(
 
 
 
+    def preset_public(item: dict[str, Any]) -> dict[str, Any]:
+        return {**item, "cover_url": style_preset_covers.url(item.get("cover_id"))}
+
+    def presets_public(payload: dict[str, Any]) -> dict[str, Any]:
+        return {**payload, "items": [preset_public(item) for item in payload.get("items", [])]}
+
+    async def resolve_style_preset(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        if set(body) - {"settings", "model_profile"} or not isinstance(body.get("settings"), dict):
+            raise WorkflowError("应用预设需要 settings 对象及可选的 model_profile")
+        return web.json_response(style_presets.resolve(
+            request.match_info["preset_id"], body["settings"], body.get("model_profile")
+        ))
+
+    async def list_style_preset_groups(request: web.Request) -> web.Response:
+        payload = style_presets.list(request.query.get("model_profile"))
+        return web.json_response({"groups": payload["groups"], "model_profile": payload["model_profile"]})
+
+    async def create_style_preset_group(request: web.Request) -> web.Response:
+        return web.json_response(await style_presets.create_group(await _json_body(request)), status=201)
+
+    async def update_style_preset_group(request: web.Request) -> web.Response:
+        return web.json_response(await style_presets.update_group(
+            request.match_info["group_id"], await _json_body(request)
+        ))
+
+    async def delete_style_preset_group(request: web.Request) -> web.Response:
+        if not await style_presets.delete_group(request.match_info["group_id"], request.query.get("model_profile")):
+            raise KeyError(request.match_info["group_id"])
+        return web.json_response({"deleted": True})
+
+    async def batch_style_presets(request: web.Request) -> web.Response:
+        result = await style_preset_covers.mutate(style_presets.batch, await _json_body(request))
+        return web.json_response(presets_public(result))
+
+    async def upload_style_preset_cover(request: web.Request) -> web.Response:
+        style_presets.ensure_writable()
+        body, _, crop = await read_uploaded_fields(request, allow_crop=True)
+        return web.json_response(await style_preset_covers.add(body, crop), status=201)
+
+    async def style_preset_cover(request: web.Request) -> web.Response:
+        asset_id = request.match_info["asset_id"]
+        body = await style_preset_covers.read(asset_id)
+        return web.Response(body=body, content_type="image/webp", headers={
+            "Cache-Control": "private, max-age=31536000, immutable", "ETag": f'"{asset_id}"',
+            "X-Content-Type-Options": "nosniff",
+        })
+
+    async def analyze_custom_character(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        reanalyze = body.pop("reanalyze", False)
+        previous = body.pop("previous", None)
+        if type(reanalyze) is not bool:
+            raise CatalogError("reanalyze 必须是布尔值")
+        if previous is not None and not isinstance(previous, dict):
+            raise CatalogError("previous 必须是角色分类对象")
+        # Classification reads local dictionaries only. It neither mutates the
+        # pool nor needs the source store to be writable or ComfyUI to be online.
+        return web.json_response(catalog.analyze_character(body, previous=previous, reanalyze=reanalyze))
+
+    async def history_filter_catalog(_: web.Request) -> web.Response:
+        snapshot = await history_filters.snapshot()
+        return web.json_response({"sections": snapshot.sections, "group_revision": snapshot.revision})
+
+    async def history_filter_options(request: web.Request) -> web.Response:
+        try:
+            page, limit = int(request.query.get("page", "1")), int(request.query.get("limit", "40"))
+        except ValueError as error:
+            raise WorkflowError("候选分页参数无效") from error
+        return web.json_response(await history_filters.options(
+            section=request.query.get("section", ""), kind=request.query.get("group_kind", ""),
+            value=request.query.get("group_id", ""), query=request.query.get("q", ""),
+            page=page, limit=limit, revision=request.query.get("group_revision"),
+        ))
+
+    async def delete_history_batch(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        if set(body) != {"image_ids", "mode"} or request.query:
+            raise WorkflowError("批量删除只接受 image_ids 和 mode，不接受文件路径")
+        image_ids = history.artwork_image_ids(body["image_ids"])
+        payload = await delete_artwork(request, image_ids, body["mode"], batch=True)
+        return web.json_response(payload)
+
+    async def normalize_settings(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        if set(body) != {"settings"} or not isinstance(body["settings"], dict):
+            raise WorkflowError("请求必须包含 settings 对象")
+        # This endpoint is deliberately offline and read-only. In particular,
+        # it must not hydrate triggers, check resources or modify a snapshot.
+        return web.json_response({"settings": validate_settings(body["settings"])})
+
+    async def read_uploaded_fields(request: web.Request, *, allow_crop: bool = False) -> tuple[bytes, str, Any]:
+        if request.content_type != "multipart/form-data":
+            raise WorkflowError("请以 multipart image 字段上传图片")
+        if request.content_length is not None and request.content_length > request.client_max_size:
+            raise web.HTTPRequestEntityTooLarge(max_size=request.client_max_size, actual_size=request.content_length)
+        found = None
+        crop = None
+        fields = set()
+        try:
+            stream = LimitedMultipartStream(request.content, request.client_max_size)
+            reader = MultipartReader(request.headers, stream)
+            async for part in reader:
+                allowed = {"image", "crop"} if allow_crop else {"image"}
+                if not isinstance(part, BodyPartReader) or part.name not in allowed or part.name in fields:
+                    raise WorkflowError("上传请求字段无效或重复")
+                fields.add(part.name)
+                data = bytearray()
+                limit = MAX_IMAGE_BYTES if part.name == "image" else 4096
+                while chunk := await part.read_chunk():
+                    if len(data) + len(chunk) > limit:
+                        raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=len(data) + len(chunk))
+                    data.extend(chunk)
+                if part.name == "image":
+                    found = (bytes(data), part.filename or "image")
+                else:
+                    try:
+                        crop = strict_json_loads(bytes(data).decode("utf-8"))
+                    except (UnicodeError, ValueError) as error:
+                        raise WorkflowError("封面裁切 JSON 无效") from error
+            # MultipartReader may stop before the optional MIME epilogue.
+            # Account for that tail too, including bodies without a length.
+            while await stream.read(64 * 1024):
+                pass
+        except WorkflowError:
+            raise
+        except (ValueError, AssertionError, EOFError, RuntimeError, BadHttpMessage) as error:
+            raise WorkflowError("上传 multipart 数据无效") from error
+        if found is None:
+            raise WorkflowError("缺少 image 文件")
+        return *found, crop
+
     async def list_style_presets(request: web.Request) -> web.Response:
-        return web.json_response(style_presets.list(request.query.get("model_profile")))
+        return web.json_response(presets_public(style_presets.list(request.query.get("model_profile"))))
 
     async def create_style_preset(request: web.Request) -> web.Response:
-        return web.json_response(await style_presets.create(await _json_body(request)), status=201)
+        body = await _json_body(request)
+        item = await style_preset_covers.mutate(style_presets.create, body, payload=body)
+        return web.json_response(preset_public(item), status=201)
 
     async def update_style_preset(request: web.Request) -> web.Response:
-        return web.json_response(
-            await style_presets.update(request.match_info["preset_id"], await _json_body(request))
+        body = await _json_body(request)
+        item = await style_preset_covers.mutate(
+            style_presets.update, request.match_info["preset_id"], body, payload=body
         )
+        return web.json_response(preset_public(item))
 
     async def delete_style_preset(request: web.Request) -> web.Response:
-        if not await style_presets.delete(request.match_info["preset_id"]):
+        style_presets.ensure_writable()
+        style_presets.get(request.match_info["preset_id"], request.query.get("model_profile"))
+        if not await style_preset_covers.mutate(style_presets.delete, request.match_info["preset_id"]):
             raise KeyError(request.match_info["preset_id"])
         return web.json_response({"deleted": True})
 
@@ -993,6 +1153,7 @@ def create_app(
 
     async def validate_resource_ownership(
         settings: dict[str, Any], *, resources_resolved: bool = False,
+        validate_model: bool = True, refresh: bool = True,
     ) -> None:
         """Reject stale or cross-profile model/LoRA selections at the API edge."""
         try:
@@ -1001,15 +1162,16 @@ def create_app(
             raise WorkflowError(str(error)) from error
         # Submission must observe plugin edits/disconnection even when a list
         # request populated the short-lived display cache moments earlier.
-        inventory = await client.resource_classifications("models", refresh=True)
-        classifications = {item["name"]: item for item in inventory["items"]}
-        model_names = list(classifications)
-        model_owners = {name: item["model_profile"] for name, item in classifications.items()}
-        model_name = settings.get("model_name") or model_profile_defaults(profile)["model_name"]
-        settings["model_name"] = _resolve_owned_model(
-            model_name, model_names, model_owners, profile, classifications,
-            allow_basename=not resources_resolved,
-        )
+        if validate_model:
+            inventory = await client.resource_classifications("models", refresh=True)
+            classifications = {item["name"]: item for item in inventory["items"]}
+            model_names = list(classifications)
+            model_owners = {name: item["model_profile"] for name, item in classifications.items()}
+            model_name = settings.get("model_name") or model_profile_defaults(profile)["model_name"]
+            settings["model_name"] = _resolve_owned_model(
+                model_name, model_names, model_owners, profile, classifications,
+                allow_basename=not resources_resolved,
+            )
 
         active = active_lora_pipelines(validate_settings(settings))
         stacks = []
@@ -1036,9 +1198,120 @@ def create_app(
                 raise WorkflowError(f"LoRA 不适用于 {profile} 档案: {name}；{reason}，请在 LoRA Manager 中检查分类")
 
 
+    async def resolve_generation_settings(raw: dict[str, Any], *, refresh: bool = False, strict: bool = False) -> dict[str, Any]:
+        settings = validate_settings(raw)
+        if raw.get("model_name"):
+            settings["model_name"] = raw["model_name"]
+        try:
+            native_modules = [name for name in ("nvidia", "dlss") if settings["upscalers"].get(name, {}).get("enabled")]
+            inventory = await resource_service.inventory(refresh=refresh, modules=native_modules)
+        except ComfyError as error:
+            return {"version": 1, "effective_settings": settings, "replacements": [], "ready": False,
+                    "issues": [{"module": "connection", "field": "", "code": "inventory_unavailable", "message": str(error)}]}
+        # Apply the standalone path map once, only before a new task is frozen.
+        mapped = []
+        if not strict:
+            mapping = {str(k).replace("\\", "/").casefold(): v for k, v in templates.resource_paths.items()}
+            mapped_targets = {str(v).replace("\\", "/").casefold() for v in mapping.values()}
+            fields = [(settings, key, key, kind) for key, kind in (("model_name", "models"), ("clip_name", "clips"), ("vae_name", "vaes"))]
+            for stage, keys in (("pixel_hires", (("model_name", "upscale_models"),)), ("seedvr2", (("model_name", "models"), ("vae_name", "vaes")))):
+                if settings["upscalers"][stage]["enabled"]:
+                    fields.extend((settings["upscalers"][stage], key, f"upscalers.{stage}.{key}", kind) for key, kind in keys)
+            for owner, key, field, kind in fields:
+                original = owner[key]
+                normalized = str(original).replace("\\", "/").casefold()
+                exists = any(str(name).replace("\\", "/").casefold() == normalized for name in inventory.get(kind, []))
+                if not exists and normalized in mapping and normalized not in mapped_targets:
+                    owner[key] = mapping[normalized]
+                    mapped.append({"module": "base", "field": field, "from": original, "to": owner[key], "reason": "path_normalized"})
+        lora_issues = []
+        try:
+            await validate_resource_ownership(settings, validate_model=False, refresh=refresh, resources_resolved=strict)
+        except (WorkflowError, ComfyError) as error:
+            lora_issues.append({"module": "loras", "field": "loras", "code": "lora_unavailable", "message": str(error)})
+        resolution = resource_service.resolve(settings, inventory, strict=strict)
+        resolution["replacements"] = merge_resource_replacements(mapped, resolution["replacements"])
+        effective = resolution["effective_settings"]
+        issues = resolution["issues"]
+        issues.extend(lora_issues)
+        try:
+            legacy_issues = await manager.resource_issues(effective, inventory=inventory, resources_resolved=True)
+        except ComfyError as error:
+            legacy_issues = [{"type": "inventory", "name": str(error), "label": "资源检查"}]
+        modules = {"model": "base", "clip": "base", "vae": "base", "sampler": "base", "scheduler": "base",
+                   "lora": "loras", "upscale_model": "pixel_hires",
+                   "post_scheduler": "post_sampler", "second_sampler": "post_sampler", "second_scheduler": "post_sampler",
+                   "dual_sampler": "base_dual", "dual_scheduler": "base_dual"}
+        for issue in legacy_issues:
+            kind = issue["type"]
+            module = modules.get(kind, next((key for key in ("seedvr2", "face_refine", "pixel_hires", "latent", "post_sampler", "nvidia", "dlss") if kind.startswith(key)), "base"))
+            if module == "base":
+                for label, owner in (("像素", "pixel_hires"), ("SeedVR2", "seedvr2"), ("脸部", "face_refine"),
+                                     ("整图后", "post_sampler"), ("潜空间", "latent"), ("NVIDIA DLSS", "dlss"),
+                                     ("DLSS", "dlss"), ("NVIDIA", "nvidia"), ("双采样", "base_dual"),
+                                     ("第一阶段", "base_dual"), ("第二阶段", "base_dual")):
+                    if issue["label"].startswith(label):
+                        module = owner
+                        break
+            label = issue["label"]
+            message = f"{label}{'' if label.endswith('不可用') else '不可用'}：{issue['name']}"
+            resource_name = str(issue["name"]).split("=", 1)[-1] if kind == "sampling_parameter" else str(issue["name"])
+            # The resolver owns model/node diagnostics. Keep parameter and
+            # legacy-only checks without showing the same missing resource twice.
+            if not any((item["module"] == module and item["message"].endswith("：" + resource_name)) or (item["module"] == module and kind in {"model", "clip", "vae", "seedvr2", "seedvr2_vae", "upscale_model"}) for item in issues):
+                issues.append({"module": module, "field": kind, "code": "unavailable", "message": message})
+        resolution["ready"] = not issues
+        return resolution
+
+    async def resolve_resources_request(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        if set(body) != {"settings"} or not isinstance(body["settings"], dict):
+            raise WorkflowError("请求必须包含 settings 对象")
+        return web.json_response(await resolve_generation_settings(body["settings"]))
+
+    async def resource_usage(request: web.Request) -> web.Response:
+        if request.method == "GET":
+            return web.json_response(resource_usages.public())
+        body = await _json_body(request)
+        if request.method == "DELETE":
+            if set(body) != {"kind", "name"}:
+                raise WorkflowError("撤销用途需要 kind 和 name")
+            await resource_usages.remove_usage(body["kind"], body["name"])
+            return web.json_response({"deleted": True})
+        if set(body) != {"kind", "name", "roles", "fingerprint"}:
+            raise WorkflowError("指定用途需要 kind、name、roles、fingerprint")
+        inventory = await resource_service.inventory(refresh=True)
+        item = next((item for item in inventory["resource_catalog"] if item["kind"] == body["kind"] and item["name"] == body["name"]), None)
+        if item is None or not item.get("fingerprint") or item["fingerprint"] != body["fingerprint"]:
+            raise WorkflowError("模型文件已变化或无法确认身份，请刷新后重试")
+        if item.get("source") != "manual" and item.get("status") != "unknown":
+            raise WorkflowError("已识别模型的兼容用途不能被手动覆盖")
+        result = await resource_usages.set_usage(body["kind"], body["name"], body["roles"], body["fingerprint"], source_status="unknown")
+        return web.json_response(result)
+
+    manager.resource_resolver = resolve_generation_settings
+
     async def start_batch(request: web.Request) -> web.Response:
         history.ensure_writable()
         body = await _json_body(request)
+        editor_replacements = body.pop("resource_replacements", [])
+        if not isinstance(editor_replacements, list) or len(editor_replacements) > 32:
+            raise WorkflowError("resource_replacements 必须是最多 32 项的数组")
+        valid_replacements = []
+        resource_fields = {"model_name", "clip_name", "vae_name", "clip_type",
+                           "upscalers.pixel_hires.model_name", "upscalers.seedvr2.model_name",
+                           "upscalers.seedvr2.vae_name", "upscalers.face_refine.upscaler_model"}
+        for replacement in editor_replacements:
+            if (not isinstance(replacement, dict) or not {"module", "field", "from", "to"} <= set(replacement)
+                    or set(replacement) - {"module", "field", "from", "to", "reason"}
+                    or any(not isinstance(value, str) or len(value) > 2048 for value in replacement.values())
+                    or replacement["field"] not in resource_fields):
+                raise WorkflowError("模型替换记录无效")
+            current: Any = body
+            for part in replacement["field"].split("."):
+                current = current.get(part) if isinstance(current, dict) else None
+            if current == replacement["to"] and replacement["from"] != replacement["to"]:
+                valid_replacements.append(replacement)
         seeds = validate_seeds(body.pop("seeds", None))
         if resource_paths is not None:
             def merge(base: dict[str, Any], submitted: dict[str, Any]) -> dict[str, Any]:
@@ -1063,8 +1336,7 @@ def create_app(
         body = upgrade_pipeline_settings(body)
         validate_settings(body)
         await client.status()
-        await validate_resource_ownership(body)
-        state = await manager.start(body, seeds=seeds)
+        state = await manager.start(body, seeds=seeds, resource_resolution={"replacements": valid_replacements})
         return web.json_response(state, status=201)
 
 
@@ -1175,13 +1447,20 @@ def create_app(
                 raise WorkflowError("before_id 必须为正整数图片 ID")
         workbench = request.query.get("workbench") or None
         if workbench not in {None, "random"}:
-            raise WorkflowError("workbench 仅支持 random")
+            raise WorkflowError("workbench 必须为 random")
         folder_id = request.query.get("folder_id")
         if folder_id is not None and before_id is not None:
             raise WorkflowError("收藏夹按收藏时间分页，不能与 before_id 同时使用")
+        filter_args: dict[str, Any] = {}
+        revision = None
+        if "q" in request.query or "content_filters" in request.query:
+            filters = parse_content_filters(request.query.get("content_filters"))
+            resolved, revision = await history_filters.resolve(filters, request.query.get("group_revision"))
+            filter_args = {"q": validate_query(request.query.get("q", "")), "content_filter": resolved}
         return web.json_response({
-            **await history.list_images(page, limit, workbench, before_id=before_id, folder_id=folder_id),
+            **await history.list_images(page, limit, workbench, before_id=before_id, folder_id=folder_id, **filter_args),
             "available": history.available,
+            **({"group_revision": revision} if revision is not None else {}),
         })
 
     async def _regeneration_context(image_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1213,34 +1492,40 @@ def create_app(
                 if normalized != saved_prompt:
                     preserve_issues[section] = "当前提示词规则会改变历史快照，请同时重抽此维度，或使用同提示词变体"
                     break
-        async def inspect_resources(values: dict[str, Any]) -> list[dict[str, Any]]:
-            issues = []
-            try:
-                await validate_resource_ownership(values, resources_resolved=True)
-            except (WorkflowError, ComfyError) as error:
-                issues.append({"type": "classification", "name": str(error), "label": "模型分类"})
-            try:
-                issues.extend(await manager.resource_issues(values, resources_resolved=True))
-            except ComfyError as error:
-                if not issues:
-                    issues.append({"type": "classification", "name": str(error), "label": "模型分类"})
-            return issues
+        def historical_issues(resolution: dict[str, Any]) -> list[dict[str, Any]]:
+            return [{**issue, "type": issue["code"], "label": issue["module"], "name": issue["message"]}
+                    for issue in resolution["issues"]]
 
-        frozen_resource_issues = await inspect_resources(settings)
+        frozen_resolution = await resolve_generation_settings(settings, refresh=True, strict=True)
+        frozen_resource_issues = historical_issues(frozen_resolution)
+        saved_resources = (record.get("bound_resources", {}).get("resource_resolution") or {}).get("resources", [])
+        current_resources = {item["field"]: item for item in frozen_resolution.get("resources", [])}
+        for saved in saved_resources:
+            current = current_resources.get(saved.get("field"))
+            if saved.get("fingerprint") and (not current or current.get("fingerprint") != saved["fingerprint"]):
+                frozen_resource_issues.append({"type": "resource_changed", "label": "历史资源",
+                    "module": "loras" if saved.get("kind") == "loras" or str(saved.get("field", "")).startswith("loras.") else "base",
+                    "name": saved.get("name", "") + " 文件身份已变化"})
+        if not frozen_resource_issues:
+            # Keep the recorded expectation across the final admission check;
+            # a replacement between inspection and enqueue must not be adopted.
+            for saved in saved_resources:
+                if saved.get("fingerprint") and saved.get("field") in current_resources:
+                    current_resources[saved["field"]]["fingerprint"] = saved["fingerprint"]
         runtime = record.get("lora_runtime") or {}
         has_lora_runtime = isinstance(runtime, dict) and runtime.get("version") == 1 and isinstance(runtime.get("manual_loras"), list)
-        resource_issues = frozen_resource_issues
+        manual_settings = copy.deepcopy(settings)
         if has_lora_runtime:
             if not frozen_resource_issues:
                 try:
-                    validate_frozen_resources(settings, runtime, await client.resource_classifications("loras", refresh=True))
+                    validate_frozen_resources(frozen_resolution["effective_settings"], runtime, await client.resource_classifications("loras", refresh=True))
                 except (WorkflowError, ComfyError) as error:
                     frozen_resource_issues = [{"type": "lora", "name": str(error), "label": "历史 LoRA"}]
-            manual_settings = copy.deepcopy(settings)
             manual_settings["loras"] = copy.deepcopy(runtime["manual_loras"])
-            resource_issues = await inspect_resources(manual_settings)
-            if frozen_resource_issues and not resource_issues:
-                preserve_issues["character"] = "历史人物 LoRA 已失效，请同时重抽人物以使用当前绑定"
+        resource_resolution = await resolve_generation_settings(manual_settings, refresh=True)
+        resource_issues = historical_issues(resource_resolution)
+        if has_lora_runtime and any(issue.get("label") == "历史 LoRA" or issue.get("module") == "loras" for issue in frozen_resource_issues) and not resource_issues:
+            preserve_issues["character"] = "历史人物 LoRA 已失效，请同时重抽人物以使用当前绑定"
         sections: dict[str, Any] = {}
         redraw_issues: dict[str, str] = {}
         try:
@@ -1282,6 +1567,8 @@ def create_app(
             "restored": restored,
             "resourceIssues": resource_issues,
             "frozenResourceIssues": frozen_resource_issues,
+            "resourceResolution": resource_resolution,
+            "frozenResourceResolution": frozen_resolution,
             "sections": sections,
             "redrawIssues": redraw_issues,
             "warnings": warnings,
@@ -1315,20 +1602,28 @@ def create_app(
             {
                 "modes": {
                     "replay": {
+                        "replacements": context["frozenResourceResolution"]["replacements"],
+                        "resourceChanged": resources_changed(context["frozenResourceResolution"]["replacements"]),
                         "available": frozen_resources_ok and positive_ok,
                         "reasons": _regeneration_reasons(frozen_context, require_prompt=True),
                         "resourceIssues": context["frozenResourceIssues"],
                     },
                     "prompt_variant": {
+                        "replacements": context["frozenResourceResolution"]["replacements"],
+                        "resourceChanged": resources_changed(context["frozenResourceResolution"]["replacements"]),
                         "available": frozen_resources_ok and positive_ok,
                         "reasons": _regeneration_reasons(frozen_context, require_prompt=True),
                         "resourceIssues": context["frozenResourceIssues"],
                     },
                     "content_redraw": {
+                        "replacements": context["resourceResolution"]["replacements"],
+                        "resourceChanged": resources_changed(context["resourceResolution"]["replacements"]),
                         "available": resources_ok and bool(random_sections) and not redraw_reasons,
                         "reasons": redraw_reasons,
                     },
                     "settings_reroll": {
+                        "replacements": context["resourceResolution"]["replacements"],
+                        "resourceChanged": resources_changed(context["resourceResolution"]["replacements"]),
                         "available": resources_ok,
                         "reasons": _regeneration_reasons(context),
                     },
@@ -1388,7 +1683,8 @@ def create_app(
                 f"{item['label']}: {item['name']}" for item in relevant_issues
             )
             raise WorkflowError(f"历史资源不可用: {missing}")
-        settings = copy.deepcopy(record.get("settings") or {})
+        resolution = copy.deepcopy(context["frozenResourceResolution"] if mode in {"replay", "prompt_variant"} else context["resourceResolution"])
+        settings = copy.deepcopy(resolution["effective_settings"])
         if mode == "replay":
             if set(body) - {"mode"}:
                 raise WorkflowError("replay 不接受 count 或 sections")
@@ -1484,19 +1780,32 @@ def create_app(
             if uses_current_bindings:
                 settings["loras"] = copy.deepcopy(lora_runtime["manual_loras"])
                 settings["lora_managed_triggers"] = copy.deepcopy(lora_runtime.get("manual_managed_triggers", []))
-        await validate_resource_ownership(settings, resources_resolved=True)
-        state = await manager.start(settings, seeds=seeds, regeneration=regeneration)
+            elif mode == "content_redraw":
+                # Redrawing another pool must keep the historical character's
+                # effective LoRA stack, not the manual-only inspection stack.
+                saved_settings = record.get("settings") or {}
+                settings["loras"] = copy.deepcopy(saved_settings.get("loras", []))
+                settings["lora_managed_triggers"] = copy.deepcopy(saved_settings.get("lora_managed_triggers", []))
+                saved_resources = (record.get("bound_resources", {}).get("resource_resolution") or {}).get("resources", [])
+                frozen_loras = [copy.deepcopy(item) for item in saved_resources
+                                if item.get("kind") == "loras" or str(item.get("field", "")).startswith("loras.")]
+                resolution["resources"] = [item for item in resolution.get("resources", [])
+                                           if item.get("kind") != "loras" and not str(item.get("field", "")).startswith("loras.")] + frozen_loras
+        state = await manager.start(settings, seeds=seeds, regeneration=regeneration, resource_resolution=resolution)
         return web.json_response(state, status=201)
 
-    async def delete_artwork(request: web.Request, image_id: int, mode: Any) -> dict[str, Any]:
+    async def delete_artwork(request: web.Request, image_ids: int | list[int], mode: Any, *, batch: bool = False) -> dict[str, Any]:
         if not isinstance(mode, str) or mode not in {"record", "file"}:
             raise WorkflowError("删除方式必须为 record 或 file")
+        if batch:
+            history.ensure_writable()
         stats = None
         if mode == "file":
             _require_local_file_request(request)
             stats = await client.status()
-        deletion = asyncio.create_task(artwork_deletion.delete(
-            image_id, mode, stats=stats, comfy_url=getattr(client, "base_url", ""),
+        operation = artwork_deletion.delete_many if batch else artwork_deletion.delete
+        deletion = asyncio.create_task(operation(
+            image_ids, mode, stats=stats, comfy_url=getattr(client, "base_url", ""),
         ))
         try:
             return await asyncio.shield(deletion)
@@ -1569,6 +1878,19 @@ def create_app(
 
 
 
+    app.router.add_post("/api/style-presets/batch", batch_style_presets)
+    app.router.add_post("/api/style-presets/{preset_id}/resolve", resolve_style_preset)
+    app.router.add_get("/api/style-preset-groups", list_style_preset_groups)
+    app.router.add_post("/api/style-preset-groups", create_style_preset_group)
+    app.router.add_put("/api/style-preset-groups/{group_id}", update_style_preset_group)
+    app.router.add_delete("/api/style-preset-groups/{group_id}", delete_style_preset_group)
+    app.router.add_post("/api/style-preset-covers", upload_style_preset_cover)
+    app.router.add_get("/api/style-preset-covers/{asset_id}", style_preset_cover)
+    app.router.add_post("/api/custom-prompts/character-analysis", analyze_custom_character)
+    app.router.add_post("/api/settings/normalize", normalize_settings)
+    app.router.add_get("/api/history/filter-catalog", history_filter_catalog)
+    app.router.add_get("/api/history/filter-options", history_filter_options)
+    app.router.add_post("/api/history/delete", delete_history_batch)
     app.router.add_get("/api/config", config)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/loras", loras)
@@ -1577,6 +1899,10 @@ def create_app(
     app.router.add_delete("/api/loras/triggers", reset_lora_triggers)
     register_lora_routes(app, lora_library)
     app.router.add_get("/api/resources", resources)
+    app.router.add_post("/api/resources/resolve", resolve_resources_request)
+    app.router.add_get("/api/resource-usages", resource_usage)
+    app.router.add_put("/api/resource-usages", resource_usage)
+    app.router.add_delete("/api/resource-usages", resource_usage)
     app.router.add_get("/api/resource-ownership", resource_ownership)
     app.router.add_put("/api/resource-ownership", update_resource_ownership)
     app.router.add_get("/api/style-presets", list_style_presets)
@@ -1643,6 +1969,8 @@ def create_app(
     app.router.add_static("/static/", root / "static", show_index=False)
 
     async def start_resources(_: web.Application) -> None:
+        await thumbnails.start()
+        style_preset_covers.start()
         recovery_failures = await pool_lifecycle.recover_pending()
         for profile, failure in recovery_failures.items():
             logger.warning("%s 收藏一致性恢复尚未完成: %s", profile, failure["error"])
@@ -1650,6 +1978,7 @@ def create_app(
     async def cleanup_resources() -> None:
         try:
             try:
+                await style_preset_covers.close()
                 await lora_library.close()
             finally:
                 await manager.shutdown()

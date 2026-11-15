@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from anima_webui.catalog import CatalogError
-from anima_webui.custom_prompts import CustomPromptStore
+from anima_webui.custom_prompts import CUSTOM_DATA_VERSION, CustomPromptStore
 from anima_webui.persistence import StorageReadOnlyError
 
 
@@ -66,7 +66,7 @@ class CustomGroupDeleteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(path.read_bytes(), original)
             with self.assertRaises(StorageReadOnlyError):
                 store.ensure_writable()
-        backups = list(path.parent.glob("custom.json.v4*.bak"))
+        backups = list(path.parent.glob(f"custom.json.v{CUSTOM_DATA_VERSION}*.bak"))
         self.assertEqual(len(backups), 2)
         self.assertTrue(all(backup.read_bytes() == original for backup in backups))
 

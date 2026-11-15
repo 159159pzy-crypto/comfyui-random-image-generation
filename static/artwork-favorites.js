@@ -1,5 +1,5 @@
 /* Artwork memberships are shared by both workbenches; selection belongs to the
- * home archive. No image files or generation settings are changed here. */
+ * home archive. Destructive actions use the shared history confirmation dialog. */
 const artworkFavoritesState = {
   ready: false, loaded: false, loading: false, loadToken: 0, revision: 0,
   folders: [], records: new Map(), memberships: new Map(), selected: new Map(), targets: new Set(), missingRecords: new Set(),
@@ -81,7 +81,7 @@ function renderArtworkDetail(record) {
 function artworkRenderCards() {
   for (const article of document.querySelectorAll("#gallery .image-card")) {
     if (artworkFavoritesState.missingRecords.has(String(article.record?.id))) {
-      if (typeof card !== "undefined") card.visibilityObserver?.unobserve(article);
+      if (typeof ArtworkThumbnails !== "undefined") ArtworkThumbnails.remove(article);
       article.remove();
     } else if (article.record) decorateArtworkCard(article, article.record);
   }
@@ -141,14 +141,15 @@ function artworkBuildToolbar() {
   manage.id = "artworkManage";manage.title = "管理收藏夹";manage.setAttribute("aria-label", "管理收藏夹");manage.setAttribute("aria-haspopup", "dialog");manage.setAttribute("aria-expanded", "false");
   browser.append(toggle, reveal, manage);
   const actions = artworkNode("div", "artwork-selection-actions");
-  const summary = artworkNode("span", "artwork-selection-summary");summary.id = "artworkSelectionSummary";summary.setAttribute("role", "status");
-  const add = artworkButton("加入收藏夹", "artwork-action artwork-action-primary", () => artworkBatchMembership("add"));add.id = "artworkBatchAdd";
-  const remove = artworkButton("移出此夹", "artwork-action", () => artworkBatchMembership("remove"));remove.id = "artworkBatchRemove";
-  const clear = artworkButton("清空", "artwork-action", () => {if (!artworkFavoritesState.busy) {artworkFavoritesState.selected.clear();artworkRenderCards();artworkRenderToolbar();}});clear.id = "artworkClear";
-  const select = artworkButton("选择", "artwork-action", () => artworkSetSelecting(!artworkFavoritesState.selecting));select.id = "artworkSelect";
-  actions.append(summary, add, remove, clear, select);
-  const layout = artworkNode("div", "artwork-toolbar-layout");layout.id = "artworkToolbarLayout";
-  layout.append(browser, actions);root.append(layout);
+  const summary = artworkNode("span", "artwork-selection-summary"); summary.id = "artworkSelectionSummary"; summary.setAttribute("role", "status");
+  const add = artworkButton("加入收藏夹", "artwork-action artwork-action-primary", () => artworkBatchMembership("add")); add.id = "artworkBatchAdd";
+  const remove = artworkButton("移出此夹", "artwork-action", () => artworkBatchMembership("remove")); remove.id = "artworkBatchRemove";
+  const destroy = artworkButton("删除", "artwork-action artwork-action-danger", () => openHistoryBatchDelete()); destroy.id = "artworkBatchDelete";
+  const clear = artworkButton("清空", "artwork-action", () => { if (!artworkFavoritesState.busy) { artworkFavoritesState.selected.clear(); artworkRenderCards(); artworkRenderToolbar(); } }); clear.id = "artworkClear";
+  const select = artworkButton("选择", "artwork-action", () => artworkSetSelecting(!artworkFavoritesState.selecting)); select.id = "artworkSelect";
+  actions.append(summary, add, remove, destroy, clear, select);
+  const layout = artworkNode("div", "artwork-toolbar-layout"); layout.id = "artworkToolbarLayout";
+  layout.append(browser, actions); root.append(layout);
 }
 function artworkCaptureToolbar() {
   const root = artworkElement("artworkToolbar"),actions = root?.querySelector(".artwork-selection-actions");
@@ -268,12 +269,15 @@ function artworkRenderToolbar() {
   const ids = new Set((typeof historyItems !== "undefined" ? historyItems : []).map((record) => String(record.id)));
   const hiddenCount = [...state.selected.keys()].filter((id) => !ids.has(id)).length;
   const summary = artworkElement("artworkSelectionSummary");
-  summary.textContent = `已选 ${state.selected.size} 张${hiddenCount ? ` · ${hiddenCount} 张在其他页面或来源` : ""}`;summary.hidden = !state.selecting;
-  const add = artworkElement("artworkBatchAdd");add.hidden = !state.selecting;add.disabled = state.busy || !state.selected.size || !state.targets.size || !artworkWritable();
-  add.textContent = state.busy ? "正在保存…" : state.targets.size ? `加入 ${state.targets.size} 个收藏夹` : "加入收藏夹";
-  const remove = artworkElement("artworkBatchRemove");remove.hidden = !state.selecting || !active;remove.disabled = state.busy || !state.selected.size || !artworkWritable();
-  const clear = artworkElement("artworkClear");clear.hidden = !state.selecting;clear.disabled = state.busy || !state.selected.size;
-  const select = artworkElement("artworkSelect");select.textContent = state.selecting ? "取消" : "选择";select.disabled = state.busy || !artworkWritable();
+  summary.textContent = `已选 ${state.selected.size} 张${hiddenCount ? ` · ${hiddenCount} 张在其他页面或来源` : ""}`; summary.hidden = !state.selecting;
+  const add = artworkElement("artworkBatchAdd"); add.hidden = !state.selecting; add.disabled = state.busy || !state.selected.size || !state.targets.size || !artworkWritable();
+  const deleting = typeof historyDetailState !== "undefined" && historyDetailState.busy && historyDetailState.batch;
+  add.textContent = state.busy && !deleting ? "正在保存…" : state.targets.size ? `加入 ${state.targets.size} 个收藏夹` : "加入收藏夹";
+  const remove = artworkElement("artworkBatchRemove"); remove.hidden = !state.selecting || !active; remove.disabled = state.busy || !state.selected.size || !artworkWritable();
+  const destroy = artworkElement("artworkBatchDelete"); destroy.hidden = !state.selecting; destroy.disabled = state.busy || !state.selected.size || !artworkWritable();
+  destroy.textContent = deleting ? "正在删除…" : "删除";
+  const clear = artworkElement("artworkClear"); clear.hidden = !state.selecting; clear.disabled = state.busy || !state.selected.size;
+  const select = artworkElement("artworkSelect"); select.textContent = state.selecting ? "取消" : "选择"; select.disabled = state.busy || !artworkWritable();
   artworkElement("artworkManage").disabled = state.busy || !artworkWritable();
   root.classList.toggle("is-selecting", state.selecting);
   artworkLayoutToolbar(before);
@@ -657,6 +661,14 @@ function artworkRecordRemoved(id) {
   state.records.delete(key);state.memberships.delete(key);state.selected.delete(key);
   if (state.popover?.recordId === key) closeArtworkPopovers({ restoreFocus: false });
   artworkRenderToolbar();void artworkLoadFolders();
+}
+async function artworkRecordsRemoved(ids) {
+  const state = artworkFavoritesState;
+  ++state.revision; ++state.loadToken; state.loading = false;
+  artworkForgetMissing(ids); artworkRenderToolbar();
+  try { localStorage.setItem(ARTWORK_FAVORITES_EVENT, `${Date.now()}:${state.revision}`); } catch { /* The server remains authoritative. */ }
+  await artworkLoadFolders();
+  return state.loadError ? [`作品已删除，收藏夹计数刷新失败：${state.loadError}`] : [];
 }
 function artworkForgetMissing(ids) {
   const state = artworkFavoritesState,missing = new Set(ids.map(String));

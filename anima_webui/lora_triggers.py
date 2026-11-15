@@ -56,9 +56,11 @@ class LoraTriggerOverrideStore(StorageProtection):
         self.overrides: dict[str, list[str]] = {}
         self.load_warnings: list[str] = []
         self._lock = asyncio.Lock()
+        self.revision = 0
         self.reload()
 
     def reload(self) -> None:
+        self.revision += 1
         self.load_warnings = []
         self.read_only_reason = None
         if not self.path.is_file():
@@ -166,24 +168,21 @@ class LoraTriggerOverrideStore(StorageProtection):
         normalized_words = normalize_trigger_words(words)
         profile = self._profile(model_profile)
         self.ensure_writable()
-        previous = copy.deepcopy((self.profile_overrides, self.overrides))
-        overrides = self.profile_overrides.get(profile, {})
+        updated = copy.deepcopy(self.profile_overrides)
+        overrides = updated.setdefault(profile, {})
         existing_key = next(
             (key for key in overrides if key.casefold() == normalized_filename.casefold()),
             None,
         )
         if existing_key is None and sum(len(value) for value in self.profile_overrides.values()) >= MAX_OVERRIDES:
             raise WorkflowError(f"LoRA 触发词覆盖不能超过 {MAX_OVERRIDES} 项")
-        self.profile_overrides[profile] = overrides
         if existing_key is not None and existing_key != normalized_filename:
             del overrides[existing_key]
         overrides[normalized_filename] = normalized_words
-        self.overrides = self.profile_overrides.setdefault(DEFAULT_MODEL_PROFILE, {})
-        try:
-            await self._save()
-        except Exception:
-            self.profile_overrides, self.overrides = previous
-            raise
+        await self._save(updated)
+        self.profile_overrides = updated
+        self.overrides = updated.setdefault(DEFAULT_MODEL_PROFILE, {})
+        self.revision += 1
         return copy.deepcopy(normalized_words)
 
     @serialized_mutation
@@ -191,23 +190,21 @@ class LoraTriggerOverrideStore(StorageProtection):
         identity = normalize_lora_path(filename).casefold()
         profile = self._profile(model_profile)
         self.ensure_writable()
-        previous = copy.deepcopy((self.profile_overrides, self.overrides))
-        overrides = self.profile_overrides.get(profile, {})
+        updated = copy.deepcopy(self.profile_overrides)
+        overrides = updated.get(profile, {})
         key = next((item for item in overrides if item.casefold() == identity), None)
         if key is None:
             return False
         del overrides[key]
-        self.overrides = self.profile_overrides.setdefault(DEFAULT_MODEL_PROFILE, {})
-        try:
-            await self._save()
-        except Exception:
-            self.profile_overrides, self.overrides = previous
-            raise
+        await self._save(updated)
+        self.profile_overrides = updated
+        self.overrides = updated.setdefault(DEFAULT_MODEL_PROFILE, {})
+        self.revision += 1
         return True
 
-    async def _save(self) -> None:
+    async def _save(self, values: dict[str, dict[str, list[str]]] | None = None) -> None:
         payload = json.dumps(
-            {"version": 2, "overrides": self.profile_overrides},
+            {"version": 2, "overrides": self.profile_overrides if values is None else values},
             ensure_ascii=False,
             indent=2,
         ) + "\n"

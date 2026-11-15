@@ -113,9 +113,9 @@ test("Anima failed item deletion keeps the editor and does not prune or broadcas
 
 test("Anima import overwrite broadcasts its source result without replaying writes for a list refresh", async () => {
   const calls = [], notices = [];
-  const preview = { rows: [{ action: "overwrite", item: { id: "source" } }] };
+  const preview = { context: { model_profile: "anima", section: "pose" }, rows: [{ action: "overwrite", item: { id: "source" } }] };
   const { ctx, run } = context({
-    activeSection: "pose", importPreview: preview, ui: { commitImport: {}, importBundleName: { value: "Bundle" }, importDialog: {} },
+    clone: plain, invalidateCustomImport() {}, customImportCurrent: () => true, renderImportPreview() {}, activeSection: "pose", importPreview: preview, ui: { commitImport: {}, importBundleName: { value: "Bundle" }, importDialog: {}, importHint: {} },
     selectedImportGroupIds: () => ["group"], request: async (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); return { updatedItemIds: ["source"], deletedItemIds: [], bundleName: "Bundle", imported: 0, updated: 1, skipped: 0 }; },
     poolSourceChanged: value => notices.push(plain(value)),
   });

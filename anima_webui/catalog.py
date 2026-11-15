@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .character_clothing_tags import is_character_clothing_tag
+from .character_classification import CHARACTER_FIELDS, CharacterClassifier, CharacterClassificationError
 
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,14 @@ ANIMA_CATEGORY_ORDER = {
 
 class CatalogError(ValueError):
     pass
+
+
+class CharacterReviewRequired(CatalogError):
+    def __init__(self, items: Iterable[dict[str, Any]]):
+        self.pending = [{"id": item.get("id", ""), "title": item.get("title", "")} for item in items]
+        names = "、".join(str(item["title"] or item["id"]) for item in self.pending[:8])
+        suffix = f"等 {len(self.pending)} 个角色" if len(self.pending) > 8 else ""
+        super().__init__(f"角色标签分类待确认：{names}{suffix}。请先完成确认，或使用“触发词 + 特征”模式。")
 
 
 def normalize_text(value: Any) -> str:
@@ -329,7 +338,8 @@ def _restore_history_item(
 
 
 class PromptCatalog:
-    def __init__(self, app_dir: str | Path, tools_dir: str | Path | None = None):
+    def __init__(self, app_dir: str | Path, tools_dir: str | Path | None = None,
+                 *, character_tagger_paths: Iterable[str | Path] | None = None):
         self.app_dir = Path(app_dir)
         self.discovery = discover_tools(self.app_dir, tools_dir)
         self.tools_dir = Path(self.discovery["path"]) if self.discovery["status"] == "available" else None
@@ -337,6 +347,8 @@ class PromptCatalog:
         self._items: dict[str, list[dict[str, Any]]] = {section: [] for section in SECTIONS}
         self._by_id: dict[str, dict[str, Any]] = {}
         self._official: dict[str, Any] = {}
+        self._character_tagger_paths = list(character_tagger_paths) if character_tagger_paths is not None else None
+        self._character_classifier: CharacterClassifier | None = None
         self.reload()
 
     @property
@@ -344,6 +356,7 @@ class PromptCatalog:
         return self.tools_dir is not None
 
     def reload(self) -> None:
+        self._character_classifier = None
         self.load_warnings = [self.discovery["message"]] if self.discovery["message"] else []
         self._items = {section: [] for section in SECTIONS}
         self._by_id = {}
@@ -445,7 +458,8 @@ class PromptCatalog:
         section = str(item.get("section") or "")
         self._check_section(section)
         title = str(item.get("title") or "").strip()
-        prompt = str(item.get("prompt") or "").strip()
+        analyzed = self.analyze_character(item) if section == "character" else None
+        prompt = analyzed["prompt"] if analyzed is not None else str(item.get("prompt") or "").strip()
         if not title or not prompt:
             raise CatalogError("自定义项需要名称和提示词")
         categories = [str(value) for value in item.get("categories") or [] if str(value).strip()]
@@ -473,7 +487,33 @@ class PromptCatalog:
         }
         if section == "pose":
             entry["conflict_slots"] = pose_conflict_slots(entry)
+        elif section == "character":
+            entry.update({key: analyzed[key] for key in CHARACTER_FIELDS})
         return entry
+
+    def analyze_character(self, payload: dict[str, Any], *, previous: dict[str, Any] | None = None,
+                          reanalyze: bool = False) -> dict[str, Any]:
+        if self._character_classifier is None:
+            paths = self._character_tagger_paths
+            if paths is None:
+                paths = []
+                # Only inspect the selected Anima Tools installation's local ComfyUI root.
+                # Fake test installations and unavailable remote roots do not probe other machines.
+                if self.tools_dir is not None and self.tools_dir.parent.name.casefold() == "custom_nodes":
+                    root = self.tools_dir.parent.parent / "models" / "wd_taggers"
+                    if root.is_dir():
+                        try:
+                            paths = sorted(root.glob("pixai*/selected_tags.csv"))
+                        except OSError:
+                            paths = []
+            self._character_classifier = CharacterClassifier(
+                (item for item in self._items["character"] if item.get("builtin")),
+                [Path(path) for path in paths],
+            )
+        try:
+            return self._character_classifier.analyze(payload, previous=previous, reanalyze=reanalyze)
+        except CharacterClassificationError as error:
+            raise CatalogError(str(error)) from error
 
     def set_custom_items(self, items: Iterable[dict[str, Any]]) -> None:
         for section in SECTIONS:
@@ -647,7 +687,17 @@ class PromptCatalog:
         character_detail: str = "trigger_tags",
         strip_person_tags: bool = False,
     ) -> list[str]:
-        if section == "character" and item.get("trigger"):
+        if section == "character" and item.get("builtin") is False and "character_parts" in item:
+            if character_detail != "trigger_tags" and item.get("character_status") != "ready":
+                raise CharacterReviewRequired([item])
+            parts = item["character_parts"]
+            values = [
+                part["text"] for part in parts
+                if (character_detail != "trigger" or part["role"] == "trigger")
+                and (character_detail != "trigger_tags_no_clothing" or part["role"] != "feature"
+                     or not is_character_clothing_tag(part["text"]))
+            ]
+        elif section == "character" and item.get("trigger"):
             values = split_prompt(item.get("trigger"))
             if character_detail in {"trigger_tags", "trigger_tags_no_clothing"}:
                 tags = split_prompt(item.get("tags"))
@@ -671,6 +721,11 @@ class PromptCatalog:
                 raise CatalogError(f"{section} 随机池为空，请先选择候选项")
             if count > len(available):
                 raise CatalogError(f"{section} 可用条目只有 {len(available)} 项，无法抽取 {count} 项")
+            if section == "character" and settings.get("character_detail", "trigger_tags") != "trigger_tags":
+                pending = [item for item in available if item.get("builtin") is False
+                           and item.get("character_status") != "ready"]
+                if pending:
+                    raise CharacterReviewRequired(pending)
             if section == "pose" and self._compatible_pose_sample(available, count, random.Random(0)) is None:
                 raise CatalogError(self._pose_conflict_error(available, count))
 
@@ -759,6 +814,9 @@ class PromptCatalog:
         result = {key: item.get(key) for key in keys}
         result["tags"] = item.get("tags") or []
         result["trigger"] = item.get("trigger") or []
+        for key in ("character_parts", "character_no_trigger", "character_status"):
+            if key in item:
+                result[key] = copy.deepcopy(item[key])
         return result
 
     def get(self, item_id: str) -> dict[str, Any] | None:

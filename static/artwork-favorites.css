@@ -21,6 +21,8 @@
 .artwork-selection-actions { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 4px; min-width: 0; max-width: 100%; }
 .artwork-selection-summary { font-size: 12px; line-height: 1.5; color: var(--text-secondary); font-variant-numeric: tabular-nums; padding-inline: 6px; }
 .artwork-action { padding: 0 12px; white-space: nowrap; }
+.artwork-action-danger { color: var(--danger); }
+.artwork-action.artwork-action-danger:hover:not(:disabled) { background: var(--danger-soft); }
 .artwork-action-primary { color: var(--accent); background: var(--accent-soft); }
 .artwork-toolbar.is-selecting .artwork-toolbar-layout { flex-wrap: wrap; }
 .artwork-toolbar.is-selecting .artwork-browser { flex-basis: 100%; }

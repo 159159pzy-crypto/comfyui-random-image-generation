@@ -14,7 +14,7 @@
 | Node.js | 22+，仅运行 JavaScript 语法检查和前端测试；正常启动无需 Node |
 | 开发依赖 | 仅 Git 克隆的完整仓库需要；`pytest>=8`、`ruff>=0.15,<0.16`、`setuptools>=68`，由 `Install.ps1 -Dev` 安装 |
 
-权威版本范围见根目录 `pyproject.toml`。静态前端无需 npm 安装或打包。Release 下载包仅包含运行文件与用户文档，不包含测试、CI 或开发脚本。本项目不会代为安装 GPU 驱动、PyTorch、ComfyUI、自定义节点或模型。
+权威版本范围见根目录 `pyproject.toml`。静态前端无需 npm 安装或打包。Release 下载包仅包含运行文件与用户文档，不包含测试、CI 或开发脚本。`Install.ps1` 仅安装本项目 Python 依赖；配套资源扩展有独立手动安装入口，GPU 驱动、PyTorch、ComfyUI、第三方节点及模型仍由用户准备。
 
 ## 所有生成模式都需要
 
@@ -29,8 +29,13 @@
 | `Lora Loader (LoraManager)` | 主模型与 CLIP 的 LoRA 管线 | ComfyUI-Lora-Manager；当前生成图即使没有启用 LoRA 也保留此节点 |
 | `PrimitiveInt`、`ComfyMathExpression` | 传递固定种子并让每次任务实际执行 | 支持这些节点的 ComfyUI；本机节点来源分别为 `comfy_extras.nodes_primitive`、`comfy_extras.nodes_math` |
 | `SaveImage` | 保存最终原图和工作流元数据 | ComfyUI |
+| `VRAM_Debug` | 阶段间清缓存和 GC，`unload_all_models=false` | ComfyUI-KJNodes；v4/v5 流程必需 |
 
 `LoraLoader` 还需在 `/object_info` 中提供有效 LoRA 文件清单，供资源分类检查使用。文件列表和 LoRA Manager 扫描结果必须一致。
+
+开启“负向条件零化”时还需要 ComfyUI 内置的 `ConditioningZeroOut`；未开启时不需要此节点。它将编码后的负向条件置零，保留负面提示词文本。
+
+新装 ComfyUI-Lora-Manager 和 ComfyUI-KJNodes 时，分别用 ComfyUI 自己的 Python 安装各自的 `requirements.txt`，命令见 [README 节点安装步骤](../README.md#1-准备-comfyui-与节点)。已有可用安装直接复用；本次本机环境中的 KJNodes 无需重装。
 
 ### 普通底图
 
@@ -45,25 +50,31 @@
 | Sesqui（默认） | `SesquiLatentUpscale` | 来自 SesquiLSR；默认格式 `Wan 2.1`，默认半精度开启，倍率范围 1–2 |
 | bilinear、bislerp、nearest-exact、area、bicubic | `LatentUpscaleBy` | ComfyUI 对应插值选项必须可用 |
 
-默认总步数 30、切换步 15、中间倍率 1、两段 CFG 均为 8，采样器 `euler`、调度器 `simple`。倍率为 1 仍构建所选中间调整节点，因此默认双采样器仍需 SesquiLSR。可以选择普通底图，或为双采样器选择受支持的其他插值方法。
+新建默认总步数 30、切换步 15、中间倍率 1、两段 CFG 均为 4，采样器 `er_sde`、调度器 `simple`。旧设置的明确参数保留。倍率为 1 仍构建所选中间调整节点，因此默认双采样器仍需 SesquiLSR。可以选择普通底图，或为双采样器选择受支持的其他插值方法。
 
 ## 可选后处理
 
-当前仅支持 v4，执行顺序为：像素高清 → 潜空间放大 → 整图后采样 → 脸部细化 → SeedVR2 → N 卡 VSR → DLSS。只为启用的阶段添加对应节点与资源；未启用阶段的资源缺失不应阻止普通流程。
+当前支持 v4/v5，新建默认 v5，执行顺序为：像素高清 → 潜空间放大 → 整图后采样 → 脸部细化 → SeedVR2 → N 卡 VSR → DLSS。只为启用的阶段添加对应节点与资源；未启用阶段的资源缺失不应阻止普通流程。
 
 | 阶段 | 节点要求 | 模型与说明 |
 | --- | --- | --- |
-| 像素高清 | `UpscaleModelLoader`、`ImageUpscaleWithModel`；未启用整图后采样时还使用 `ImageScaleBy` | 默认 `4x_foolhardy_Remacri.pth`；实际输出还受缩放百分比和后续阶段影响 |
+| 像素高清 | `UpscaleModelLoader`、`ImageUpscaleWithModel`、`ImageScaleBy` | 默认 `4x_foolhardy_Remacri.pth`；v5 缩图比例和算法始终生效，旧 v4 保留原行为 |
 | 潜空间放大 | `SesquiLatentUpscale` 或 `LatentUpscaleBy`，以及 `KSampler` | 默认 Sesqui、1.5 倍；该阶段自带重采样，默认 16 步、CFG 4、`er_sde` / `simple`、降噪 0.2 |
 | 整图后采样 | `KSampler` | 独立于潜空间重采样，默认 16 步、CFG 4、`er_sde` / `simple`、降噪 0.2 |
-| 脸部细化 | `ForbiddenVisionFaceProcessorIntegrated` | 本机来源 `forbidden-vision`；使用当前主模型/LoRA。默认采样器 `res_2m_ode`、调度器 `beta57` 必须在相应节点中可用，或改选现有选项 |
+| 脸部细化 | `ForbiddenVisionFaceProcessorIntegrated` | 本机来源 `forbidden-vision`；使用当前主模型/LoRA。新建默认 16 步、CFG 4、降噪 0.30、`er_sde / simple`，相应选项必须可用 |
 | SeedVR2 | `ImageScaleBy`、`UNETLoader`、`VAELoader`、`SeedVR2Preprocess`、`VAEEncodeTiled`、`SeedVR2Conditioning`、`KSampler`、`VAEDecodeTiled`、`SeedVR2PostProcessing` | 默认模型 `seedvr2_3b_int8_convrot.safetensors`，VAE `ema_vae_fp16.safetensors`；本机三个 SeedVR2 专用节点来源为 `comfy_extras.nodes_seedvr` |
 | N 卡 VSR | `RTXVideoSuperResolution` | 本机来源 `nvidia-rtx-vsr-pro`；硬件、驱动和插件运行库要求由该插件决定 |
 | DLSS | `DLSS5NeuralRender` | 本机来源 `DLSS5-Comfyui`；与 VSR 是两个独立节点，不能相互替代 |
 
 若像素高清已将数据变成图像，随后又启用潜空间放大或整图后采样，需要 `VAEEncodeTiled` 重新编码。最终图像使用分块 VAE 解码保存。潜空间和整图重采样继承底图最后一段的模型、LoRA 与正负向提示词。
 
-SeedVR2 使用 ComfyUI 的上述节点契约；仅安装另一个同名插件、但未提供这些 `class_type`，不能满足依赖。Sesqui 的格式选项、脸部细化检测/分割模型、VSR/DLSS 的驱动或本机运行库等，还需按各节点自身安装说明准备。本项目只读取运行中节点声明的选项与范围，不下载这些资源，也不静默改成其他节点。
+SeedVR2 使用 ComfyUI 的上述节点契约；仅安装另一个同名插件、但未提供这些 `class_type`，不能满足依赖。Sesqui 的格式选项、脸部细化检测/分割模型、VSR/DLSS 的驱动或本机运行库等，还需按各节点自身安装说明准备。配套扩展可检查这些能力；NVIDIA 阶段的原生运行验证只在选中且队列空闲时进行，不下载资源，也不静默改成其他节点。
+
+## 配套资源检查与停止清理扩展
+
+随源码提供的 `ComfyUI-Atelier-Resources` 扩展负责有界模型文件头识别、按需能力检查和空闲停止清理。先按 [README 完整命令](../README.md#3-安装并启动本项目)使用 `-Check` 检查；检查通过即可复用，本次本机环境无需重装。仅在缺失或需要更新时，停止 ComfyUI 后去掉 `-Check` 安装，完成后自行启动。脚本复用同名安装，检查管理记录和文件哈希，备份旧版并拒绝覆盖用户修改，不更新 ComfyUI 或其他节点。缺少扩展时保留加载器与节点检查，深度检查不可用，停止清理明确跳过。
+
+已有扩展及暂存文件都通过哈希检查后才更新；不能确认服务已停止、文件被用户修改或目标含链接时保留原安装。
 
 ## ComfyUI-Lora-Manager 的边界
 

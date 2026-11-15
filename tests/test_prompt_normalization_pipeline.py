@@ -26,6 +26,9 @@ class PromptNormalizationPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.history = HistoryStore(root / "history.sqlite3")
         self.rules = PromptRuleStore(root / "rules.json")
         self.comfy = FakeComfy()
+        # This minimal request exercises legacy v4 defaults, including the
+        # second-stage Euler sampler, alongside the fresh er_sde defaults.
+        self.comfy.available_samplers.append("euler")
         self.manager = BatchManager(
             FakeTemplates(), self.history, self.comfy, catalog=SettingsCatalog(),
             prompt_rules=self.rules,
