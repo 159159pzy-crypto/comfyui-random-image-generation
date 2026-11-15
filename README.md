@@ -216,7 +216,7 @@ Anima Tools 无需额外 pip 依赖；SesquiLSR 的放大权重随仓库提供�
 
 需要 **Python 3.11+**。使用上方说明的本地 0.2.0 项目目录或源码 ZIP；从 GitHub 克隆或下载旧发布版不会自动获得本次尚未发布的更新。
 
-在项目目录打开 PowerShell，安装一次，然后启动。把下面的 Anima Tools 路径改为你的实际位置：
+在项目目录打开 PowerShell，安装一次，然后启动。把下面的 Anima Tools 路径改为你的实际位置，指定包含 `js/` 的插件根目录：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
@@ -225,7 +225,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start.ps1 --anima-tool
 
 浏览器会打开 `http://127.0.0.1:8191`。确认连接状态、模型和词池正常，选择随机内容后开始生成。端口不同可追加 `--comfy-url http://127.0.0.1:8189`。
 
-如果词库位于项目相邻的 `comfyui/custom_nodes` 等可自动发现的位置，可直接双击 `Start.cmd`。其他位置可使用上述启动命令，或设置 `ANIMA_TOOLS_DIR` 环境变量后双击。按 Ctrl+C 或关闭终端停止 WebUI。
+使用官方 Windows 便携版时，路径通常多一层 `ComfyUI`，例如：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start.ps1 --anima-tools-dir "D:\ComfyUI_windows_portable\ComfyUI\custom_nodes\Comfyui-Anima-Tools"
+```
+
+自动发现会检查项目目录及其父目录下的 `ComfyUI/custom_nodes`、`comfyui/custom_nodes`、`custom_nodes`，也支持直接放在这两处的 `ComfyUI_windows_portable*` 便携版，包括 AMD / Intel 版本。只有一个有效词库时可直接双击 `Start.cmd`；其他位置或多个独立词库请使用上述参数明确选择，也可设置 `ANIMA_TOOLS_DIR` 环境变量。自动发现只检查这些常见位置，不搜索整个磁盘。指定路径无效时会提示修正，不会改用其他词库。完整规则见[基础词库发现](docs/guide.md#2-基础词库发现)。按 Ctrl+C 或关闭终端停止 WebUI。
 
 安装脚本只安装本项目的 Python 依赖；**ComfyUI、节点、模型需按前两步自行准备，ComfyUI 也需单独启动**。更多启动参数见[使用指南](docs/guide.md#1-源码安装与启动)。
 

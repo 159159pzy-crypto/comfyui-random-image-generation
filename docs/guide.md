@@ -57,9 +57,30 @@ js/background_data.js
 
 表情词库由本项目内置。中文名称补充表也随项目提供。自定义词条和收藏存入本项目数据目录，不写回这些基础文件。
 
-发现优先级为：`--anima-tools-dir` → `ANIMA_TOOLS_DIR` 环境变量 → `COMFYUI_ANIMA_TOOLS` 环境变量 → 自动扫描。自动扫描只检查项目相邻的 `comfyui/custom_nodes`、项目自己的 `custom_nodes`、项目父目录的 `custom_nodes`，不搜索整个磁盘。
+发现优先级为：`--anima-tools-dir` → `ANIMA_TOOLS_DIR` 环境变量 → `COMFYUI_ANIMA_TOOLS` 环境变量 → 自动发现。指定的路径应是包含上述 `js/` 文件的 **Anima Tools 插件根目录**，不要直接指向 `js`。较高优先级的配置无效时会报告路径或缺失文件，不会回退到其他配置或安装。
 
-显式指定的目录无效时会报告缺失文件，不会悄悄使用其他安装。发现多个有效目录时需要明确指定其中一个。修复路径或更新基础词库后重启 WebUI。
+没有指定路径时，会在项目目录及其父目录中检查以下常见布局：
+
+- `custom_nodes/`、`ComfyUI/custom_nodes/` 和 `comfyui/custom_nodes/` 中的插件。
+- 直接位于项目目录或其父目录下、名称以 `ComfyUI_windows_portable` 开头的便携版目录，再检查其中的 `ComfyUI/custom_nodes/` 或 `comfyui/custom_nodes/`。目录名前缀不区分大小写，支持 `_amd`、`_intel` 等后缀。
+
+例如，项目和便携版并排放置时可以直接双击 `Start.cmd`：
+
+```text
+D:/AI/
+├── AnimaRandomWebUI/
+│   └── Start.cmd
+└── ComfyUI_windows_portable/
+    └── ComfyUI/custom_nodes/Comfyui-Anima-Tools/js/
+```
+
+自动发现只做上述浅层检查，不搜索整个磁盘；跳过已禁用、隐藏或尚在安装中的目录。指向同一插件目录的链接按一份计算；存在多个独立的有效词库时，需要明确选择其中一个，例如：
+
+```powershell
+.\Start.cmd --anima-tools-dir "D:\AI\ComfyUI_windows_portable\ComfyUI\custom_nodes\Comfyui-Anima-Tools"
+```
+
+未找到词库时，提示会列出已检查的位置，并说明如何通过 `--anima-tools-dir` 指定插件根目录。修复路径或更新基础词库后重启 WebUI。
 
 ## 3. 模型选择与路径映射
 

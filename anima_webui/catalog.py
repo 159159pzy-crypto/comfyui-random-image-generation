@@ -134,6 +134,49 @@ def _read_js_array(path: Path) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
 
+def _tools_scan_name(name: str) -> bool:
+    name = name.casefold()
+    return not name.startswith(".") and not name.endswith((".disabled", ".anima-installing", ".extracting"))
+
+
+def _tools_search_roots(root: Path) -> tuple[list[Path], list[str]]:
+    """Collect bounded install layouts without recursively searching the disk."""
+    roots: dict[str, Path] = {}
+    errors: list[str] = []
+
+    def add(path: Path) -> None:
+        try:
+            physical = path.resolve()
+        except (OSError, RuntimeError) as error:
+            errors.append(f"{path}: {error}")
+            return
+        roots.setdefault(os.path.normcase(str(physical)), physical)
+
+    for anchor in dict.fromkeys((root, root.parent)):
+        add(anchor / "custom_nodes")
+        for name in ("ComfyUI", "comfyui"):
+            add(anchor / name / "custom_nodes")
+        try:
+            children = sorted(anchor.iterdir(), key=lambda path: (path.name.casefold(), path.name))
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as error:
+            errors.append(f"{anchor}: {error}")
+            continue
+        for wrapper in children:
+            if not _tools_scan_name(wrapper.name) or not wrapper.name.casefold().startswith("comfyui_windows_portable"):
+                continue
+            try:
+                if not wrapper.is_dir():
+                    continue
+            except OSError as error:
+                errors.append(f"{wrapper}: {error}")
+                continue
+            for name in ("ComfyUI", "comfyui"):
+                add(wrapper / name / "custom_nodes")
+    return list(roots.values()), errors
+
+
 def discover_tools(app_dir: str | Path, override: str | Path | None = None) -> dict[str, Any]:
     """Inspect only known custom_nodes roots; never silently replace an explicit path."""
     source = "argument" if override else "auto"
@@ -145,7 +188,7 @@ def discover_tools(app_dir: str | Path, override: str | Path | None = None) -> d
                 break
     result: dict[str, Any] = {
         "status": "missing", "source": source, "path": "", "candidates": [],
-        "missing_files": [], "message": "未安装 Anima Tools；可指定 --anima-tools-dir，或安装到 ComfyUI/custom_nodes 后重启。",
+        "missing_files": [], "searched_paths": [], "message": "",
     }
 
     def missing(path: Path) -> list[str]:
@@ -161,28 +204,33 @@ def discover_tools(app_dir: str | Path, override: str | Path | None = None) -> d
             result.update(status="available", message="")
         return result
     root = Path(app_dir).resolve()
-    parents = [root.parent / "comfyui" / "custom_nodes", root / "custom_nodes", root.parent / "custom_nodes"]
+    parents, scan_errors = _tools_search_roots(root)
+    result["searched_paths"] = [str(parent) for parent in parents]
     valid: dict[str, Path] = {}
     incomplete: dict[str, Path] = {}
-    scan_errors: list[str] = []
     for parent in parents:
-        if not parent.is_dir():
-            continue
         try:
-            children = list(parent.iterdir())
+            if not parent.is_dir():
+                continue
+            children = sorted(parent.iterdir(), key=lambda path: (path.name.casefold(), path.name))
         except OSError as error:
             scan_errors.append(f"{parent}: {error}")
             continue
         for candidate in children:
             name = candidate.name.casefold()
-            if not candidate.is_dir() or name.startswith(".") or any(name.endswith(suffix) for suffix in (".disabled", ".anima-installing", ".extracting")):
+            if not _tools_scan_name(name):
                 continue
-            physical = candidate.resolve()
-            key = os.path.normcase(str(physical))
-            if not missing(candidate):
-                valid[key] = physical
-            elif name in {"comfyui-anima-tools", "comfyui-anima-tools-main", "comfyui-anima-tools-master"} or any((candidate / "js" / file).is_file() for file in DATA_FILES.values()):
-                incomplete[key] = physical
+            try:
+                if not candidate.is_dir():
+                    continue
+                physical = candidate.resolve()
+                key = os.path.normcase(str(physical))
+                if not missing(candidate):
+                    valid[key] = physical
+                elif name in {"comfyui-anima-tools", "comfyui-anima-tools-main", "comfyui-anima-tools-master"} or any((candidate / "js" / file).is_file() for file in DATA_FILES.values()):
+                    incomplete[key] = physical
+            except (OSError, RuntimeError) as error:
+                scan_errors.append(f"{candidate}: {error}")
     paths = sorted(str(path) for path in valid.values())
     result["candidates"] = paths
     if len(paths) > 1:
@@ -194,6 +242,13 @@ def discover_tools(app_dir: str | Path, override: str | Path | None = None) -> d
         result.update(status="incomplete", candidates=paths, message="Anima Tools 安装不完整，请修复已有目录后重启: " + "；".join(f"{path} (缺少 {', '.join(missing(Path(path)))})" for path in paths))
     elif scan_errors:
         result.update(status="unreadable", message="无法扫描 Anima Tools 目录: " + "；".join(scan_errors))
+    else:
+        result["message"] = (
+            "未在已检查目录找到 Anima Tools。请用 --anima-tools-dir 指定包含 js/ 的插件根目录"
+            "（不要指定 js 目录），然后重启 WebUI。"
+        )
+    if result["status"] != "available":
+        result["message"] += "\n已检查目录：\n" + "\n".join(result["searched_paths"])
     return result
 
 

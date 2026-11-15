@@ -7237,8 +7237,11 @@ async function initialize() {
     config = payload;
     defaults = payload.defaults;
     renderStorageStatus();
-    // 启动期数据文件恢复等服务端警告(如坏文件已备份重建)逐条提示。
-    for (const warning of payload.warnings || []) toast(warning);
+    // 词库目录诊断已常驻警告区；避免将完整路径列表再次弹出并遮住页面。
+    // 其他启动期数据文件恢复等服务端警告仍逐条提示。
+    for (const warning of payload.warnings || []) {
+      if (warning !== payload.catalog?.discovery?.message) toast(warning);
+    }
     loadStoredView();
     const restored = await loadStoredDraft();
     if (!restored) {
