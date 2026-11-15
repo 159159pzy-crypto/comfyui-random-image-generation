@@ -2,7 +2,7 @@
 
 ## 1. 源码安装与启动
 
-本次 0.2.0 使用本地交付的源码目录或源码 ZIP，尚未发布到 GitHub Release。项目在独立 Python 虚拟环境运行，要求 Python 3.11+。Windows 脚本完整命令见 [README 安装步骤](../README.md#3-安装并启动本项目)；也可以手动完成相同操作：
+从 [0.2.0 Release](https://github.com/159159pzy-crypto/comfyui-random-image-generation/releases/tag/anima-webui-v0.2.0) 下载源码 ZIP，或将完整 Git 工作目录更新到标签 `anima-webui-v0.2.0`。项目在独立 Python 虚拟环境运行，要求 Python 3.11+，并需要单独启动本机 ComfyUI。推荐让 Agent 按 [README 安装步骤](../README.md#安装前先看)完成环境检查和安装；Windows 脚本完整命令见 [安装并启动本项目](../README.md#3-安装并启动本项目)，也可以手动完成相同操作：
 
 ```powershell
 # 替换为你的解压目录

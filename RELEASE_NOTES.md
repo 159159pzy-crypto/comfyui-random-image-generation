@@ -1,6 +1,6 @@
 # Anima Random WebUI 0.2.0
 
-2026-11-15 · 本地源码更新，尚未创建 GitHub Release。
+2026-11-15 · 源码发行版 · 标签 `anima-webui-v0.2.0`
 
 从 [Comfy Image Atelier `602e74f`](https://github.com/159159pzy-crypto/comfy-Image-Atelier/commit/602e74f1d1747bdd8a050d3c2358dc86f2a7bb60) 迁入适用于 Anima 随机台的更新。保持源码启动、独立个人数据及默认端口 8191，继续排除 Krea 2、单图台、图生图、AI 助手、图片反推和 EXE 启动器。
 
@@ -23,10 +23,23 @@
 ## 升级注意
 
 1. 停止 WebUI，备份整个个人数据目录及 ComfyUI 原图；将浏览器草稿保留在原站点端口。
-2. 使用本次本地交付的 0.2.0 源码，安装更新后的项目 Python 依赖。GitHub 已发布的 0.1.1 不包含本次更新。本次本机环境中的 KJNodes 与配套资源扩展已可用，无需重新安装；其他环境按 [README 安装步骤](README.md#开始使用)检查，缺失时补齐节点及其依赖。配套扩展检查通过即可复用，仅需安装或更新时正常关闭 ComfyUI，再按文档执行安装命令并自行启动。
+2. 从 [0.2.0 Release](https://github.com/159159pzy-crypto/comfyui-random-image-generation/releases/tag/anima-webui-v0.2.0) 下载源码包，或将 Git 工作目录更新到标签 `anima-webui-v0.2.0`，然后安装更新后的项目 Python 依赖。推荐让 Agent 按 [README 安装步骤](README.md#开始使用)检查并补齐节点、模型与依赖；已有可用的 KJNodes 及配套资源扩展直接复用。配套扩展仅需安装或更新时，正常关闭 ComfyUI，再按文档执行安装命令并重新启动。
 3. 词库及预设结构升级前自动备份。**新旧预设统一默认不携带尺寸与放大修复**；需要时重新捕获并勾选，旧保存值可从迁移备份找回。
 
 已有兼容扩展直接复用；脚本不会升级或重启 ComfyUI，不覆盖用户修改，不重复注册同名扩展。LoRA 收藏、标签、备注、触发词覆盖、人物绑定及使用统计仍仅存本项目，不写回共享插件。
+
+## 安装与文档
+
+- README 明确提示需要单独运行 ComfyUI，推荐让 Agent 协助安装，并提供可复制的安装提示词。
+- 列出必需插件、实际节点名、三模型目录和 Python 依赖，区分默认双采样与可选后处理；普通底图也需要 KJNodes，不使用 LoRA 时仍需要 LoRA Manager。
+- 基础词库自动发现支持常见 Windows 便携版布局；多份独立词库或路径无效时明确提示，避免静默选错。
+- 更新随机工作台截图，新增作品筛选截图，并随源码包提供。
+
+## 下载与校验
+
+- `AnimaRandomWebUI-0.2.0-source.zip`：可安装运行的源码包。
+- `SHA256SUMS.txt`：源码包的 SHA-256 校验值。
+- `build-info.json`：对应的版本、Git 提交及源码包哈希。
 
 源码包包含运行代码、配套扩展、安装入口及用户文档，不包含个人数据、模型、虚拟环境和开发测试。完整 Git 仓库内的 `docs/acceptance-2026-11-15.md` 记录本次实际检查与 GPU 验收范围。
 

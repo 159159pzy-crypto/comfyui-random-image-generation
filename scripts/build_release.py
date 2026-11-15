@@ -30,6 +30,7 @@ DOCUMENTS = frozenset({
     "docs/guide.md", "docs/dependencies.md",
     "docs/readme/random-workbench.png", "docs/readme/prompt-pool.png",
     "docs/readme/lora-manager.png", "docs/readme/app-icon.png",
+    "docs/readme/artwork-filters.png",
 })
 TEMPLATES = frozenset({
     "templates/workflow_api_v2.json", "templates/workflow_ui_v2.json",

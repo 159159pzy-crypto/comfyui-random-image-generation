@@ -1,6 +1,6 @@
 # 0.2.0 本地迁移验收
 
-验收日期：2026-11-15。目标目录：`F:\animarandom`。本次只准备本地源码与源码包，未推送 GitHub、创建标签或发布 Release。
+验收日期：2026-11-15。目标目录：`F:\animarandom`。本页记录最初的本地迁移验收，当时仅准备源码与源码包；后续 GitHub 发布信息见 [0.2.0 Release](https://github.com/159159pzy-crypto/comfyui-random-image-generation/releases/tag/anima-webui-v0.2.0)。下列测试结果与 GPU 验收范围对应迁移验收阶段。
 
 ## 来源与范围
 
